@@ -1,0 +1,31 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# sanal ortam
+.venv/
+venv/
+env/
+
+# yapılandırma / gizli
+.env
+
+# üretilen veri ve veritabanı
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# test / cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# editör / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

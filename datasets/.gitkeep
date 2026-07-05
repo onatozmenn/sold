@@ -1,0 +1,3 @@
+Bu klasör, GitHub Actions (bkz. .github/workflows/kfe-refresh.yml) tarafından
+otomatik güncellenen veri anlık görüntülerini tutar (ör. kfe.csv).
+Elle düzenlemeyin. data/ klasöründen farklı olarak burası git ile takip edilir.

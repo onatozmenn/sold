@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sold"
+version = "0.1.0"
+description = "Gerçekleşen (realized) konut fiyatı tahmini: ilan verisinden 'sold data' proxy'si üretme."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "pandas>=2.1",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "SQLAlchemy>=2.0",
+    "tenacity>=8.2",
+    "typer>=0.12",
+    "beautifulsoup4>=4.12",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.1"]
+model = ["scikit-learn>=1.4"]
+boost = ["lightgbm>=4.3"]
+api = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
+dev = ["pytest>=8.0", "scikit-learn>=1.4", "fastapi>=0.110", "uvicorn[standard]>=0.29"]
+
+[project.scripts]
+sold = "sold.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+sold = ["db/schema.sql"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

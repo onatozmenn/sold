@@ -1,0 +1,44 @@
+name: KFE Yenile
+
+# TCMB Konut Fiyat Endeksi'ni (ekspertiz tabanlı, gerçek) periyodik olarak çeker
+# ve datasets/kfe.csv'yi günceller. Böylece bilgisayarı açık tutmaya gerek kalmaz.
+#
+# ÖNKOŞUL: Repo > Settings > Secrets and variables > Actions altında
+#          EVDS_API_KEY adında bir secret tanımlayın (https://evds3.tcmb.gov.tr).
+#
+# NOT: Bu iş akışı SADECE resmi EVDS API'sinden veri çeker. Hiçbir ilan sitesine
+#      istek atmaz (scraping yok). Gerçek satış etiketleri elle girilir.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # her Pazartesi 06:00 UTC (KFE aylık yayımlanır; haftalık kontrol ucuz + idempotent)
+  workflow_dispatch: {} # elle tetikleme
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Bağımlılıkları kur
+        run: pip install -e .
+      - name: KFE'yi çek
+        env:
+          EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
+        run: sold evds kfe --start 01-01-2010 --out datasets/kfe.csv
+      - name: Değiştiyse commit'le
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add datasets/kfe.csv
+          if git diff --staged --quiet; then
+            echo "Değişiklik yok."
+          else
+            git commit -m "chore: KFE verisi güncellendi ($(date -u +%Y-%m-%d))"
+            git push
+          fi

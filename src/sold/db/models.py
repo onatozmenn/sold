@@ -1,0 +1,188 @@
+"""SQLAlchemy 2.0 ORM modelleri (longitudinal ilan deposu + kalibrasyon verisi).
+
+KVKK NOTU: ``listings`` tablosunda KİŞİSEL VERİ (ilan sahibi adı, telefon vb.)
+TUTULMAZ; yalnızca taşınmazın nesnel nitelikleri saklanır. Konum, ORM
+tarafında taşınabilirlik için lat/lon olarak tutulur; PostgreSQL şemasında bu
+alanlardan PostGIS ``geom`` sütunu üretilir (bkz. schema.sql).
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Listing(Base):
+    """Kaynak sitedeki benzersiz ilan (mümkün olduğunca durağan alanlar)."""
+
+    __tablename__ = "listings"
+    __table_args__ = (
+        UniqueConstraint("source", "source_listing_id", name="uq_listing_source"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_listing_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    url: Mapped[str | None] = mapped_column(String(1024))
+    listing_type: Mapped[str | None] = mapped_column(String(16))  # sale | rent
+
+    first_seen_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_seen_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    delisted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16), default="active")
+
+    # --- taşınmaz nitelikleri (kişisel veri YOK) ---
+    province: Mapped[str | None] = mapped_column(String(64))
+    district: Mapped[str | None] = mapped_column(String(64))
+    neighborhood: Mapped[str | None] = mapped_column(String(128))
+    lat: Mapped[float | None] = mapped_column(Float)
+    lon: Mapped[float | None] = mapped_column(Float)
+    gross_m2: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    net_m2: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    room_count: Mapped[str | None] = mapped_column(String(16))
+    building_age: Mapped[int | None] = mapped_column(Integer)
+    floor: Mapped[int | None] = mapped_column(Integer)
+    total_floors: Mapped[int | None] = mapped_column(Integer)
+    heating: Mapped[str | None] = mapped_column(String(64))
+
+    snapshots: Mapped[list["ListingSnapshot"]] = relationship(
+        back_populates="listing", cascade="all, delete-orphan"
+    )
+
+
+class ListingSnapshot(Base):
+    """Her tarama turunda ilanın fiyat/durum anlık görüntüsü (zaman serisi)."""
+
+    __tablename__ = "listing_snapshots"
+    __table_args__ = (
+        UniqueConstraint("listing_id", "captured_at", name="uq_snapshot"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    listing_id: Mapped[int] = mapped_column(
+        ForeignKey("listings.id", ondelete="CASCADE")
+    )
+    captured_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    price: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(8), default="TRY")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    days_on_market: Mapped[int | None] = mapped_column(Integer)
+
+    listing: Mapped["Listing"] = relationship(back_populates="snapshots")
+
+
+class PriceChange(Base):
+    """Türetilmiş: ilan fiyatındaki değişimler (asking-side pazarlık sinyali)."""
+
+    __tablename__ = "price_changes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    listing_id: Mapped[int] = mapped_column(
+        ForeignKey("listings.id", ondelete="CASCADE")
+    )
+    changed_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    old_price: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False)
+    new_price: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False)
+    pct_change: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class EvdsObservation(Base):
+    """TCMB EVDS gözlemleri (kalibrasyon / ground truth)."""
+
+    __tablename__ = "evds_observations"
+    __table_args__ = (
+        UniqueConstraint("series_code", "obs_date", name="uq_evds_obs"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    series_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    series_name: Mapped[str | None] = mapped_column(String(256))
+    obs_date: Mapped[dt.date] = mapped_column(nullable=False)
+    value: Mapped[float | None] = mapped_column(Numeric(18, 4))
+
+
+class TuikHouseSale(Base):
+    """TÜİK konut satış adetleri (talep hacmi / likidite)."""
+
+    __tablename__ = "tuik_house_sales"
+    __table_args__ = (
+        UniqueConstraint("province", "period", "sale_type", name="uq_tuik_sales"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    province: Mapped[str | None] = mapped_column(String(64))
+    period: Mapped[dt.date] = mapped_column(nullable=False)
+    sales_count: Mapped[int | None] = mapped_column(Integer)
+    sale_type: Mapped[str | None] = mapped_column(String(64))
+
+
+class CrawlRun(Base):
+    """Bir tarama turunun künyesi (izleme / kalite takibi)."""
+
+    __tablename__ = "crawl_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    started_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    listings_seen: Mapped[int] = mapped_column(Integer, default=0)
+    new_listings: Mapped[int] = mapped_column(Integer, default=0)
+    price_changes: Mapped[int] = mapped_column(Integer, default=0)
+    delisted: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(16), default="ok")
+    note: Mapped[str | None] = mapped_column(String(256))
+
+
+class GroundTruthSale(Base):
+    """Gerçek (broker/ekspertiz) gerçekleşen satış etiketi (Faz 4)."""
+
+    __tablename__ = "ground_truth_sales"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source: Mapped[str | None] = mapped_column(String(64))
+    listing_type: Mapped[str | None] = mapped_column(String(16))
+    province: Mapped[str | None] = mapped_column(String(64))
+    district: Mapped[str | None] = mapped_column(String(64))
+    neighborhood: Mapped[str | None] = mapped_column(String(128))
+    lat: Mapped[float | None] = mapped_column(Float)
+    lon: Mapped[float | None] = mapped_column(Float)
+    gross_m2: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    net_m2: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    room_count: Mapped[str | None] = mapped_column(String(16))
+    building_age: Mapped[int | None] = mapped_column(Integer)
+    floor: Mapped[int | None] = mapped_column(Integer)
+    total_floors: Mapped[int | None] = mapped_column(Integer)
+    heating: Mapped[str | None] = mapped_column(String(64))
+    asking_price: Mapped[float | None] = mapped_column(Numeric(16, 2))
+    sold_price: Mapped[float | None] = mapped_column(Numeric(16, 2))
+    days_on_market: Mapped[int | None] = mapped_column(Integer)
+    sale_date: Mapped[dt.date | None] = mapped_column()
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
