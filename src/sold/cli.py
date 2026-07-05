@@ -61,6 +61,45 @@ def evds_kfe(
         _store_evds(df)
 
 
+@evds_app.command("house-sales")
+def evds_house_sales(
+    start: str = typer.Option("01-01-2013", help="Başlangıç (DD-MM-YYYY)"),
+    end: str = typer.Option("", help="Bitiş (DD-MM-YYYY); boşsa bugün"),
+    out: Path = typer.Option(Path("data/house_sales.csv"), help="Çıktı CSV yolu"),
+    to_db: bool = typer.Option(False, "--to-db", help="Sonuçları veritabanına da yaz"),
+) -> None:
+    """TÜİK konut satış adetlerini (talep/likidite sinyali) çekip CSV'ye kaydeder."""
+    from .evds.client import EvdsAuthError, EvdsClient
+    from .evds.house_sales import build_name_map, fetch_house_sales, to_long
+    from .evds.series import DEFAULT_HOUSE_SALES_SERIES
+
+    try:
+        with EvdsClient() as client:
+            df = fetch_house_sales(
+                client, start_date=start, end_date=end or dt.date.today()
+            )
+            name_map = build_name_map(client, list(DEFAULT_HOUSE_SALES_SERIES))
+    except EvdsAuthError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    if df.empty:
+        typer.secho(
+            "Veri gelmedi. Kodları `sold evds series bie_akonutsat1` ile kontrol edin.",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit(code=1)
+
+    long_df = to_long(df, name_map)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    long_df.to_csv(out, index=False)
+    typer.secho(f"{len(long_df)} satır -> {out}", fg=typer.colors.GREEN)
+    typer.echo(long_df.tail(8).to_string(index=False))
+
+    if to_db:
+        _store_house_sales(long_df)
+
+
 @evds_app.command("series")
 def evds_series(
     datagroup: str = typer.Argument("bie_kfe", help="Veri grubu kodu"),
@@ -140,6 +179,49 @@ def _store_evds(df) -> None:
                 written += 1
         session.commit()
     typer.secho(f"{written} EVDS gözlemi veritabanına yazıldı.", fg=typer.colors.GREEN)
+
+
+def _store_house_sales(long_df) -> None:
+    import pandas as pd
+    from sqlalchemy import select
+
+    from .db import get_engine, get_sessionmaker, init_db
+    from .db.models import TuikHouseSale
+
+    engine = get_engine()
+    init_db(engine)
+    session_factory = get_sessionmaker(engine)
+    written = 0
+    with session_factory() as session:
+        existing = {
+            (row.province, row.period, row.sale_type)
+            for row in session.execute(
+                select(
+                    TuikHouseSale.province,
+                    TuikHouseSale.period,
+                    TuikHouseSale.sale_type,
+                )
+            ).all()
+        }
+        for _, row in long_df.iterrows():
+            key = (row["province"], row["period"], row["sale_type"])
+            count = row["sales_count"]
+            if key in existing or pd.isna(count):
+                continue
+            session.add(
+                TuikHouseSale(
+                    province=row["province"],
+                    period=row["period"],
+                    sales_count=int(count),
+                    sale_type=row["sale_type"],
+                )
+            )
+            existing.add(key)
+            written += 1
+        session.commit()
+    typer.secho(
+        f"{written} konut satış gözlemi veritabanına yazıldı.", fg=typer.colors.GREEN
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -1,7 +1,8 @@
-name: KFE Yenile
+name: EVDS Verilerini Yenile (KFE + Konut Satış)
 
-# TCMB Konut Fiyat Endeksi'ni (ekspertiz tabanlı, gerçek) periyodik olarak çeker
-# ve datasets/kfe.csv'yi günceller. Böylece bilgisayarı açık tutmaya gerek kalmaz.
+# TCMB KFE (ekspertiz tabanlı fiyat endeksi) ve TÜİK konut satış adetlerini
+# (talep/likidite) periyodik çeker; datasets/kfe.csv ve datasets/house_sales.csv'yi
+# günceller. Böylece bilgisayarı açık tutmaya gerek kalmaz.
 #
 # ÖNKOŞUL: Repo > Settings > Secrets and variables > Actions altında
 #          EVDS_API_KEY adında bir secret tanımlayın (https://evds3.tcmb.gov.tr).
@@ -11,7 +12,7 @@ name: KFE Yenile
 
 on:
   schedule:
-    - cron: "0 6 * * 1" # her Pazartesi 06:00 UTC (KFE aylık yayımlanır; haftalık kontrol ucuz + idempotent)
+    - cron: "0 6 * * 1" # her Pazartesi 06:00 UTC (aylık veri; haftalık kontrol ucuz + idempotent)
   workflow_dispatch: {} # elle tetikleme
 
 permissions:
@@ -31,14 +32,18 @@ jobs:
         env:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
         run: sold evds kfe --start 01-01-2010 --out datasets/kfe.csv
+      - name: Konut satışlarını çek (TÜİK)
+        env:
+          EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
+        run: sold evds house-sales --start 01-01-2013 --out datasets/house_sales.csv
       - name: Değiştiyse commit'le
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add datasets/kfe.csv
+          git add datasets/kfe.csv datasets/house_sales.csv
           if git diff --staged --quiet; then
             echo "Değişiklik yok."
           else
-            git commit -m "chore: KFE verisi güncellendi ($(date -u +%Y-%m-%d))"
+            git commit -m "chore: EVDS verileri güncellendi ($(date -u +%Y-%m-%d))"
             git push
           fi
