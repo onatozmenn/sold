@@ -192,6 +192,12 @@ def to_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
             "true_realized_price": pd.to_numeric(col("sold_price"), errors="coerce"),
         }
     )
+    # Talep sinyali (market heat): gerçek TÜİK konut satış hacminden, il + satış
+    # ayına göre. sale_date/il yoksa 1.0'a (nötr) düşer.
+    from ..features.demand import load_heat_index
+
+    heat_df = pd.DataFrame({"province": col("province"), "sale_date": col("sale_date")})
+    frame["market_heat"] = load_heat_index().attach(heat_df)["market_heat"].to_numpy()
     return frame.dropna(subset=["last_price", "true_realized_price"]).reset_index(drop=True)
 
 

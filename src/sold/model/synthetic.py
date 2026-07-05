@@ -59,19 +59,29 @@ def generate_market(n: int = 2500, seed: int = 42) -> pd.DataFrame:
 
     true_value = gross_m2 * base_ppm2 * age_factor * floor_factor * heat_factor * noise
 
+    # Piyasa sıcaklığı (talep): >1 hareketli, <1 durgun. Gerçekte TÜİK konut
+    # satış hacminden (market_heat) gelir; sentetikte gerçekçi dağılımla üretip
+    # gerçekleşen fiyatı/likiditeyi etkilemesine izin veririz (model öğrensin).
+    market_heat = np.exp(rng.normal(0.0, 0.18, n))
+
     # Satıcılar gerçek değerin üstünde fiyat koyar (aspirasyonel markup).
     markup = rng.uniform(0.05, 0.28, n)
     initial_price = true_value * (1 + markup)
 
-    # Yüksek markup -> daha uzun time-on-market ve daha çok/derin indirim.
-    days_on_market = (rng.exponential(35, n) + 250 * markup).astype(int)
+    # Yüksek markup -> daha uzun time-on-market; sıcak piyasa -> daha kısa.
+    days_on_market = (
+        (rng.exponential(35, n) + 250 * markup) / np.clip(market_heat, 0.6, 1.6)
+    ).astype(int)
     num_price_changes = rng.poisson(np.clip(days_on_market / 45.0, 0, None)).astype(int)
     observed_drop = np.minimum(markup * rng.uniform(0.2, 0.7, n), 0.22)
     observed_drop = np.where(num_price_changes > 0, observed_drop, 0.0)
     last_price = initial_price * (1 - observed_drop)
 
-    # Gerçekleşen satış ~ gerçek değer çevresinde küçük pazarlık gürültüsü.
-    realized = true_value * np.exp(rng.normal(-0.015, 0.03, n))
+    # Gerçekleşen satış ~ gerçek değer çevresinde küçük pazarlık gürültüsü;
+    # sıcak piyasa (market_heat>1) satıcı lehine → gerçekleşen daha yüksek (az indirim).
+    realized = true_value * np.exp(
+        rng.normal(-0.015, 0.03, n) + 0.06 * (market_heat - 1.0)
+    )
     is_delisted = rng.random(n) < 0.80
     total_drop_pct = (last_price - initial_price) / initial_price * 100.0
 
@@ -97,6 +107,7 @@ def generate_market(n: int = 2500, seed: int = 42) -> pd.DataFrame:
             "num_snapshots": num_price_changes + 1,
             "num_price_changes": num_price_changes,
             "days_on_market": days_on_market,
+            "market_heat": market_heat.round(4),
             "total_drop_pct": total_drop_pct,
             "is_delisted": is_delisted,
             "true_realized_price": realized.round(0),

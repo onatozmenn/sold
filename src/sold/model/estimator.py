@@ -43,6 +43,7 @@ DISCOUNT_NUM = HEDONIC_NUM + [
     "num_price_changes",
     "total_drop_pct",
     "overprice_residual",
+    "market_heat",
 ]
 DISCOUNT_CAT = HEDONIC_CAT
 
