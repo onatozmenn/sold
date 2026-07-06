@@ -362,7 +362,8 @@ class ConsumerSale(Base):
     quality_status: Mapped[str] = mapped_column(String(16), nullable=False, default="accepted")  # accepted/flagged (rejected sınırda reddedilir)
     quality_flags: Mapped[list | None] = mapped_column(JSON)  # inceleme bayrakları (orijinal değerler KORUNUR)
     # Gizlilik-korumalı duplicate-aday parmak izi (kanonik NON-personal alanlardan SHA-256).
-    # MÜLKİ veya KİŞİYİ TANIMLAMAZ; yalnızca birebir/yakın-tekrar gönderimleri incelemeye işaretler.
+    # MÜLKİ veya KİŞİYİ TANIMLAMAZ; yalnızca AYNI kanonik parmak izine ÇÖKEN gönderimleri
+    # (kanonik çakışma) incelemeye işaretler — genel near-duplicate benzerlik tespiti DEĞİL.
     fingerprint: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

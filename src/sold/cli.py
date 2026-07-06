@@ -1240,7 +1240,11 @@ def consumer_record_cmd(
     origin: str = typer.Option(
         "consumer_submission",
         "--origin",
-        help="Köken: consumer_submission (GERÇEK) / test_fixture / demo_seed / manual_import",
+        help=(
+            "Köken: consumer_submission (YALNIZCA gerçek satıcının kendi gönderimi) / "
+            "test_fixture / demo_seed / manual_import (geliştirici-aktarımı geçmiş veri). "
+            "Fixture/demo/aktarım ASLA consumer_submission olarak etiketlenmez."
+        ),
     ),
 ) -> None:
     """Ev satmış bir kişinin satışını kaydeder; anında analitik + segment benchmark döner.

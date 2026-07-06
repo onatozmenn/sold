@@ -99,7 +99,7 @@ def assess_quality(sale: dict, duplicate: bool = False) -> tuple[str, list[str]]
 # Gizlilik-korumalı duplicate-aday parmak izi
 # --------------------------------------------------------------------------- #
 def _bucket_price(v: object, bucket: float = 50_000.0) -> str:
-    """Fiyatı kaba kovaya yuvarlar (yakın-tekrar toleransı); yoksa 'na'."""
+    """Fiyatı kaba kovaya yuvarlar (KANONİKLEŞTİRME — yakın-benzerlik araması DEĞİL); yoksa 'na'."""
     try:
         f = float(v)  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -123,9 +123,10 @@ def fingerprint(sale: dict) -> str:
     """Kanonik NON-personal işlem alanlarından gizlilik-korumalı parmak izi (SHA-256).
 
     Mülkü veya kişiyi TANIMLAMAZ ve öyle olduğu İDDİA EDİLMEZ. Fiyat/m² kaba kovalara
-    yuvarlandığından birebir VEYA yakın-tekrar gönderimler AYNI parmak izini üretir;
-    yalnızca duplicate adayını incelemeye işaretlemek için kullanılır (tek yönlü hash,
-    kişisel veri içermez).
+    KANONİKLEŞTİRİLİR; bu yüzden AYNI kanonik parmak izine ÇÖKEN gönderimler
+    ``duplicate_candidate`` olarak işaretlenir. Bu bir kanonik parmak izi ÇAKIŞMASIDIR
+    — GENEL bir near-duplicate / benzerlik tespiti DEĞİLDİR (ayrı bir benzerlik katmanı
+    YOKTUR). Tek yönlü hash; kişisel veri içermez.
     """
     parts = [
         str(sale.get("province") or "").strip().lower(),
