@@ -1376,6 +1376,112 @@ def consumer_stats_cmd() -> None:
         )
 
 
+# --------------------------------------------------------------------------- #
+# Yapısal ekonometrik motor (Nash pazarlık + SMM) — yeni çekirdek
+# --------------------------------------------------------------------------- #
+structural_app = typer.Typer(
+    help="Yapısal ekonometrik motor: Nash pazarlık + TCMB-çıpalı hedonik + SMM",
+    no_args_is_help=True,
+)
+app.add_typer(structural_app, name="structural")
+
+
+@structural_app.command("value")
+def structural_value_cmd(
+    asking: float = typer.Argument(..., help="İlan (asking) fiyatı, TL"),
+    province: str = typer.Option("İstanbul", help="İl"),
+    gross_m2: float = typer.Option(100.0, help="Brüt m²"),
+    kfe_factor: float = typer.Option(1.0, help="KFE/YÖKFE zaman çarpanı (endeks_t/baz)"),
+    tightness: float = typer.Option(0.0, help="Piyasa sıkılığı (TÜİK hacminden; 0=nötr)"),
+) -> None:
+    """Sıradan ilan için YAPISAL closing dağılımı — gözlenen fiyat DEĞİL.
+
+    asking, satıcı rezervasyonuna GÜRÜLTÜLÜ sinyaldir (tavan değil). Fair value TCMB
+    ekspertiz TL/m²'ye çıpalıdır. θ şu an ÖNSEL'dir (SMM ile gerçek veriye kalibre
+    edilmemiştir); çıktı yapısal bir çıkarımdır, ölçülen doğruluk değildir.
+    """
+    from .model.synthetic import load_province_ppm2
+    from .structural import (
+        StructuralClosingPredictor,
+        StructuralParams,
+        tcmb_fair_value,
+    )
+
+    ppm2 = load_province_ppm2().get(province)
+    fv = tcmb_fair_value(ppm2, gross_m2, kfe_factor=kfe_factor)
+    if fv is None:
+        typer.secho(
+            f"{province} için TCMB ekspertiz TL/m² bulunamadı (gross_m2 > 0 olmalı).",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
+
+    out = StructuralClosingPredictor(StructuralParams()).predict(
+        asking, fv, tightness=tightness
+    )
+    typer.secho(
+        "YAPISAL closing çıkarımı (θ ÖNSEL — SMM ile kalibre EDİLMEMİŞ)",
+        fg=typer.colors.CYAN,
+        bold=True,
+    )
+    typer.echo(f"  İlan: {asking:,.0f} TL · Fair value (TCMB ekspertiz çıpalı): {fv:,.0f} TL")
+    med = out["inferred_closing_median"]
+    if med is None:
+        typer.secho("  Bu senaryoda ticaret olasılığı ~0.", fg=typer.colors.YELLOW)
+    else:
+        lo, hi = out["interval_80"]
+        typer.echo(f"  Çıkarımsal closing: medyan {med:,.0f} · ortalama {out['inferred_closing_mean']:,.0f} TL")
+        typer.echo(f"  %80 yapısal aralık: {lo:,.0f} – {hi:,.0f} TL")
+    typer.echo(f"  Ticaret olasılığı: {out['trade_probability']:.2f}")
+    band = out["mechanism_transfer_sensitivity"].get("median_band")
+    if band and band[0] is not None:
+        typer.echo(f"  Mekanizma-transfer duyarlılığı (medyan bandı): {band[0]:,.0f} – {band[1]:,.0f} TL")
+    typer.secho(f"  {out['note']}", fg=typer.colors.YELLOW)
+
+
+@structural_app.command("estimate")
+def structural_estimate_cmd(
+    eta_true: float = typer.Option(0.60, help="Demo: bilinen (gerçek) eta"),
+) -> None:
+    """SMM DOĞRULAMA demosu: bilinen θ'dan sentetik moment üretip eta'yı geri kazanır.
+
+    Bu bir YÖNTEM doğrulamasıdır (gerçek tahmin değil) — `model demo` gibi. Gerçek
+    tahmin, kamu yapısal veri kümesi genişletildikçe (UYAP/KAP/TOKİ) yapılacaktır.
+    """
+    import numpy as np
+
+    from .structural import (
+        MomentContext,
+        StructuralParams,
+        estimate_smm,
+        observed_moments,
+        simulate_negotiations,
+    )
+
+    theta0 = StructuralParams(eta=eta_true)
+    rng = np.random.default_rng(2024)
+    V = np.ones(40000)
+    neg = simulate_negotiations(rng, V, theta0, 40000, mechanism="kap")
+    traded = neg["traded"]
+    m_obs = observed_moments(kap_realized=neg["price"][traded], kap_appraisal=V[traded])
+    ctx = MomentContext(
+        auction_appraised=np.array([]),
+        auction_floors=np.array([]),
+        kap_appraisal=np.ones(60),
+        reps=400,
+    )
+    res = estimate_smm(m_obs, ctx, free_names=("eta",), start=StructuralParams(eta=0.40), seed=777)
+    typer.secho("SMM doğrulama demosu (yöntem doğrulaması)", fg=typer.colors.CYAN, bold=True)
+    typer.echo(f"  Gerçek eta: {eta_true:.3f}  ·  Geri kazanılan eta: {res.params.eta:.3f}")
+    typer.echo(f"  SMM hedefi: {res.objective:.3e}  ·  iterasyon: {res.n_iter}")
+    typer.echo(f"  Eşleşen momentler: {res.moment_keys}")
+    typer.secho(
+        "  Not: eta HARD-CODE değildir; SMM tahmin eder. Sonraki iş: kamu yapısal "
+        "veri kümesi genişletmesi + gerçek SMM tahmini.",
+        fg=typer.colors.YELLOW,
+    )
+
+
 @app.command("serve")
 def serve_cmd(
     host: str = typer.Option("127.0.0.1", help="Dinlenecek adres"),

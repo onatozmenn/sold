@@ -4,7 +4,7 @@
 [![Data refresh](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml/badge.svg)](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-129%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-145%20passing-brightgreen.svg)](tests/)
 [![Data](https://img.shields.io/badge/data-TCMB%20%C2%B7%20T%C3%9C%C4%B0K-informational.svg)](#data-sources)
 
 > Infer the **realized transaction price** of a Turkish home from its **asking** price — a provenance-aware valuation engine.
@@ -113,6 +113,23 @@ The problem naturally splits into three models; conflating them is what makes na
 | **ClosingDiscount** `log(closing / asking)` | How far from asking does it truly close? | fallback prior → ML on real labels |
 
 A delisted listing is **not** necessarily a sale (the seller may have withdrawn, relisted, or switched agents), so `removed = sold` is deliberately avoided.
+
+### Structural inference engine (core)
+
+The **core engine is a mechanism-aware structural econometric model**, not weak-label aggregation. Ordinary negotiated resale is modeled as **generalized Nash bargaining**: with buyer valuation `B` and seller reservation `S`, trade occurs only when `B ≥ S`, and the closing price is `P = η·B + (1−η)·S` where `η` (seller bargaining power) is **estimated, never hard-coded**. The structural parameter vector `θ` — buyer/seller value distributions, `η`, buyer-arrival/market-tightness, and source/mechanism shifts — is fit by **Simulated Method of Moments**:
+
+$$\hat\theta = \arg\min_\theta\; (m_{obs} - m_{sim}(\theta))' \, W \, (m_{obs} - m_{sim}(\theta))$$
+
+Each public source enters as **structural moments under its own mechanism**, never pooled as ordinary-resale ground truth:
+
+| Source | Structural role |
+|---|---|
+| **TCMB** TL/m² + KFE/YÖKFE | Hedonic **fair-value level anchor** (appraisal, *not* transactions). The log-linear hedonic gives **relative** characteristic premiums only — the listing-price **intercept is never used as the price level** |
+| **UYAP** e-Satış | **Structural auctions** (sold *and* unsold): bidder valuations from the buyer-value distribution vs the **statutory legal floor** `max(0.5·Q, priority_claims + realization_costs)`. `muhammen_bedel = appraised value Q`, **not** the reserve; unobserved floor components stay *partially observed*, never fabricated |
+| **KAP** | Non-related negotiated disposals → **`η` calibration moments** with an explicit **corporate mechanism/domain shift** (never treated as ordinary-resale truth) |
+| **TOKİ** | Repeated cumulative disclosures **differenced within room-type strata** → period realized-sale cohort moments, with reconciliation/revision guards (no property-level pairs, no asking→closing discount) |
+
+For an ordinary listing, **asking price is a noisy strategic signal of the seller reservation** (not ground truth, not a ceiling): `S` is conditioned on asking, fair value and tightness, `B`/`S` are drawn, trades (`B ≥ S`) retained, and the **conditional-on-trade** closing distribution returned — median, mean, an **80% structural interval**, trade probability, and **mechanism-transfer sensitivity**. This is a **structural inference, never an observed closing price or a measured ordinary-resale accuracy**. See [`src/sold/structural/`](src/sold/structural/) and `sold structural value` / `sold structural estimate`.
 
 ## Broker Data Flywheel
 
@@ -282,7 +299,7 @@ tests/               # offline unit / end-to-end tests
 ## Testing
 
 ```bash
-pytest -q             # 129 tests, fully offline (no network or API key required)
+pytest -q             # 145 tests, fully offline (no network or API key required)
 ```
 
 ## Methodology & References
@@ -305,6 +322,7 @@ Negotiation-margin figures from Turkish market reporting: İstanbul ≈ 10%, Ank
 - [x] **Consumer direct-label acquisition path** — self-serve seller collector that turns a completed ordinary home sale into a provenance-aware **direct** label (`domain=consumer` · `seller_self_reported` · `ordinary_resale` · `reference=asking` · confidence `B`) eligible for `asking_to_closing_labels()` while public UYAP/KAP/TOKİ stay excluded; returns immediate non-ML seller analytics (initial/final ask-to-close gap, days to close, price cuts) and an **honest** segment benchmark (no fabricated benchmark when observations are insufficient)
 - [x] **Direct-label quality gate (pre-ML)** — mandatory `origin` (`consumer_submission` / `test_fixture` / `demo_seed` / `manual_import`) so `asking_to_closing_labels()` **excludes test/demo by default** (opt-in `include_non_production=True`) and fixtures never inflate the genuine count; `quality_status` (`accepted`/`flagged`/`rejected`) that **hard-rejects only structurally impossible values** (non-positive price, closing-before-listing) and merely **flags** unusual ratios (extreme close-to-ask, final-above-initial, suspicious duration, duplicate) while preserving the original self-reported values; a privacy-preserving duplicate-candidate **fingerprint** (one-way SHA-256 over bucketed canonical non-personal fields that flags submissions collapsing to the **same canonical transaction fingerprint** — a canonical-fingerprint collision, **not** general near-duplicate similarity detection, and it does **not** identify a property or seller); genuine vs test/demo reported as **separate counts**
 - [ ] **First genuine real-world label** — exactly one *actual* seller-submitted completed residential sale passing through the product path + quality gate. **Current genuine direct-label count: 0** — the end-to-end test proves the acquisition *path* works, not that a real-world label has been acquired
+- [x] **Structural econometric core** — mechanism-aware generalized **Nash bargaining** (`P = ηB+(1−η)S`, `η` estimated, not hard-coded) fit by **Simulated Method of Moments**; TCMB-anchored hedonic fair value (relative premiums only, no listing intercept as level); structural UYAP auctions with the **statutory legal floor** (`muhammen_bedel` preserved as appraised value `Q`, never the reserve; partially-observed floors not fabricated); KAP `η`-calibration moments with a corporate mechanism shift; TOKİ cumulative-disclosure differencing into room-type cohort moments. Replaces weak-label aggregation as the core; the provenance registry and validated KAP/TOKİ/UYAP Level-2 records are kept; the consumer path is frozen as an optional future *validation* channel. **Next: public structural dataset expansion + SMM estimation.** No SaleProbability model yet
 - [ ] **SaleProbability** model (`P(sold ≤ N days)`) trained on collected outcomes
 - [ ] Live, ToS-reviewed fetchers for the public label sources
 - [ ] Broker-vs-benchmark analytics over an aggregate anonymized dataset
