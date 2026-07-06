@@ -201,6 +201,70 @@ def add_ground_truth(rec: SoldRecordIn) -> dict:
     return {"added": True, "total_labels": int(total), "discount_pct": round(discount, 2)}
 
 
+class OutcomeIn(BaseModel):
+    outcome: str = Field(
+        ..., description="sold/withdrawn/expired/active/lost_to_other/unknown"
+    )
+    province: str | None = "İstanbul"
+    district: str | None = None
+    neighborhood: str | None = None
+    gross_m2: float | None = None
+    room_count: str | None = None
+    building_age: int | None = None
+    floor: int | None = None
+    heating: str | None = None
+    initial_asking_price: float | None = None
+    last_asking_price: float | None = None
+    price_cut_count: int | None = 0
+    days_on_market: int | None = None
+    # Kapanış — yalnızca outcome='sold' için anlamlı; diğerlerinde yok sayılır.
+    sold_price: float | None = None
+    sale_date: str | None = None
+    days_to_close: int | None = None
+    sale_mode: str | None = "arm_length"
+    # Provenance / kanıt
+    source: str = "web"
+    label_source: str | None = None
+    evidence_type: str | None = "none"
+    evidence_verified: bool = False
+
+
+@app.post("/outcome")
+def add_outcome(rec: OutcomeIn) -> dict:
+    """İlan SONUCU kaydeder (flywheel). Kapanış alanları yalnızca 'sold'da tutulur."""
+    from ..db import get_engine, get_sessionmaker, init_db
+    from ..flywheel import OutcomeError, record_outcome
+
+    engine = get_engine()
+    init_db(engine)
+    try:
+        with get_sessionmaker(engine)() as session:
+            row = record_outcome(session, rec.model_dump())
+            session.commit()
+            return {
+                "recorded": True,
+                "outcome": row.outcome,
+                "sale_mode": row.sale_mode,
+                "label_confidence": row.label_confidence,
+                "label_source": row.label_source,
+            }
+    except OutcomeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/analytics")
+def analytics_endpoint(source: str | None = None) -> dict:
+    """Broker müzakere analitiği (NON-ML): indirim, kapanış süresi, fiyat-kesinti."""
+    from ..db import get_engine, get_sessionmaker, init_db
+    from ..flywheel import load_outcomes, negotiation_analytics
+
+    engine = get_engine()
+    init_db(engine)
+    with get_sessionmaker(engine)() as session:
+        df = load_outcomes(session, source)
+    return negotiation_analytics(df)
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     return _INDEX_HTML

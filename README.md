@@ -15,6 +15,7 @@
 
 - [Background](#background)
 - [How It Works](#how-it-works)
+- [Broker Data Flywheel](#broker-data-flywheel)
 - [Data Sources](#data-sources)
 - [Labels & Provenance](#labels--provenance)
 - [Install](#install)
@@ -58,17 +59,27 @@ An independent **appraisal-based value** (TCMB TL/m² × area) is provided as a 
 
 ```mermaid
 flowchart TD
-    A["GitHub Actions (weekly, no PC required)"] --> B[Three real datasets]
-    B --> B1["kfe.csv — TCMB price index (trend)"]
-    B --> B2["house_sales.csv — TUIK sales volume (demand)"]
-    B --> B3["unit_prices.csv — TCMB appraisal TL/m2 (level)"]
-    B1 & B2 & B3 --> C{Valuation engine}
-    D["ground_truth.csv — your real sold records"] --> C
-    C -->|no real labels| E["RealValuator (real-data formula)"]
-    C -->|labels present| F["RealizedValuator (ML model)"]
-    E & F --> G["Estimated sale price + negotiation %"]
-    G --> H["CLI: sold model value"]
-    G --> I["API / web form: sold serve"]
+    subgraph FEATURES["Real feature data - weekly GitHub Actions, no PC"]
+        B1["kfe.csv - price trend"]
+        B2["house_sales.csv - demand"]
+        B3["unit_prices.csv - appraisal TL/m2"]
+    end
+
+    subgraph FLYWHEEL["Broker Data Flywheel"]
+        O["listing_outcomes: Sold / Withdrawn / Expired / Active / Lost / Unknown"]
+        AN["Negotiation analytics"]
+        O --> AN
+        AN -. value returned to broker .-> O
+    end
+    O --> L1["ClosingDiscount labels (sold + arm's-length)"]
+    O --> L2["SaleProbability labels (all outcomes) - roadmap"]
+
+    FEATURES --> C{RealValuator}
+    L1 --> C
+    C -->|no paired labels| E["Fallback prior (published margin + demand)"]
+    C -->|paired labels| F["RealizedValuator - ML (hedonic + discount)"]
+    E & F --> G["Estimated realized price + provenance-aware confidence"]
+    G --> H["CLI - REST API - web form"]
 ```
 
 **Two-tier engine**
@@ -91,6 +102,23 @@ The problem naturally splits into three models; conflating them is what makes na
 | **ClosingDiscount** `log(closing / asking)` | How far from asking does it truly close? | fallback prior → ML on real labels |
 
 A delisted listing is **not** necessarily a sale (the seller may have withdrawn, relisted, or switched agents), so `removed = sold` is deliberately avoided.
+
+## Broker Data Flywheel
+
+The scarce input — a paired `asking → closing` label — is collected through a **listing-outcome pipeline**, not a sold-only form. A broker (or the app) records the *outcome* of a listing and receives free **negotiation analytics** in return. That exchange is the flywheel, and it is a **first-class source for `RealValuator`**.
+
+- **Outcomes collected:** `sold` · `withdrawn` · `expired` · `active` · `lost_to_other` · `unknown`. Closing-price fields appear **only** for `sold` — a delisting is never assumed to be a sale (this later trains **SaleProbability**).
+- **Honest confidence:** a broker's self-reported closing does **not** get confidence `A`. It defaults to `B`, and is promoted to `A` only when independently verified (`evidence_verified`); declared deed values are `C`. Schema fields `evidence_type` / `evidence_verified` exist; document upload is intentionally deferred.
+- **Analytics returned (non-ML, immediate):** transaction count, median & mean asking-to-closing discount, days to close, price-cut count, and discount split by price-cut status. The same function runs on a broker's own records and on the aggregate dataset, so **broker-vs-benchmark** comparison is ready to switch on once enough anonymized data accumulates.
+
+```bash
+sold flywheel record sold --province İstanbul --last-asking 3200000 \
+     --sold-price 2900000 --price-cuts 1 --days-to-close 40
+sold flywheel record withdrawn --province İzmir --last-asking 1500000
+sold flywheel analytics
+```
+
+Equivalent REST endpoints: `POST /outcome` and `GET /analytics`. Sold arm's-length outcomes feed **ClosingDiscount**; all outcomes feed **SaleProbability** — the two stay separate conceptual components.
 
 ## Data Sources
 
@@ -225,9 +253,10 @@ Negotiation-margin figures from Turkish market reporting: İstanbul ≈ 10%, Ank
 - [x] Real TCMB/TÜİK data pipeline (KFE, sales, TL/m²) with weekly auto-refresh
 - [x] Fallback valuation engine (published margin prior + demand adjustment)
 - [x] Provenance-aware ground-truth labels with automatic ML takeover
-- [ ] **SaleProbability** model (`P(sold ≤ N days)`) — stop treating delisting as a sale
-- [ ] **Broker data flywheel** — a closing-price entry form that returns free negotiation analytics
-- [ ] Institutional label sources — research access to TKGM Tapu Güvenilir Hesap, GABİM/TADEBİS appraisal data, TÜİK microdata
+- [x] **Broker Data Flywheel** — listing-outcome collection + non-ML negotiation analytics
+- [ ] **SaleProbability** model (`P(sold ≤ N days)`) trained on collected outcomes
+- [ ] Broker-vs-benchmark analytics over an aggregate anonymized dataset
+- [ ] Institutional label sources — TKGM Tapu Güvenilir Hesap, GABİM/TADEBİS, TÜİK microdata
 - [ ] Public dashboard (GitHub Pages)
 
 ## Legal & Ethics

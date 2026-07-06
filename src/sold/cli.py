@@ -1021,6 +1021,121 @@ def model_calibrate_cmd(
     typer.echo(result.to_string(index=False))
 
 
+# --------------------------------------------------------------------------- #
+# Broker veri flywheel (ilan sonucu + müzakere analitiği)
+# --------------------------------------------------------------------------- #
+flywheel_app = typer.Typer(
+    help="Broker veri flywheel: ilan sonucu toplama + müzakere analitiği",
+    no_args_is_help=True,
+)
+app.add_typer(flywheel_app, name="flywheel")
+
+
+@flywheel_app.command("record")
+def flywheel_record_cmd(
+    outcome: str = typer.Argument(
+        ..., help="sold/withdrawn/expired/active/lost_to_other/unknown"
+    ),
+    province: str = typer.Option("İstanbul", help="İl"),
+    district: str = typer.Option("", help="İlçe"),
+    gross_m2: float = typer.Option(0.0, help="Brüt m²"),
+    initial_asking: float = typer.Option(0.0, help="İlk ilan fiyatı, TL"),
+    last_asking: float = typer.Option(0.0, help="Son ilan fiyatı, TL"),
+    price_cuts: int = typer.Option(0, help="Fiyat düşürme sayısı"),
+    days_on_market: int = typer.Option(0, help="İlanda kalma (gün)"),
+    sold_price: float = typer.Option(0.0, help="Satış fiyatı (YALNIZCA outcome=sold)"),
+    days_to_close: int = typer.Option(0, help="Kapanışa kadar gün (yalnızca sold)"),
+    sale_mode: str = typer.Option("arm_length", help="arm_length/auction/related_party/unknown"),
+    source: str = typer.Option("broker", help="Broker kimliği"),
+    label_source: str = typer.Option("", help="broker_closing/bank_transfer_observed/deed_declared/..."),
+    evidence_type: str = typer.Option("none", help="none/screenshot/contract/bank_receipt/deed"),
+    verified: bool = typer.Option(False, "--verified", help="Bağımsız doğrulandı (güven A)"),
+) -> None:
+    """Bir ilan SONUCU kaydeder (sadece satış değil). Kapanış alanları yalnızca 'sold'da geçerli."""
+    from .db import get_engine, get_sessionmaker, init_db
+    from .flywheel import OutcomeError, record_outcome
+
+    rec = {
+        "outcome": outcome,
+        "province": province,
+        "district": district or None,
+        "gross_m2": gross_m2 or None,
+        "initial_asking_price": initial_asking or None,
+        "last_asking_price": last_asking or None,
+        "price_cut_count": price_cuts,
+        "days_on_market": days_on_market or None,
+        "sold_price": sold_price or None,
+        "days_to_close": days_to_close or None,
+        "sale_mode": sale_mode,
+        "source": source,
+        "label_source": label_source or None,
+        "evidence_type": evidence_type,
+        "evidence_verified": verified,
+    }
+    engine = get_engine()
+    init_db(engine)
+    try:
+        with get_sessionmaker(engine)() as session:
+            row = record_outcome(session, rec)
+            session.commit()
+            conf = row.label_confidence
+    except OutcomeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    typer.secho(f"Kaydedildi: outcome={outcome} · güven={conf}", fg=typer.colors.GREEN)
+    if outcome == "sold" and conf != "A":
+        typer.echo("Not: öz-beyan güveni B; bağımsız doğrulamada --verified ile A olur.")
+
+
+@flywheel_app.command("analytics")
+def flywheel_analytics_cmd(
+    source: str = typer.Option("", help="Sadece bu broker (boş = tümü)"),
+) -> None:
+    """Müzakere analitiği (NON-ML): indirim, kapanış süresi, fiyat-kesinti, işlem sayısı."""
+    from .db import get_engine, get_sessionmaker, init_db
+    from .flywheel import load_outcomes, negotiation_analytics
+
+    engine = get_engine()
+    init_db(engine)
+    with get_sessionmaker(engine)() as session:
+        df = load_outcomes(session, source or None)
+
+    a = negotiation_analytics(df)
+    if a["transaction_count"] == 0:
+        typer.secho(
+            f"arm_length satış yok (toplam sonuç: {a['total_outcomes']}).",
+            fg=typer.colors.YELLOW,
+        )
+        if a["outcome_counts"]:
+            typer.echo(f"  Sonuç dağılımı: {a['outcome_counts']}")
+        raise typer.Exit()
+
+    typer.secho("Müzakere analitiği — GERÇEK, NON-ML", fg=typer.colors.CYAN, bold=True)
+    typer.echo(
+        f"  İşlem (arm_length satış): {a['transaction_count']} / toplam sonuç {a['total_outcomes']}"
+    )
+    typer.echo(
+        f"  İlan→satış indirimi: medyan %{a['median_discount_pct']:.1f} · "
+        f"ortalama %{a['mean_discount_pct']:.1f}"
+    )
+    typer.echo(
+        f"  Kapanış süresi: medyan {a['median_days_to_close']:.0f} gün · "
+        f"ortalama {a['mean_days_to_close']:.0f} gün"
+    )
+    typer.echo(
+        f"  Fiyat düşürme: medyan {a['median_price_cuts']:.1f} · "
+        f"ortalama {a['mean_price_cuts']:.1f}"
+    )
+    for key, label in (("no_cut", "fiyat düşürmeyen"), ("with_cut", "fiyat düşüren")):
+        d = a["discount_by_price_cut"].get(key)
+        if d:
+            typer.echo(
+                f"    {label}: n={d['count']} · ort. indirim %{d['mean_discount_pct']:.1f}"
+            )
+    typer.echo(f"  Sonuç dağılımı: {a['outcome_counts']}")
+
+
 @app.command("serve")
 def serve_cmd(
     host: str = typer.Option("127.0.0.1", help="Dinlenecek adres"),

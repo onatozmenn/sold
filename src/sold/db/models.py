@@ -190,3 +190,54 @@ class GroundTruthSale(Base):
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class ListingOutcome(Base):
+    """Broker veri flywheel — bir ilanın YAŞAM DÖNGÜSÜ sonucu (yalnızca satış değil).
+
+    SaleProbability tüm sonuçlardan; ClosingDiscount yalnızca ``outcome='sold'`` +
+    ``sale_mode='arm_length'`` alt kümesinden eğitilir. Kapanış alanları
+    (sold_price, sale_date, days_to_close) SADECE 'sold' sonucunda doldurulur.
+
+    Kanıt (evidence) alanları şema için hazır; belge yükleme HENÜZ yok. Güven:
+    broker'ın kendi beyanı varsayılan 'B'; bağımsız doğrulanırsa 'A'.
+    """
+
+    __tablename__ = "listing_outcomes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source: Mapped[str | None] = mapped_column(String(64))  # broker kimliği/adı
+    listing_ref: Mapped[str | None] = mapped_column(String(256))  # ilan URL/ID (opsiyonel)
+    listing_type: Mapped[str | None] = mapped_column(String(16))
+    # Konum + nitelik
+    province: Mapped[str | None] = mapped_column(String(64))
+    district: Mapped[str | None] = mapped_column(String(64))
+    neighborhood: Mapped[str | None] = mapped_column(String(128))
+    gross_m2: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    net_m2: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    room_count: Mapped[str | None] = mapped_column(String(16))
+    building_age: Mapped[int | None] = mapped_column(Integer)
+    floor: Mapped[int | None] = mapped_column(Integer)
+    total_floors: Mapped[int | None] = mapped_column(Integer)
+    heating: Mapped[str | None] = mapped_column(String(64))
+    # Fiyat yaşam döngüsü
+    initial_asking_price: Mapped[float | None] = mapped_column(Numeric(16, 2))
+    last_asking_price: Mapped[float | None] = mapped_column(Numeric(16, 2))
+    price_cut_count: Mapped[int | None] = mapped_column(Integer)
+    listing_date: Mapped[dt.date | None] = mapped_column()
+    days_on_market: Mapped[int | None] = mapped_column(Integer)
+    # SONUÇ (yaşam döngüsü) — sold/withdrawn/expired/active/lost_to_other/unknown
+    outcome: Mapped[str] = mapped_column(String(24), nullable=False)
+    # Kapanış — SADECE outcome='sold'
+    sold_price: Mapped[float | None] = mapped_column(Numeric(16, 2))
+    sale_date: Mapped[dt.date | None] = mapped_column()
+    days_to_close: Mapped[int | None] = mapped_column(Integer)
+    sale_mode: Mapped[str | None] = mapped_column(String(24))  # arm_length/auction/...
+    # Provenance / kanıt
+    label_source: Mapped[str | None] = mapped_column(String(32))
+    label_confidence: Mapped[str | None] = mapped_column(String(1))  # A/B/C
+    evidence_type: Mapped[str | None] = mapped_column(String(32))  # none/screenshot/contract/...
+    evidence_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

@@ -64,3 +64,62 @@ def test_add_ground_truth(tmp_path, monkeypatch):
     assert data["added"] is True
     assert data["total_labels"] == 1
     assert data["discount_pct"] == pytest.approx(6.67, abs=0.05)
+
+
+def test_outcome_and_analytics(tmp_path, monkeypatch):
+    db = tmp_path / "flywheel.db"
+    monkeypatch.setattr(
+        "sold.config.settings.database_url",
+        f"sqlite:///{db.as_posix()}",
+        raising=False,
+    )
+    r = client.post(
+        "/outcome",
+        json={
+            "outcome": "sold",
+            "province": "İstanbul",
+            "last_asking_price": 3_000_000,
+            "sold_price": 2_700_000,
+            "price_cut_count": 1,
+            "days_to_close": 40,
+            "sale_mode": "arm_length",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["label_confidence"] == "B"  # broker öz-beyanı otomatik A değil
+
+    r2 = client.post(
+        "/outcome",
+        json={
+            "outcome": "withdrawn",
+            "province": "İstanbul",
+            "last_asking_price": 1_500_000,
+            "sold_price": 999,  # kapanış alanı yok sayılmalı
+        },
+    )
+    assert r2.status_code == 200
+    assert r2.json()["outcome"] == "withdrawn"
+
+    r3 = client.get("/analytics")
+    assert r3.status_code == 200
+    data = r3.json()
+    assert data["transaction_count"] == 1
+    assert data["total_outcomes"] == 2
+
+
+def test_outcome_sold_requires_price(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "sold.config.settings.database_url",
+        f"sqlite:///{(tmp_path / 'fw2.db').as_posix()}",
+        raising=False,
+    )
+    assert client.post("/outcome", json={"outcome": "sold"}).status_code == 422
+
+
+def test_outcome_invalid_rejected(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "sold.config.settings.database_url",
+        f"sqlite:///{(tmp_path / 'fw3.db').as_posix()}",
+        raising=False,
+    )
+    assert client.post("/outcome", json={"outcome": "banana"}).status_code == 422
