@@ -1391,14 +1391,14 @@ def structural_value_cmd(
     asking: float = typer.Argument(..., help="İlan (asking) fiyatı, TL"),
     province: str = typer.Option("İstanbul", help="İl"),
     gross_m2: float = typer.Option(100.0, help="Brüt m²"),
-    kfe_factor: float = typer.Option(1.0, help="KFE/YÖKFE zaman çarpanı (endeks_t/baz)"),
     tightness: float = typer.Option(0.0, help="Piyasa sıkılığı (TÜİK hacminden; 0=nötr)"),
 ) -> None:
-    """Sıradan ilan için YAPISAL closing dağılımı — gözlenen fiyat DEĞİL.
+    """Sıradan ilan için YAPISAL-YÖNTEM PROTOTİPİ closing dağılımı — gözlenen fiyat DEĞİL.
 
     asking, satıcı rezervasyonuna GÜRÜLTÜLÜ sinyaldir (tavan değil). Fair value TCMB
-    ekspertiz TL/m²'ye çıpalıdır. θ şu an ÖNSEL'dir (SMM ile gerçek veriye kalibre
-    edilmemiştir); çıktı yapısal bir çıkarımdır, ölçülen doğruluk değildir.
+    çağdaş ekspertiz TL/m²'ye çıpalıdır (EK KFE çarpanı YOK — çift-sayım önlenir). θ şu an
+    PROVİZYONEL'dir (kimliklendirme raporu desteklemeden ölçülen model DEĞİL); çıktı
+    sensitivity modunda bir yapısal-yöntem prototipidir.
     """
     from .model.synthetic import load_province_ppm2
     from .structural import (
@@ -1408,7 +1408,7 @@ def structural_value_cmd(
     )
 
     ppm2 = load_province_ppm2().get(province)
-    fv = tcmb_fair_value(ppm2, gross_m2, kfe_factor=kfe_factor)
+    fv = tcmb_fair_value(ppm2, gross_m2)  # çağdaş çıpa; EK KFE ÇARPANI YOK
     if fv is None:
         typer.secho(
             f"{province} için TCMB ekspertiz TL/m² bulunamadı (gross_m2 > 0 olmalı).",
@@ -1416,15 +1416,16 @@ def structural_value_cmd(
         )
         raise typer.Exit(code=1)
 
-    out = StructuralClosingPredictor(StructuralParams()).predict(
+    # identified=False → sensitivity mode (kimliklendirilmiş SMM tahmini yok)
+    out = StructuralClosingPredictor(StructuralParams(), identified=False).predict(
         asking, fv, tightness=tightness
     )
     typer.secho(
-        "YAPISAL closing çıkarımı (θ ÖNSEL — SMM ile kalibre EDİLMEMİŞ)",
+        "YAPISAL-YÖNTEM PROTOTİPİ (θ PROVİZYONEL — kimliklendirilmemiş; sensitivity mode)",
         fg=typer.colors.CYAN,
         bold=True,
     )
-    typer.echo(f"  İlan: {asking:,.0f} TL · Fair value (TCMB ekspertiz çıpalı): {fv:,.0f} TL")
+    typer.echo(f"  İlan: {asking:,.0f} TL · Fair value (TCMB çağdaş ekspertiz çıpası): {fv:,.0f} TL")
     med = out["inferred_closing_median"]
     if med is None:
         typer.secho("  Bu senaryoda ticaret olasılığı ~0.", fg=typer.colors.YELLOW)
@@ -1432,7 +1433,7 @@ def structural_value_cmd(
         lo, hi = out["interval_80"]
         typer.echo(f"  Çıkarımsal closing: medyan {med:,.0f} · ortalama {out['inferred_closing_mean']:,.0f} TL")
         typer.echo(f"  %80 yapısal aralık: {lo:,.0f} – {hi:,.0f} TL")
-    typer.echo(f"  Ticaret olasılığı: {out['trade_probability']:.2f}")
+    typer.echo(f"  Ticaret olasılığı: {out['trade_probability']:.2f}  ·  mod: {out['mode']}")
     band = out["mechanism_transfer_sensitivity"].get("median_band")
     if band and band[0] is not None:
         typer.echo(f"  Mekanizma-transfer duyarlılığı (medyan bandı): {band[0]:,.0f} – {band[1]:,.0f} TL")
@@ -1480,6 +1481,114 @@ def structural_estimate_cmd(
         "veri kümesi genişletmesi + gerçek SMM tahmini.",
         fg=typer.colors.YELLOW,
     )
+
+
+@structural_app.command("identify")
+def structural_identify_cmd(
+    auctions_file: Optional[Path] = typer.Option(None, "--auctions", help="UYAP açık artırma kayıtları (JSON)"),
+    kap_file: Optional[Path] = typer.Option(None, "--kap", help="KAP elden çıkarma kayıtları (JSON)"),
+    toki_file: Optional[Path] = typer.Option(None, "--toki", help="TOKİ açıklamaları (JSON)"),
+    demo: bool = typer.Option(False, "--demo", help="Sentetik veriyle diagnostiği göster"),
+) -> None:
+    """Yapısal KİMLİKLENDİRME raporu: dataset sayıları + Jacobian rank/SVD/koşul + profiller.
+
+    Optimizer yakınsaması KİMLİKLENDİRME DEĞİLDİR. rank(J) < dim(θ) ise NOT_IDENTIFIED ve
+    tahmin sensitivity moduna geçer. Epistemik katı: veri yoksa 0 raporlanır (uydurma yok).
+    """
+    import json
+
+    import numpy as np
+
+    from .structural import (
+        DEFAULT_FREE,
+        MomentContext,
+        StructuralParams,
+        context_from_datasets,
+        difference_disclosures,
+        identification_report,
+        kap_observed_moments,
+        load_auctions,
+        load_kap_disposals,
+        observed_moments,
+        simulate_negotiations,
+        uyap_observed_moments,
+    )
+
+    auctions_df = kap_df = None
+    toki_res = None
+    m_obs: dict = {}
+
+    if demo:
+        theta0 = StructuralParams(eta=0.6)
+        rng = np.random.default_rng(7)
+        V = np.ones(20000)
+        neg = simulate_negotiations(rng, V, theta0, 20000, mechanism="kap")
+        tr = neg["traded"]
+        m_obs = observed_moments(kap_realized=neg["price"][tr], kap_appraisal=V[tr])
+        ctx = MomentContext(
+            auction_appraised=np.array([]), auction_floors=np.array([]),
+            kap_appraisal=np.ones(60), reps=300,
+        )
+    else:
+        if auctions_file:
+            auctions_df = load_auctions(
+                json.loads(Path(auctions_file).read_text(encoding="utf-8"))
+            )
+            m_obs.update(uyap_observed_moments(auctions_df))
+        if kap_file:
+            kap_df = load_kap_disposals(
+                json.loads(Path(kap_file).read_text(encoding="utf-8"))
+            )
+            m_obs.update(kap_observed_moments(kap_df))
+        if toki_file:
+            toki_res = difference_disclosures(
+                json.loads(Path(toki_file).read_text(encoding="utf-8"))
+            )
+        ctx = context_from_datasets(auctions_df, kap_df)
+
+    rep = identification_report(
+        ctx, StructuralParams(), DEFAULT_FREE, m_obs=m_obs,
+        auctions=auctions_df, kap=kap_df, toki_result=toki_res,
+    )
+    ds = rep["dataset"]
+    typer.secho("Yapısal kimliklendirme raporu", fg=typer.colors.CYAN, bold=True)
+    typer.echo(
+        f"  UYAP: toplam {ds['uyap_total']} · satılan {ds['uyap_sold']} · "
+        f"satılmayan {ds['uyap_unsold']}"
+    )
+    typer.echo(
+        f"        teklif gözlemli {ds['uyap_offer_count_observed']} · artıran gözlemli "
+        f"{ds['uyap_bidder_count_observed']} · tam yasal-taban {ds['uyap_exact_legal_floor_observed']}"
+    )
+    typer.echo(f"  KAP müzakereli elden çıkarma: {ds['kap_negotiated_disposals']}")
+    typer.echo(f"  TOKİ geçerli proje-dönem strata: {ds['toki_valid_project_period_strata']}")
+    typer.echo(
+        f"  Yapısal parametre (dim θ): {rep['n_structural_parameters']} · "
+        f"gözlenen moment: {rep['n_observed_moments']}"
+    )
+    color = typer.colors.GREEN if rep["status"] == "IDENTIFIED" else typer.colors.RED
+    typer.secho(
+        f"  DURUM: {rep['status']}  (rank {rep['rank']} / dim {rep['n_structural_parameters']}) "
+        f"· mod: {rep['prediction_mode']}",
+        fg=color,
+        bold=True,
+    )
+    if rep.get("singular_values"):
+        sv = ", ".join(f"{x:.2e}" for x in rep["singular_values"])
+        typer.echo(f"  Tekil değerler: [{sv}]  ·  koşul sayısı: {rep['condition_number']:.2e}")
+    for wd in rep.get("weakly_identified_directions", []):
+        typer.echo(f"  Zayıf-kimliklendirilmiş yön (s={wd['singular_value']:.2e}): {wd['direction']}")
+    for pname, pr in (rep.get("profiles") or {}).items():
+        rr = pr.get("relative_range")
+        flag = "ZAYIF" if pr.get("weakly_identified") else "belirgin"
+        rr_txt = f"{rr:.2e}" if isinstance(rr, (int, float)) else "—"
+        typer.echo(f"  Profil {pname}: göreli hedef aralığı {rr_txt} → {flag}")
+    if rep["status"] != "IDENTIFIED":
+        typer.secho(
+            "  Not: rank < dim → optimizer sonucu NOKTA TAHMİNİ olarak SUNULMAZ; sensitivity "
+            "mode. (Optimizer yakınsaması ≠ kimliklendirme.) Sonraki iş: veri kümesi genişletmesi.",
+            fg=typer.colors.YELLOW,
+        )
 
 
 @app.command("serve")

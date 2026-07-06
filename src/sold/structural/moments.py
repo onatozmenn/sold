@@ -46,6 +46,17 @@ def _ratio_moments(values: np.ndarray, prefix: str) -> dict:
     }
 
 
+def _log_ratio_moments(ratio: np.ndarray, prefix: str) -> dict:
+    """log(oran) momentleri (KAP: log(sale/appraisal)). mean + sd (SMM eşlemesi)."""
+    r = np.asarray(ratio, dtype=float)
+    r = r[np.isfinite(r) & (r > 0)]
+    lr = np.log(r) if r.size else r
+    return {
+        f"{prefix}_mean": float(lr.mean()) if lr.size else float("nan"),
+        f"{prefix}_sd": float(lr.std()) if lr.size > 1 else 0.0,
+    }
+
+
 def observed_moments(
     auctions: pd.DataFrame | None = None,
     kap_realized=None,
@@ -66,7 +77,7 @@ def observed_moments(
         a = np.asarray(kap_appraisal, dtype=float)
         with np.errstate(invalid="ignore", divide="ignore"):
             ratio = np.where(a > 0, r / a, np.nan)
-        out.update(_ratio_moments(ratio, "kap_realized_over_appraisal"))
+        out.update(_log_ratio_moments(ratio, "kap_log_ratio"))
     if toki_moments:
         out.update(toki_moments)  # agregat kompozisyon (simülatör eşlemezse SMM'e girmez)
     return out
@@ -95,8 +106,44 @@ def simulated_moments(
         traded = neg["traded"]
         with np.errstate(invalid="ignore", divide="ignore"):
             ratio = np.where(traded & (V > 0), neg["price"] / V, np.nan)
-        out.update(_ratio_moments(ratio, "kap_realized_over_appraisal"))
+        out.update(_log_ratio_moments(ratio, "kap_log_ratio"))
     return out
+
+
+def context_from_datasets(
+    auctions: pd.DataFrame | None = None,
+    kap: pd.DataFrame | None = None,
+    tightness: float = 0.0,
+    reps: int = 200,
+) -> MomentContext:
+    """Gerçek yapısal veri kümelerinden SMM bağlamı kurar (gözlem ile sim AYNI Q/ekspertiz).
+
+    Açık artırma Q ve yasal tabanları (per-auction) ve KAP ekspertiz referansları alınır.
+    Teklif sayısı TÜM satırlarda gözlemliyse ``auction_bidders`` olarak korunur; aksi halde
+    None (Poisson varış). UYDURMA YOK.
+    """
+    aQ = np.array([], dtype=float)
+    aF = np.array([], dtype=float)
+    bidders = None
+    if auctions is not None and len(auctions):
+        q = pd.to_numeric(auctions["appraised_value"], errors="coerce")
+        adf = auctions[q > 0]
+        aQ = pd.to_numeric(adf["appraised_value"], errors="coerce").to_numpy(float)
+        aF = pd.to_numeric(adf["legal_floor"], errors="coerce").to_numpy(float)
+        bc = pd.to_numeric(adf["bidder_count"], errors="coerce")
+        if len(adf) and bc.notna().all():
+            bidders = bc.to_numpy(int)
+    kV = np.array([], dtype=float)
+    if kap is not None and len(kap):
+        kV = pd.to_numeric(kap["appraisal_value"], errors="coerce").dropna().to_numpy(float)
+    return MomentContext(
+        auction_appraised=aQ,
+        auction_floors=aF,
+        kap_appraisal=kV,
+        tightness=tightness,
+        reps=reps,
+        auction_bidders=bidders,
+    )
 
 
 def align(m_obs: dict, m_sim: dict) -> tuple[np.ndarray, np.ndarray, list[str]]:

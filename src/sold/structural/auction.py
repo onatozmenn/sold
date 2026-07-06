@@ -9,31 +9,41 @@ sayısı gözlemlenebiliyorsa KORUNUR.
 KRİTİK YASAL-TABAN DÜZELTMESİ (İİK): ``muhammen_bedel`` YAPISAL REZERV DEĞİLDİR;
 EKSPERTİZ değeri Q'dur. Kabul tabanı kanunî kuraldır:
 
-    legal_floor = max( 0.5·Q ,  priority_claims + realization_costs )
+    legal_floor = max( 0.5·Q , priority_claims ) + realization_costs
 
 bileşenler gözlemlendiğinde. Gözlemlenmezse taban KISMEN gözlemlidir (``legal_floor_exact
 = False``) — UYDURULMAZ; gözlenen bileşenlerle bir ALT SINIR verilir (gözlenmeyen = 0
-alınır, ama bu bir alt sınırdır ve exact=False ile işaretlenir).
+alınır, ama bu bir alt sınırdır ve exact=False ile işaretlenir). Alan semantiği KORUNUR:
+parsel alanı, birim net ve birim brüt alan BİRBİRİNİN YERİNE GEÇİRİLMEZ.
 """
 
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 
 from .params import StructuralParams
 
-# Açık artırma-model veri kümesi alanları (muhammen_bedel = appraised_value Q)
+# YAPISAL açık artırma gözlem şeması (muhammen_bedel = appraised_value Q; rezerv DEĞİL)
 AUCTION_FIELDS = (
+    "public_record_id",    # kamuya açık kayıt/dosya kimliği
+    "auction_date",
+    "province",
+    "district",
+    "property_type",
     "appraised_value",     # Q = muhammen_bedel (EKSPERTİZ — rezerv DEĞİL)
-    "sold",                # bool: ihale gerçekleşti mi
-    "winning_bid",         # satıldıysa kazanan teklif
-    "bidder_count",        # gözlemlenebiliyorsa teklif veren sayısı
+    "sold",                # bool: ihale gerçekleşti mi (SATILAN + SATILMAYAN toplanır)
+    "winning_bid",         # satıldıysa kazanan teklif (unsold → None)
+    "offer_count",         # verilen teklif sayısı (opsiyonel)
+    "bidder_count",        # teklif veren sayısı (opsiyonel)
     "priority_claims",     # rüçhanlı alacaklar (opsiyonel)
     "realization_costs",   # paraya çevirme/paylaştırma masrafları (opsiyonel)
     "legal_floor",         # türetilmiş kanunî taban (kısmî olabilir)
-    "legal_floor_exact",   # taban tam gözlemlendi mi (bileşenler mevcut)
-    "province",
-    "district",
+    "legal_floor_exact",   # taban tam gözlemlendi mi (her iki bileşen mevcut)
+    "parcel_area_m2",      # parsel yüzey alanı (birim alanı DEĞİL)
+    "unit_net_m2",         # birim net alanı (parsel/brüt DEĞİL)
+    "unit_gross_m2",       # birim brüt alanı (parsel/net DEĞİL)
+    "source_audited",      # kayıt elle denetlendi mi
 )
 
 
@@ -44,58 +54,83 @@ def legal_floor(
 ) -> tuple[float, bool]:
     """Kanunî kabul tabanını (İİK) ve TAM gözlemli olup olmadığını döndürür.
 
-    floor = max(0.5·Q, priority_claims + realization_costs). Q = ekspertiz değeri
-    (muhammen_bedel) — rezerv OLARAK EŞİTLENMEZ. Her iki bileşen de gözlemliyse
-    ``exact=True``; değilse gözlenmeyen bileşen 0 alınır (ALT SINIR) ve ``exact=False``
-    (UYDURMA YOK — kısmen gözlemli). Q ayrı olarak korunur.
+        legal_floor = max(0.5·Q, priority_claims) + realization_costs
+
+    Q = ekspertiz değeri (muhammen_bedel) — rezerv OLARAK EŞİTLENMEZ. Her iki bileşen de
+    gözlemliyse ``exact=True``. Bir bileşen eksikse UYDURULMAZ: gözlenmeyen 0 alınır (bu
+    bir ALT SINIRdır), ``exact=False`` ve gözlenen bileşenler korunur.
     """
     Q = float(appraised_value)
     half = 0.5 * Q
-    if priority_claims is not None and realization_costs is not None:
-        floor = max(half, float(priority_claims) + float(realization_costs))
-        return floor, True
+    exact = priority_claims is not None and realization_costs is not None
     pc = float(priority_claims) if priority_claims is not None else 0.0
     rc = float(realization_costs) if realization_costs is not None else 0.0
-    return max(half, pc + rc), False
+    floor = max(half, pc) + rc
+    return floor, exact
+
+
+def _num(v: object) -> float | None:
+    try:
+        if v is None or v == "" or (isinstance(v, float) and v != v):
+            return None
+        f = float(v)
+        return f if f != 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def normalize_auction(rec: dict) -> dict:
-    """Ham açık artırma kaydını yapısal veri kümesine normalize eder.
+    """Ham açık artırma kaydını YAPISAL veri kümesine normalize eder.
 
     ``muhammen_bedel``/``appraised_value`` → Q (rezerv DEĞİL). ``legal_floor`` ve
-    ``legal_floor_exact`` bileşenlerden türetilir (kısmî olabilir).
+    ``legal_floor_exact`` bileşenlerden türetilir (kısmî olabilir). ALAN SEMANTİĞİ
+    KORUNUR: parsel / birim-net / birim-brüt alanı birbirinin yerine GEÇİRİLMEZ (her biri
+    kendi kaynağından alınır, eksikse None). SATILAN + SATILMAYAN açık artmalar toplanır.
     """
     Q = rec.get("appraised_value", rec.get("muhammen_bedel"))
     if Q in (None, "", 0):
         raise ValueError("appraised_value (muhammen_bedel = ekspertiz Q) zorunlu.")
     Q = float(Q)
-    pc = rec.get("priority_claims", rec.get("ruchanli_alacaklar"))
-    rc = rec.get("realization_costs", rec.get("paraya_cevirme_masraflari"))
-    pc = float(pc) if pc not in (None, "") else None
-    rc = float(rc) if rc not in (None, "") else None
+    pc = _num(rec.get("priority_claims", rec.get("ruchanli_alacaklar")))
+    rc = _num(rec.get("realization_costs", rec.get("paraya_cevirme_masraflari")))
     floor, exact = legal_floor(Q, pc, rc)
 
     sold = rec.get("sold")
     if sold is None:
         result = str(rec.get("ihale_sonucu") or rec.get("result") or "").lower()
         bid = rec.get("winning_bid", rec.get("ihale_bedeli"))
-        sold = bool(bid) and not ("satılma" in result)
-    winning = rec.get("winning_bid", rec.get("ihale_bedeli"))
-    winning = float(winning) if winning not in (None, "", 0) else None
+        sold = bool(bid) and ("satılma" not in result)
+    sold = bool(sold)
+    winning = _num(rec.get("winning_bid", rec.get("ihale_bedeli")))
+    offer = rec.get("offer_count", rec.get("teklif_sayisi"))
     bidder = rec.get("bidder_count", rec.get("katilimci_sayisi"))
-    bidder = int(bidder) if bidder not in (None, "") else None
     return {
+        "public_record_id": rec.get("public_record_id", rec.get("dosya_no")),
+        "auction_date": rec.get("auction_date", rec.get("ihale_tarihi")),
+        "province": rec.get("province", rec.get("il")),
+        "district": rec.get("district", rec.get("ilce")),
+        "property_type": rec.get("property_type", rec.get("tasinmaz_turu")),
         "appraised_value": Q,
-        "sold": bool(sold),
+        "sold": sold,
         "winning_bid": winning if sold else None,
-        "bidder_count": bidder,
+        "offer_count": int(offer) if offer not in (None, "") else None,
+        "bidder_count": int(bidder) if bidder not in (None, "") else None,
         "priority_claims": pc,
         "realization_costs": rc,
         "legal_floor": floor,
         "legal_floor_exact": exact,
-        "province": rec.get("province", rec.get("il")),
-        "district": rec.get("district", rec.get("ilce")),
+        # Alan semantiği: her biri kendi kaynağından; ASLA birbirinin yerine geçirilmez
+        "parcel_area_m2": _num(rec.get("parcel_area_m2", rec.get("parsel_alani_m2"))),
+        "unit_net_m2": _num(rec.get("unit_net_m2", rec.get("birim_net_m2"))),
+        "unit_gross_m2": _num(rec.get("unit_gross_m2", rec.get("birim_brut_m2"))),
+        "source_audited": bool(rec.get("source_audited", False)),
     }
+
+
+def load_auctions(records: list[dict]) -> pd.DataFrame:
+    """Yapısal açık artma kayıtlarını normalize edip DataFrame'e yükler."""
+    rows = [normalize_auction(r) for r in records]
+    return pd.DataFrame(rows, columns=list(AUCTION_FIELDS))
 
 
 def simulate_auctions(
@@ -147,3 +182,44 @@ def auction_moments(sold, win_over_appraisal) -> dict:
         "uyap_win_over_appraisal_mean": float(ratios.mean()) if ratios.size else float("nan"),
         "uyap_win_over_appraisal_sd": float(ratios.std()) if ratios.size > 1 else 0.0,
     }
+
+
+def uyap_observed_moments(auctions: pd.DataFrame, floor_band: float = 0.05) -> dict:
+    """Gerçek UYAP veri kümesinden ZENGİN betimsel momentler (identification raporu için).
+
+    Destekler: satış olasılığı; koşullu kazanan/ekspertiz oranı mean/var/quantiles;
+    yasal tabana YAKIN kütle (kazanan/floor ≤ 1+band); teklif/artıran sayısı dağılımı
+    (gözlemli olduğunda). UYDURMA YOK: eksik bileşenler sayıma katılmaz.
+    """
+    if auctions is None or len(auctions) == 0:
+        return {"uyap_sale_prob": float("nan"), "uyap_n": 0}
+    sold = auctions["sold"].astype(bool).to_numpy()
+    Q = pd.to_numeric(auctions["appraised_value"], errors="coerce").to_numpy(float)
+    win = pd.to_numeric(auctions["winning_bid"], errors="coerce").to_numpy(float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ratio = np.where(sold & (Q > 0), win / Q, np.nan)
+    r = ratio[np.isfinite(ratio)]
+    out: dict = {
+        "uyap_n": int(len(auctions)),
+        "uyap_sale_prob": float(sold.mean()),
+        "uyap_win_over_appraisal_mean": float(r.mean()) if r.size else float("nan"),
+        "uyap_win_over_appraisal_var": float(r.var()) if r.size > 1 else float("nan"),
+        "uyap_win_over_appraisal_q25": float(np.quantile(r, 0.25)) if r.size else float("nan"),
+        "uyap_win_over_appraisal_q50": float(np.quantile(r, 0.50)) if r.size else float("nan"),
+        "uyap_win_over_appraisal_q75": float(np.quantile(r, 0.75)) if r.size else float("nan"),
+    }
+    # Yasal tabana yakın kütle (kazanan teklif floor'un hemen üstünde mi)
+    floor = pd.to_numeric(auctions["legal_floor"], errors="coerce").to_numpy(float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        near = np.where(sold & (floor > 0), win / floor, np.nan)
+    near = near[np.isfinite(near)]
+    if near.size:
+        out["uyap_mass_near_floor"] = float(np.mean(near <= 1.0 + floor_band))
+    # Teklif / artıran sayısı dağılımı (gözlemli olduğunda)
+    for col, key in (("offer_count", "uyap_offer_count"), ("bidder_count", "uyap_bidder_count")):
+        vals = pd.to_numeric(auctions[col], errors="coerce").dropna()
+        out[f"{key}_observed"] = int(len(vals))
+        if len(vals):
+            out[f"{key}_mean"] = float(vals.mean())
+    return out
+

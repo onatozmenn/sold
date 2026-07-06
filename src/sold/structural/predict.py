@@ -19,17 +19,30 @@ import numpy as np
 from .bargaining import draw_buyer_values, draw_seller_values, negotiated_price
 from .params import StructuralParams
 
-DISCLAIMER = (
-    "YAPISAL ÇIKARIM — gözlenen closing fiyatı veya ölçülen sıradan-yeniden-satış "
-    "doğruluğu DEĞİL. Sonuç, mekanizma-transfer varsayımlarına duyarlıdır."
+DISCLAIMER_PROTOTYPE = (
+    "YAPISAL-YÖNTEM PROTOTİPİ — PROVİZYONEL yapısal parametrelerle simülasyon tahmini. "
+    "Kimliklendirme (identification) raporu bu parametre vektörünü DESTEKLEMEDEN, bu bir "
+    "ölçülen Türk sıradan-yeniden-satış closing-fiyat modeli DEĞİLDİR. Sonuç mekanizma-"
+    "transfer varsayımlarına duyarlıdır (sensitivity mode)."
+)
+DISCLAIMER_IDENTIFIED = (
+    "ÇIKARIMSAL yapısal closing-fiyat DAĞILIMI — gözlenen closing fiyatı veya ölçülen "
+    "sıradan-yeniden-satış doğruluğu DEĞİL. Sonuç mekanizma-transfer varsayımlarına duyarlıdır."
 )
 
 
 class StructuralClosingPredictor:
-    """Tahmin edilmiş (veya önsel) θ ile koşullu-ticaret closing dağılımı üretir."""
+    """Tahmin edilmiş (veya provİzyonel/önsel) θ ile koşullu-ticaret closing dağılımı üretir.
 
-    def __init__(self, params: StructuralParams | None = None) -> None:
+    ``identified=False`` (varsayılan): θ henüz kimliklendirilmiş SMM tahmini DEĞİL → çıktı
+    "structural-method prototype" olarak etiketlenir ve arayüz SENSITIVITY moduna geçer.
+    """
+
+    def __init__(
+        self, params: StructuralParams | None = None, identified: bool = False
+    ) -> None:
         self.params = params or StructuralParams()
+        self.identified = bool(identified)
 
     def _draw(self, params, asking, fair_value, tightness, n, rng):
         B = draw_buyer_values(rng, fair_value, params, n, tightness)
@@ -51,6 +64,8 @@ class StructuralClosingPredictor:
         traded_prices, trade_prob = self._draw(
             self.params, asking_price, fair_value, tightness, n, rng
         )
+        mode = "identified" if self.identified else "sensitivity_mode"
+        note = DISCLAIMER_IDENTIFIED if self.identified else DISCLAIMER_PROTOTYPE
         if traded_prices.size == 0:
             return {
                 "inferred_closing_median": None,
@@ -60,7 +75,9 @@ class StructuralClosingPredictor:
                 "asking_price": float(asking_price),
                 "fair_value": float(fair_value),
                 "mechanism_transfer_sensitivity": {},
-                "note": DISCLAIMER + " (bu senaryoda ticaret olasılığı ~0).",
+                "identified": self.identified,
+                "mode": mode,
+                "note": note + " (bu senaryoda ticaret olasılığı ~0).",
             }
         median = float(np.median(traded_prices))
         mean = float(traded_prices.mean())
@@ -75,7 +92,9 @@ class StructuralClosingPredictor:
             "mechanism_transfer_sensitivity": self._sensitivity(
                 asking_price, fair_value, tightness, n, seed, median
             ),
-            "note": DISCLAIMER,
+            "identified": self.identified,
+            "mode": mode,
+            "note": note,
         }
 
     def _sensitivity(self, asking, fair_value, tightness, n, seed, base_median) -> dict:

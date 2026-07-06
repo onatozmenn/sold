@@ -5,11 +5,21 @@
    (m², yaş, kat, oda…) tahmin edilir. Katsayılar KULLANILIR ama **ilan-fiyatı
    intercept'i piyasa SEVİYESİ olarak KULLANILMAZ** (ilan fiyatları asking'tir,
    seviye olarak yanlıdır).
-2. SEVİYE çıpası: piyasa seviyesi TCMB il medyan EKSPERTİZ birim fiyatına (TL/m²) ve
-   KFE/YÖKFE zaman hareketine bağlanır. **TCMB verisi EKSPERTİZ değeridir, gerçekleşen
-   işlem DEĞİL** — bu ayrım korunur; fair value bir ekspertiz-çıpalı referanstır.
+2. SEVİYE çıpası: piyasa seviyesi TCMB il medyan EKSPERTİZ birim fiyatına (TL/m²) BAĞLANIR.
+   **TCMB verisi EKSPERTİZ değeridir, gerçekleşen işlem DEĞİL** — bu ayrım korunur.
 
-fair_value = (TCMB_il_TL/m² × m²) × göreceli_prim × KFE_trend
+ZAMANSAL ÇİFT-SAYIM YASAĞI (audit): TCMB il TL/m² bir SEVİYE çıpasıdır; KFE/YÖKFE bir
+DEĞİŞİM endeksidir. ÇAĞDAŞ (hedef döneme ait) bir TL/m² seviyesi TAM KFE seviyesiyle
+TEKRAR ÇARPILMAZ. Eğer ``unit_prices.csv`` hedef dönemin il medyan TL/m²'sini içeriyorsa
+o değer DOĞRUDAN seviye çıpası olarak kullanılır:
+
+    V_it = U_gt · gross_m2 · exp(β'·(Z_i − Z̄_gt))
+
+KFE ORANI YALNIZCA eski bir birim-fiyat çıpasını t0'dan t'ye TAŞIRKEN kullanılır:
+
+    U_gt = U_g,t0 · (KFE_gt / KFE_g,t0)
+
+Ardından hedonik göreceli-nitelik ayarlaması (çarpan) uygulanır.
 """
 
 from __future__ import annotations
@@ -85,23 +95,33 @@ class HedonicPremium:
 
 
 def tcmb_fair_value(
-    province_ppm2: float | None,
+    unit_price_tl_m2: float | None,
     gross_m2: float | None,
     premium_multiplier: float = 1.0,
-    kfe_factor: float = 1.0,
 ) -> float | None:
-    """EKSPERTİZ-çıpalı fair value = (TCMB il TL/m² × m²) × göreceli prim × KFE trend.
+    """EKSPERTİZ-çıpalı fair value = U_gt · gross_m2 · exp(β'·ΔZ) = U_gt · m² · göreceli_prim.
 
-    ``province_ppm2`` TCMB'nin il medyan ekspertiz birim fiyatıdır (gerçekleşen işlem
-    DEĞİL). ``kfe_factor`` KFE/YÖKFE ile zaman hareketi (ör. endeks_t / endeks_baz).
-    Girdi eksikse None.
+    ``unit_price_tl_m2`` = hedef dönemin ÇAĞDAŞ (ya da ``roll_unit_price`` ile t'ye TAŞINMIŞ)
+    il medyan EKSPERTİZ TL/m²'sidir (gerçekleşen işlem DEĞİL). **EK BİR TAM KFE ÇARPANI
+    UYGULANMAZ** (seviye × endeks çift-sayaca yol açar). Girdi eksikse None.
     """
-    if province_ppm2 is None or gross_m2 is None:
+    if unit_price_tl_m2 is None or gross_m2 is None:
         return None
     try:
-        base = float(province_ppm2) * float(gross_m2)
+        base = float(unit_price_tl_m2) * float(gross_m2)
     except (TypeError, ValueError):
         return None
     if base <= 0:
         return None
-    return base * float(premium_multiplier) * float(kfe_factor)
+    return base * float(premium_multiplier)
+
+
+def roll_unit_price(unit_price_t0: float, kfe_t: float, kfe_t0: float) -> float:
+    """Eski bir birim-fiyat çıpasını KFE ORANIYLA t0'dan t'ye taşır: U_gt = U_g,t0 · (KFE_t/KFE_t0).
+
+    YALNIZCA çıpa eski bir dönemden geldiğinde kullanılır; çağdaş bir çıpa DOĞRUDAN
+    (taşınmadan) kullanılır. Böylece seviye ile endeks ÇİFT SAYILMAZ.
+    """
+    if not kfe_t0:
+        raise ValueError("kfe_t0 sıfır olamaz (KFE oranı tanımsız).")
+    return float(unit_price_t0) * (float(kfe_t) / float(kfe_t0))
