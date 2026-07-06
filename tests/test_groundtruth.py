@@ -76,3 +76,44 @@ def test_period_means():
     means = period_means(df, "period", "value")
     assert means["2020"] == pytest.approx(15.0)
     assert means["2021"] == pytest.approx(30.0)
+
+
+def test_provenance_columns_in_template(tmp_path):
+    from sold.groundtruth.loader import GT_TEMPLATE_COLUMNS
+
+    df = read_csv(write_template(tmp_path / "t.csv"))
+    assert {"sale_mode", "label_source", "label_confidence"}.issubset(df.columns)
+    assert {"sale_mode", "label_source", "label_confidence"}.issubset(GT_TEMPLATE_COLUMNS)
+
+
+def test_arm_length_only_excludes_non_arm():
+    from sold.groundtruth.loader import arm_length_only
+
+    frame = pd.DataFrame(
+        {
+            "last_price": [1_000_000, 1_000_000, 1_000_000, 1_000_000],
+            "true_realized_price": [900_000, 500_000, 950_000, 900_000],
+            "sale_mode": ["arm_length", "auction", "related_party", None],
+        }
+    )
+    out = arm_length_only(frame)
+    # arm_length + None (→ arm_length varsayılan) kalır; auction/related_party düşer.
+    assert len(out) == 2
+    assert set(out["sale_mode"].fillna("arm_length")) == {"arm_length"}
+
+
+def test_discount_summary_excludes_auction():
+    from sold.groundtruth.analyze import discount_summary
+
+    frame = pd.DataFrame(
+        {
+            "last_price": [1_000_000, 1_000_000],
+            "true_realized_price": [900_000, 400_000],  # ihale %60 iskonto → dışlanmalı
+            "district": ["X", "X"],
+            "sale_mode": ["arm_length", "auction"],
+        }
+    )
+    summary = discount_summary(frame)
+    assert summary["overall"]["count"] == 1  # sadece arm_length
+    assert summary["overall"]["mean_pct"] == pytest.approx(10.0)
+

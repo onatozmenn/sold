@@ -23,6 +23,10 @@ def discount_summary(
     df = frame.dropna(subset=["last_price", "true_realized_price"]).copy()
     df = df[df["last_price"].astype(float) > 0]
 
+    from .loader import arm_length_only
+
+    df = arm_length_only(df)  # ihale/akraba satışları hariç (sale_mode varsa)
+
     if df.empty:
         return {
             "overall": {
@@ -47,6 +51,10 @@ def discount_summary(
         "p25_pct": float(df["discount_pct"].quantile(0.25)),
         "p75_pct": float(df["discount_pct"].quantile(0.75)),
     }
+    if "label_source" in df.columns and df["label_source"].notna().any():
+        overall["label_sources"] = (
+            df["label_source"].fillna("manual").value_counts().to_dict()
+        )
 
     by_district = pd.DataFrame()
     if "district" in df.columns and df["district"].notna().any():

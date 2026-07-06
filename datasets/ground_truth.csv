@@ -1,1 +1,1 @@
-source,listing_type,province,district,neighborhood,gross_m2,net_m2,room_count,building_age,floor,total_floors,heating,asking_price,sold_price,days_on_market,sale_date
+source,listing_type,province,district,neighborhood,gross_m2,net_m2,room_count,building_age,floor,total_floors,heating,asking_price,sold_price,days_on_market,sale_date,sale_mode,label_source,label_confidence

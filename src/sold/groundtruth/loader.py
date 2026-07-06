@@ -42,7 +42,38 @@ GT_TEMPLATE_COLUMNS = [
     "sold_price",
     "days_on_market",
     "sale_date",
+    "sale_mode",
+    "label_source",
+    "label_confidence",
 ]
+
+# --- Etiket kanıtı (provenance) — kritik: her etiket eşit güvenilir değildir --- #
+# Hedef, ilan fiyatının altında/üstünde el değiştiren GERÇEK işlem bedelidir.
+# Bu bedelin KAYNAĞI (label_source) ve GÜVENİLİRLİĞİ (label_confidence) modele
+# açıkça bildirilir; farklı satış türleri (sale_mode) ayrıştırılır.
+ARM_LENGTH = "arm_length"
+SALE_MODES = (ARM_LENGTH, "auction", "related_party", "unknown")
+LABEL_SOURCES = (
+    "broker_closing",          # emlakçı kapanışı ~ A
+    "bank_transfer_observed",  # Tapu Güvenilir Hesap / banka transferi ~ A
+    "uyap",                    # icra/ihale sonucu ~ A (ama auction!)
+    "deed_declared",           # tapu beyan bedeli ~ C (düşük beyanlı)
+    "manual",                  # elle girilen ~ B
+)
+LABEL_CONFIDENCE = ("A", "B", "C")
+
+
+def arm_length_only(frame: pd.DataFrame) -> pd.DataFrame:
+    """Sale-to-list (indirim) analizi/eğitimi için yalnızca arm's-length satışlar.
+
+    İhale (auction) ve akraba (related_party) satışları farklı bir seçim
+    mekanizmasıdır; pazarlık modelini zehirlememesi için dışlanır. ``sale_mode``
+    yoksa çerçeve olduğu gibi döner (geriye uyumluluk).
+    """
+    if "sale_mode" not in frame.columns:
+        return frame
+    mode = frame["sale_mode"].fillna(ARM_LENGTH).astype(str).str.strip()
+    return frame[mode == ARM_LENGTH].reset_index(drop=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -112,6 +143,9 @@ def write_template(path: str | Path) -> Path:
         "sold_price": 3000000,
         "days_on_market": 40,
         "sale_date": "2026-03-15",
+        "sale_mode": "arm_length",
+        "label_source": "broker_closing",
+        "label_confidence": "A",
     }
     pd.DataFrame([example], columns=GT_TEMPLATE_COLUMNS).to_csv(path, index=False)
     return path
@@ -190,6 +224,9 @@ def to_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
             "total_drop_pct": 0.0,
             "is_delisted": True,
             "true_realized_price": pd.to_numeric(col("sold_price"), errors="coerce"),
+            "sale_mode": col("sale_mode", "arm_length"),
+            "label_source": col("label_source", "manual"),
+            "label_confidence": col("label_confidence"),
         }
     )
     # Talep sinyali (market heat): gerçek TÜİK konut satış hacminden, il + satış
@@ -228,6 +265,9 @@ def persist_to_db(session: Session, df: pd.DataFrame, source: str | None = None)
                 sold_price=_num(row.get("sold_price")),
                 days_on_market=_int(row.get("days_on_market")),
                 sale_date=_date(row.get("sale_date")),
+                sale_mode=_str(row.get("sale_mode")) or "arm_length",
+                label_source=_str(row.get("label_source")) or "manual",
+                label_confidence=_str(row.get("label_confidence")),
             )
         )
         count += 1
@@ -260,6 +300,9 @@ def load_frame_from_db(session: Session) -> pd.DataFrame:
                 "asking_price": _num(r.asking_price),
                 "sold_price": _num(r.sold_price),
                 "days_on_market": r.days_on_market,
+                "sale_mode": r.sale_mode,
+                "label_source": r.label_source,
+                "label_confidence": r.label_confidence,
             }
             for r in rows
         ]

@@ -24,14 +24,16 @@ import pandas as pd
 from ..features.demand import HeatIndex, load_heat_index
 from .synthetic import load_province_ppm2
 
-# Yayınlanmış pazarlık payı (ilan → satış indirimi), il bazında.
+# FALLBACK PRIOR — yalnızca eşleşmiş (asking ↔ closing) GERÇEK etiket YOKKEN kullanılır.
+# Bu bir ground-truth DEĞİL; yayınlanmış sektör pazarlık payıdır (il bazlı).
 # Kaynak: emlakhaberi (İstanbul %10, Ankara %5, İzmir %8); emlak365 2026 (%15-20 yavaş piyasa).
-PUBLISHED_DISCOUNT: dict[str, float] = {
+# Gerçek etiketler geldikçe RealizedValuator (ML) bu prior'ı devralır ve geçersiz kılar.
+FALLBACK_DISCOUNT_PRIOR: dict[str, float] = {
     "İstanbul": 0.10,
     "Ankara": 0.05,
     "İzmir": 0.08,
 }
-DEFAULT_DISCOUNT = 0.08  # ulusal tipik (yayınlı ~%5-10)
+DEFAULT_DISCOUNT = 0.08  # ulusal tipik fallback (yayınlı ~%5-10)
 MIN_DISCOUNT, MAX_DISCOUNT = 0.02, 0.20
 
 
@@ -40,16 +42,18 @@ def effective_discount(province: object, market_heat: float = 1.0) -> float:
 
     market_heat: ~1 normal, <1 durgun (daha çok pazarlık), >1 hareketli (daha az).
     """
-    base = PUBLISHED_DISCOUNT.get(str(province), DEFAULT_DISCOUNT)
+    base = FALLBACK_DISCOUNT_PRIOR.get(str(province), DEFAULT_DISCOUNT)
     heat = float(market_heat) if market_heat == market_heat else 1.0  # NaN → 1.0
     disc = base * (2.0 - float(np.clip(heat, 0.5, 1.5)))
     return float(np.clip(disc, MIN_DISCOUNT, MAX_DISCOUNT))
 
 
 class RealValuator:
-    """Etiketsiz varsayılan tahminci: ilan fiyatı × (1 − yayınlı pazarlık payı).
+    """FALLBACK tahminci (market-adjusted asking price) — eşleşmiş closing etiketi yokken.
 
-    Tüm girdiler gerçek: TL/m² (TCMB), pazarlık payı (yayınlı), talep (TÜİK).
+    Tahmin = ilan × (1 − FALLBACK pazarlık prior'ı). Girdiler gerçek: TL/m² (TCMB),
+    pazarlık payı (yayınlı prior), talep (TÜİK). Bu bir realized-price ground-truth
+    DEĞİL; gerçek (asking↔closing) etiket geldiğinde RealizedValuator (ML) devralır.
     """
 
     def __init__(

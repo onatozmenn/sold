@@ -7,15 +7,16 @@
 [![Tests](https://img.shields.io/badge/tests-54%20passing-brightgreen.svg)](tests/)
 [![Data](https://img.shields.io/badge/data-TCMB%20%C2%B7%20T%C3%9C%C4%B0K-informational.svg)](#data-sources)
 
-> Estimate the **realized** (transaction) sale price of a Turkish home from its **asking** price — using only real, official data.
+> Infer the **realized transaction price** of a Turkish home from its **asking** price — a provenance-aware valuation engine.
 
-**sold** is a residential valuation engine for the Turkish market. Listing portals publish only *asking* prices, and the actual *sold* price of a property is not public anywhere in Türkiye. `sold` closes that gap by combining official appraisal data (TCMB), housing demand (TÜİK), and published negotiation margins into a transparent, self-updating estimate of what a home will actually sell for — with **zero fabricated data**.
+**sold** infers the **realized transaction price** of a Turkish home — the price it *actually* changes hands for — from its **asking** price. Because listing portals publish only asking prices and real transaction prices are public nowhere in Türkiye, the central challenge is **not** modeling but **label acquisition**. `sold` is therefore built as a *provenance-aware* inference engine: it learns the gap between asking and closing prices from sparse, trust-tagged transaction labels, and falls back to a transparent, official-data baseline (TCMB appraisal levels + TÜİK demand + published negotiation margins) until those labels arrive. No fabricated data is ever served.
 
 ## Table of Contents
 
 - [Background](#background)
 - [How It Works](#how-it-works)
 - [Data Sources](#data-sources)
+- [Labels & Provenance](#labels--provenance)
 - [Install](#install)
 - [Usage](#usage)
 - [Automation](#automation)
@@ -42,17 +43,16 @@ Consequently, automated valuation models (AVMs) trained naively on listings are 
 
 ### The approach
 
-`sold` does not try to *scrape* the missing data — it *estimates* it, the same way the industry does (e.g. Endeksa) and the way the academic literature validates:
+The missing data is not *scraped* — it is *inferred*, the way the industry does (e.g. Endeksa) and the way the academic literature validates (see [References](#methodology--references)). The relationship of interest is the **sale-to-list ratio**:
 
-> **sold price ≈ asking price × (1 − negotiation margin)**
+> **realized price = asking price × (1 − negotiation margin)**
 
-Every term is grounded in real, citable data:
+The honest framing is that **this is a label-acquisition problem, not a modeling problem.** The engine has two regimes:
 
-- the **asking price** is the input;
-- the **negotiation margin** ("pazarlık payı") comes from published market reporting;
-- it is adjusted by **real housing demand** derived from TÜİK sales volumes.
+- **With paired labels** — when real `asking → closing` records exist, a machine-learning model *learns* the margin from them, conditioned on overpricing, time-on-market, price cuts, liquidity, and location.
+- **Without labels (fallback)** — the margin defaults to a **published prior** (İstanbul ≈ 10%, Ankara ≈ 5%, İzmir ≈ 8%), demand-adjusted via TÜİK volumes. This is a *baseline*, not ground truth — a fixed per-city rate is only ever a starting point, since the sale-to-list ratio moves with the market cycle (homes can even close **above** asking in hot markets).
 
-An independent **appraisal-based value** (TCMB TL/m² × area) is provided as a cross-check. When you supply your own real sold examples, a machine-learning model takes over and learns the margins directly from your data.
+An independent **appraisal-based value** (TCMB TL/m² × area) is provided as a cross-check.
 
 ## How It Works
 
@@ -80,9 +80,21 @@ flowchart TD
 
 No synthetic or mock data is ever served. The simulator (`synthetic.py`) exists solely to unit-test the ML method.
 
+### Model decomposition
+
+The problem naturally splits into three models; conflating them is what makes naive AVMs biased:
+
+| Model | Question | Status |
+|---|---|---|
+| **FairValue** `V(x, t)` | What is the home worth *before* negotiation? | appraisal-anchored (TCMB TL/m²) |
+| **SaleProbability** `P(sold ≤ N days)` | Will this listing actually sell — or just be withdrawn? | roadmap |
+| **ClosingDiscount** `log(closing / asking)` | How far from asking does it truly close? | fallback prior → ML on real labels |
+
+A delisted listing is **not** necessarily a sale (the seller may have withdrawn, relisted, or switched agents), so `removed = sold` is deliberately avoided.
+
 ## Data Sources
 
-All data is fetched from the official **TCMB EVDS** API and refreshed automatically. Nothing is scraped.
+The datasets below are **features** (market context), not the prediction target. All are fetched from the official **TCMB EVDS** API and refreshed automatically; nothing is scraped. The prediction *label* — a paired `asking → closing` price — is separate and provenance-tracked (see [Labels & Provenance](#labels--provenance)).
 
 | Dataset | Source | Meaning | Coverage |
 |---|---|---|---|
@@ -91,7 +103,19 @@ All data is fetched from the official **TCMB EVDS** API and refreshed automatica
 | `datasets/unit_prices.csv` | TCMB | Appraisal-based unit prices (TL/m²) | 2013 → now, quarterly, 77 provinces |
 | `datasets/ground_truth.csv` | You | Real asking → sold examples (optional labels) | user-provided |
 
-Published negotiation margins used by the default engine (İstanbul ≈ 10%, Ankara ≈ 5%, İzmir ≈ 8%) are sourced from Turkish market reporting — see [References](#methodology--references).
+Published negotiation margins are used **only as a fallback prior** (İstanbul ≈ 10%, Ankara ≈ 5%, İzmir ≈ 8%), when no paired labels exist — see [References](#methodology--references).
+
+## Labels & Provenance
+
+The one genuinely scarce input is a *paired* `asking → closing` label. Not all labels are equally trustworthy, so every record in `datasets/ground_truth.csv` carries its provenance:
+
+| Column | Meaning |
+|---|---|
+| `sale_mode` | `arm_length` · `auction` · `related_party` · `unknown` — non-arm's-length sales are excluded from the negotiation model |
+| `label_source` | `broker_closing` · `bank_transfer_observed` · `deed_declared` · `uyap` · `manual` |
+| `label_confidence` | `A` (observed transfer / broker closing) · `B` (manual) · `C` (declared deed value — understated) |
+
+> A title-deed *declared* value is **not** the true consideration; it is systematically understated for tax reasons. The target is the **verified consideration** — the money that actually changes hands. Candidate high-quality label sources (in progress) include broker closings and TKGM Tapu Güvenilir Hesap bank-transfer records.
 
 ## Install
 
@@ -199,10 +223,11 @@ Negotiation-margin figures from Turkish market reporting: İstanbul ≈ 10%, Ank
 ## Roadmap
 
 - [x] Real TCMB/TÜİK data pipeline (KFE, sales, TL/m²) with weekly auto-refresh
-- [x] Real-data valuation engine (published margin + demand adjustment)
-- [x] Ground-truth labeling with automatic ML takeover
-- [ ] Issue-form label entry (add real sales from the browser)
-- [ ] Per-district TL/m² once real labels allow it
+- [x] Fallback valuation engine (published margin prior + demand adjustment)
+- [x] Provenance-aware ground-truth labels with automatic ML takeover
+- [ ] **SaleProbability** model (`P(sold ≤ N days)`) — stop treating delisting as a sale
+- [ ] **Broker data flywheel** — a closing-price entry form that returns free negotiation analytics
+- [ ] Institutional label sources — research access to TKGM Tapu Güvenilir Hesap, GABİM/TADEBİS appraisal data, TÜİK microdata
 - [ ] Public dashboard (GitHub Pages)
 
 ## Legal & Ethics

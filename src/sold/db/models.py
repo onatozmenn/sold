@@ -183,6 +183,10 @@ class GroundTruthSale(Base):
     sold_price: Mapped[float | None] = mapped_column(Numeric(16, 2))
     days_on_market: Mapped[int | None] = mapped_column(Integer)
     sale_date: Mapped[dt.date | None] = mapped_column()
+    # Etiket kanıtı (provenance): her etiket eşit güvenilir değildir.
+    sale_mode: Mapped[str | None] = mapped_column(String(24))  # arm_length/auction/related_party/unknown
+    label_source: Mapped[str | None] = mapped_column(String(32))  # broker_closing/deed_declared/...
+    label_confidence: Mapped[str | None] = mapped_column(String(1))  # A/B/C
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
