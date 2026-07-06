@@ -233,6 +233,26 @@ def identification_report(
     # kohort momentleri): m_obs'ta VAR ama Jacobian'a GİRMEZ — çünkü simülatör bu
     # mekanizmayı (henüz) üretmez. Bu bir MODEL-eşleme boşluğudur (veri değil), dürüstçe raporlanır.
     observed_unmatched = sorted(k for k in (m_obs or {}) if k not in set(keys))
+    # DIŞ ÇAPRAZ-MEKANİZMA BENCHMARK: gözlenen ve KULLANILABİLİR ama mevcut simülatörde
+    # model-implied karşılığı OLMAYAN moment aileleri (ör. TOKİ birincil-piyasa). Bunlar
+    # "unavailable" DEĞİLdİr; SMM sistemi̇nİn DIŞINDAdır. Zorla Jacobian'a sokulmazlar.
+    _prov = provenance or {}
+    _ext: dict = {}
+    for k in observed_unmatched:
+        fam = _prov.get(k)
+        if fam:
+            _ext.setdefault(fam, []).append(k)
+    _ext_reasons = {"toki": "no current model-implied primary-market counterpart"}
+    external_benchmarks = {
+        fam: {
+            "genuine_observed_moments": len(moms),
+            "smm_role": "external_cross_mechanism_benchmark",
+            "moments_used_in_identification": 0,
+            "reason": _ext_reasons.get(fam, "no current model-implied simulated counterpart"),
+            "moments": sorted(moms),
+        }
+        for fam, moms in _ext.items()
+    }
 
     report: dict = {
         "dataset": summary,
@@ -243,6 +263,7 @@ def identification_report(
         "moment_provenance": provenance or {},
         "unavailable_moments": unavailable or [],
         "observed_without_simulated_counterpart": observed_unmatched,
+        "external_benchmarks": external_benchmarks,
         "sample_sizes": sample_sizes or {},
         "jacobian_step": step,
     }

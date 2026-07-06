@@ -49,6 +49,12 @@ def load_toki_records(directory: Path | None = None) -> list[dict]:
     return _load_records(Path(directory or GENUINE_DIR) / "toki.json")
 
 
+def load_kap_candidates(directory: Path | None = None) -> list[dict]:
+    """PENDING_AUDIT KAP adayları (kap_candidates.json). Bunlar genuine KAP setine GİRMEZ
+    ve ``kap_log_ratio``'ya KATILMAZ; yalnızca 8 audit koşulu doğrulanırsa admitte edilir."""
+    return _load_records(Path(directory or GENUINE_DIR) / "kap_candidates.json")
+
+
 def load_genuine_datasets(directory: Path | None = None) -> dict:
     """Yalnızca ``source_audited=true`` kayıtlardan gerçek yapısal veri kümeleri kurar."""
     uyap_df = load_auctions(_audited(load_uyap_records(directory)))
@@ -112,6 +118,7 @@ def dataset_status(directory: Path | None = None) -> dict:
     uyap_recs = load_uyap_records(directory)
     kap_recs = load_kap_records(directory)
     toki_recs = load_toki_records(directory)
+    candidates = load_kap_candidates(directory)
 
     genuine = load_genuine_datasets(directory)
     non_audited = {
@@ -119,11 +126,25 @@ def dataset_status(directory: Path | None = None) -> dict:
         "kap": int(len(kap_recs) - len(_audited(kap_recs))),
         "toki": int(len(toki_recs) - len(_audited(toki_recs))),
     }
+    pending = [
+        {
+            "candidate_id": c.get("candidate_id"),
+            "source_record_ids": c.get("source_record_ids"),
+            "audit_status": c.get("audit_status"),
+            "blocking_conditions": [
+                f"#{b.get('condition')} {b.get('name')} [{b.get('status')}]"
+                for b in c.get("blocking_conditions", [])
+            ],
+        }
+        for c in candidates
+        if str(c.get("audit_status")) == "PENDING_AUDIT"
+    ]
     return {
         "genuine": {
             "uyap": _uyap_status(genuine["uyap"]),
             "kap": _kap_status(genuine["kap"]),
             "toki": _toki_status(genuine["toki_disclosures"], genuine["toki_result"]),
         },
+        "kap_pending_candidates": pending,  # audit geçene dek genuine sete GİRMEZ
         "non_audited_records": non_audited,  # fixture/illustratif (GERÇEK sayıma katılmaz)
     }

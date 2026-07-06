@@ -33,6 +33,7 @@ from sold.structural import (
     legal_floor,
     load_auctions,
     load_genuine_datasets,
+    load_kap_candidates,
     load_kap_disposals,
     moment_jacobian,
     negotiated_price,
@@ -692,3 +693,50 @@ def test_genuine_toki_moment_available_but_no_sim_counterpart():
     assert rep["source_jacobians"]["J_TOKI"]["rank"] == 0  # sim karşılığı yok
     assert rep["source_jacobians"]["J_combined"]["rank"] == 2  # değişmedi
     assert rep["status"] == "NOT_IDENTIFIED"
+
+
+# --- TOKİ external_cross_mechanism_benchmark reclassification ---------------- #
+def test_toki_reclassified_as_external_benchmark_not_unavailable():
+    g = load_genuine_datasets()
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    ctx = context_from_datasets(g["uyap"], g["kap"])
+    rep = identification_report(
+        ctx, StructuralParams(), DEFAULT_FREE, m_obs=built["moments"],
+        auctions=g["uyap"], kap=g["kap"], toki_result=g["toki_result"],
+        provenance=built["provenance"],
+    )
+    eb = rep["external_benchmarks"]
+    assert "toki" in eb
+    assert eb["toki"]["genuine_observed_moments"] == 5
+    assert eb["toki"]["smm_role"] == "external_cross_mechanism_benchmark"
+    assert eb["toki"]["moments_used_in_identification"] == 0
+    assert eb["toki"]["reason"] == "no current model-implied primary-market counterpart"
+    # TOKİ momentleri "unavailable" DEĞİL (gözlenir + kullanılabilir, ama SMM DIŞI)
+    un_moments = {u["moment"] for u in rep["unavailable_moments"]}
+    assert not any(str(m).startswith("toki") for m in un_moments)
+    assert rep["status"] == "NOT_IDENTIFIED"  # SMM durumu değişmez
+
+
+# --- KAP 265789 -> 312317 PENDING_AUDIT adayı (kabul EDİLMEZ) ---------------- #
+def test_kap_candidate_pending_not_admitted():
+    g = load_genuine_datasets()
+    assert len(g["kap"]) == 1  # aday admitte KAP setine GİRMEZ
+    cands = load_kap_candidates()
+    assert len(cands) == 1
+    c = cands[0]
+    assert c["audit_status"] == "PENDING_AUDIT"
+    assert c["source_record_ids"] == [265789, 312317]  # bağlı açıklama zinciri korunur
+    # currency (5,6), VAT (7,8) ve related-party (4) doğrulanamaz → bloklu
+    blocked = {b["condition"] for b in c["blocking_conditions"]}
+    assert {4, 5, 6, 7, 8}.issubset(blocked)
+    # KAP momenti henüz sd AÇILMAZ (yalnızca 1 admitte gözlem)
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    assert "kap_log_ratio_sd" not in built["moments"]
+
+
+def test_dataset_status_reports_pending_kap_candidate():
+    st = dataset_status()
+    assert st["genuine"]["kap"]["audited_eligible_disposals"] == 1  # admitte değişmez
+    pend = st["kap_pending_candidates"]
+    assert len(pend) == 1 and pend[0]["candidate_id"] == "KAP-265789-312317"
+    assert pend[0]["source_record_ids"] == [265789, 312317]

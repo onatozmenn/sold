@@ -1522,6 +1522,14 @@ def structural_dataset_cmd() -> None:
         f"UYAP {na['uyap']} · KAP {na['kap']} · TOKİ {na['toki']}",
         fg=typer.colors.YELLOW,
     )
+    for c in st.get("kap_pending_candidates", []):
+        typer.secho(
+            f"  KAP PENDING_AUDIT adayı: {c['candidate_id']} (kayıt {c['source_record_ids']}) — "
+            "genuine sete GİRMEZ, kap_log_ratio'ya KATILMAZ",
+            fg=typer.colors.YELLOW,
+        )
+        for bc in c.get("blocking_conditions", []):
+            typer.echo(f"    bloklayan koşul: {bc}")
 
 
 @structural_app.command("identify")
@@ -1619,12 +1627,17 @@ def structural_identify_cmd(
         typer.echo(f"  Moment provenance: {rep['moment_provenance']}")
     for un in rep.get("unavailable_moments", []):
         typer.echo(f"  Eksik moment: {un['moment']} [{un['source']}] — {un['reason']}")
-    owc = rep.get("observed_without_simulated_counterpart", [])
-    if owc:
+    # Dış çapraz-mekanizma benchmark (gözlenir + kullanılabilir ama SMM DİŞI — unavailable DEĞİL)
+    for fam, eb in (rep.get("external_benchmarks") or {}).items():
         typer.secho(
-            f"  Gözlenen ama sim KARŞILIĞI YOK (model-eşleme boşluğu; Jacobian'a girmez): {owc}",
-            fg=typer.colors.YELLOW,
+            f"  {fam.upper()} genuine observed moments = {eb['genuine_observed_moments']}",
+            fg=typer.colors.CYAN,
         )
+        typer.echo(f"    {fam.upper()} current SMM role = external benchmark")
+        typer.echo(
+            f"    {fam.upper()} moments used in identification = {eb['moments_used_in_identification']}"
+        )
+        typer.echo(f"    reason = {eb['reason']}")
     color = {
         "IDENTIFIED": typer.colors.GREEN,
         "WEAKLY_IDENTIFIED": typer.colors.YELLOW,

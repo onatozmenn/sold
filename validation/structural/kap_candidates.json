@@ -1,0 +1,32 @@
+[
+  {
+    "candidate_id": "KAP-265789-312317",
+    "source_record_ids": [265789, 312317],
+    "disclosure_chain": "KAP 265789 (real-estate disposal) -> KAP 312317 (completion update)",
+    "linked_single_transaction": true,
+    "audit_status": "PENDING_AUDIT",
+    "domain": "kap",
+    "appraisal_value": 15487102,
+    "appraisal_currency": "TRY",
+    "appraisal_vat_basis": "unknown",
+    "reported_sale_value": 8000000,
+    "reported_sale_currency": "USD",
+    "reported_sale_vat_basis": "plus_vat",
+    "transaction_method": "negotiation",
+    "transaction_completion_date": "2013-10-01",
+    "related_party": null,
+    "satisfied_conditions": [
+      {"condition": 2, "name": "completed_disposal", "detail": "completion update 312317 with transaction_completion_date 2013-10-01 indicates a completed real-estate disposal"},
+      {"condition": 3, "name": "negotiation_compatible_method", "detail": "official disclosure states negotiation / pazarlik at a value close to the valuation-report result"}
+    ],
+    "blocking_conditions": [
+      {"condition": 1, "name": "same_transaction_officially_verified", "status": "OPERATOR_LINKED", "detail": "operator links 265789 -> 312317 as one transaction; independent official confirmation of the chain identity is not encoded here"},
+      {"condition": 4, "name": "related_party_verified", "status": "UNVERIFIED", "detail": "related-party status is not reported in the supplied official fields; KAP eligibility requires related_party=false to be verified"},
+      {"condition": 5, "name": "same_currency", "status": "BLOCKED", "detail": "appraisal is 15,487,102 TRY but sale is 8,000,000 USD; values are not in the same currency"},
+      {"condition": 6, "name": "documented_official_tcmb_rate", "status": "BLOCKED", "detail": "no documented official TCMB USD/TRY rate and conversion date is available to this system; an exchange rate will NOT be fabricated"},
+      {"condition": 7, "name": "vat_comparable", "status": "BLOCKED", "detail": "sale is reported as USD + VAT (net-of-VAT plus VAT); the appraisal VAT basis is unknown, so VAT treatment cannot be made comparable"},
+      {"condition": 8, "name": "no_mismatched_vat_ratio", "status": "BLOCKED", "detail": "follows from condition 7 — a log(sale/appraisal) ratio cannot be computed without mixing gross-of-VAT and net-of-VAT bases"}
+    ],
+    "_note": "PENDING_AUDIT genuine official KAP candidate (KAP 265789 -> 312317), recorded as ONE linked transaction across two disclosures (NOT two independent sales). It is NOT admitted to the negotiation-calibration dataset and is NOT used in kap_log_ratio. Admission requires all 8 audit conditions; currency normalization (a documented official TCMB rate + conversion date), VAT comparability, and related-party verification are currently unmet, so the candidate stays pending. No exchange rate, VAT basis, or related-party status was fabricated."
+  }
+]

@@ -33,6 +33,7 @@ from .datasets import (
     GENUINE_DIR,
     dataset_status,
     load_genuine_datasets,
+    load_kap_candidates,
     load_kap_records,
     load_toki_records,
     load_uyap_records,
@@ -114,6 +115,7 @@ __all__ = [
     "dataset_status",
     "load_uyap_records",
     "load_kap_records",
+    "load_kap_candidates",
     "load_toki_records",
     "GENUINE_DIR",
     # kimliklendirme (identification)
