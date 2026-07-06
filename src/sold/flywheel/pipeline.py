@@ -241,9 +241,9 @@ def closing_discount_frame(session: Session, source: str | None = None) -> pd.Da
     if sold.empty:
         return to_feature_frame(empty)
 
-    days = sold["days_to_close"]
+    days = pd.to_numeric(sold["days_to_close"], errors="coerce")
     if "days_on_market" in sold.columns:
-        days = days.fillna(sold["days_on_market"])
+        days = days.fillna(pd.to_numeric(sold["days_on_market"], errors="coerce"))
     broker = pd.DataFrame(
         {
             "source": sold["source"],

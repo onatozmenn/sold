@@ -4,7 +4,7 @@
 [![Data refresh](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml/badge.svg)](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-54%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-102%20passing-brightgreen.svg)](tests/)
 [![Data](https://img.shields.io/badge/data-TCMB%20%C2%B7%20T%C3%9C%C4%B0K-informational.svg)](#data-sources)
 
 > Infer the **realized transaction price** of a Turkish home from its **asking** price — a provenance-aware valuation engine.
@@ -282,7 +282,7 @@ tests/               # offline unit / end-to-end tests
 ## Testing
 
 ```bash
-pytest -q             # 54 tests, fully offline (no network or API key required)
+pytest -q             # 102 tests, fully offline (no network or API key required)
 ```
 
 ## Methodology & References
