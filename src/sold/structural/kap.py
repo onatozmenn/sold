@@ -38,18 +38,30 @@ def _is_negotiated(value_method: object) -> bool:
 
 KAP_FIELDS = (
     "official_record_id",
-    "appraisal_value",
+    "source_record_ids",        # bağlı açıklama zinciri (TEK işlem; iki bağımsız satış DEĞİL)
+    "appraisal_value",          # TL-normalize (ekspertiz referansı)
+    "appraisal_value_original",
+    "appraisal_currency",
+    "appraisal_vat_basis",
     "reference_price_type",
-    "appraisal_date",     # nullable
-    "sale_price",
+    "appraisal_date",           # nullable
+    "sale_price",               # TL-normalize (dökümanlı resmî TCMB kuruyla)
+    "sale_price_original",
+    "sale_currency",
+    "sale_vat_basis",
+    "exchange_rate",            # dökümanlı resmî TCMB kuru (yabancı para için)
+    "exchange_rate_series",     # TCMB EVDS seri kodu (ör. TP.DK.USD.A.YTL)
+    "conversion_date",          # dönüşüm tarihi (işlem tamamlanma tarihi)
     "sale_date",
     "province",
     "district",
     "property_type",
-    "gross_m2",            # nullable
+    "gross_m2",                 # nullable
     "value_method",
-    "negotiated",          # value_method AÇIKÇA müzakereyi destekliyor mu (kalibrasyon alt kümesi)
+    "sale_mechanism",           # mekanizma sınırı (ör. corporate_negotiated_non_related)
+    "negotiated",               # value_method AÇIKÇA müzakereyi destekliyor mu (kalibrasyon alt kümesi)
     "related_party",
+    "related_party_basis",      # provenance (ör. official_old_form_relation_none)
     "source_audited",
 )
 
@@ -64,41 +76,97 @@ def _num(v: object) -> float | None:
         return None
 
 
+# TL/TRY para-birimi jetonları (eski kayıtlar zaten TL: para birimi belirtilmemiş → TRY sayılır)
+_TRY_TOKENS = ("try", "tl", "ytl", "₺")
+
+
+def _is_try_currency(currency: object) -> bool:
+    return str(currency if currency not in (None, "") else "TRY").strip().lower() in _TRY_TOKENS
+
+
+def _to_try(amount: float | None, currency: object, rate: float | None) -> float | None:
+    """Tutarı TL'ye normalize eder. TL: olduğu gibi. Yabancı para: DÖKÜMANLI resmî kur
+    ŞARTtir (yoksa ``None`` — kur UYDURULMAZ). Böylece para-birimi normalizasyonu ancak
+    resmî bir TCMB kuru veri içinde belgelenmişse yapılır."""
+    if amount is None:
+        return None
+    if _is_try_currency(currency):
+        return amount
+    if rate is None or rate <= 0:
+        return None  # yabancı para + belgelenmiş resmî kur yok → normalize edilemez (uydurma YOK)
+    return amount * rate
+
+
+def _vat_comparable(sale_basis: object, appraisal_basis: object) -> bool:
+    """log(sale/appraisal) için iki taraf AYNI KDV bazında mı (ya da ikisi de belirtilmemiş
+    → eski kayıt uyumu). Farklı bazlar (biri KDV dahil, diğeri hariç) KARŞILAŞTIRILAMAZ."""
+    if sale_basis in (None, "") and appraisal_basis in (None, ""):
+        return True
+    return str(sale_basis or "").strip().lower() == str(appraisal_basis or "").strip().lower()
+
+
 def normalize_kap_disposal(rec: dict) -> dict | None:
     """Müzakereli gayrimenkul-elden-çıkarma yolunu sağlayan kaydı normalize eder.
 
     Yolu sağlamayan (ilişkili taraf, eksik satış/ekspertiz, referans türü yok, taşınmaz
-    türü yok) kayıtlar için ``None`` döner (dışlanır — uydurma YOK).
+    türü yok, DÖKÜMANLI kuru olmayan yabancı para, KDV bazı karşılaştırılamaz) kayıtlar
+    için ``None`` döner (dışlanır — uydurma YOK). Yabancı para satış bedeli yalnızca kayıt
+    içinde belgelenmiş resmî TCMB kuruyla TL'ye çevrilir; oran log(sale/appraisal) AYNI KDV
+    bazında hesaplanır.
     """
     related = bool(rec.get("related_party", rec.get("iliskili_taraf", False)))
     if related:
         return None  # ilişkili taraf → müzakereli-arm's-length yolu değil
-    sale = _num(rec.get("sale_price", rec.get("toplam_satis_bedeli")))
-    appraisal = _num(
+    # --- Satış bedeli: dökümanlı resmî TCMB kuruyla TL'ye normalize (uydurma YOK) ---
+    sale_original = _num(
+        rec.get("sale_price_original", rec.get("sale_price", rec.get("toplam_satis_bedeli")))
+    )
+    sale_currency = rec.get("sale_currency")
+    exchange_rate = _num(rec.get("exchange_rate"))
+    sale = _to_try(sale_original, sale_currency, exchange_rate)
+    # --- Ekspertiz: TL referans (yabancı ekspertiz + belgelenmiş kur yoksa dışlanır) ---
+    appraisal_original = _num(
         rec.get(
-            "appraisal_value",
-            rec.get("degerleme_tutari", rec.get("prior_appraisal_value")),
+            "appraisal_value_original",
+            rec.get("appraisal_value", rec.get("degerleme_tutari", rec.get("prior_appraisal_value"))),
         )
     )
+    appraisal_currency = rec.get("appraisal_currency")
+    appraisal = _to_try(appraisal_original, appraisal_currency, _num(rec.get("appraisal_exchange_rate")))
     ref_type = str(rec.get("reference_price_type") or "").strip()
     ptype = rec.get("property_type", rec.get("tasinmaz_turu"))
+    # --- KDV bazları karşılaştırılabilir olmalı (oran aynı baz üzerinde) ---
+    if not _vat_comparable(rec.get("sale_vat_basis"), rec.get("appraisal_vat_basis")):
+        return None
     if sale is None or appraisal is None or ref_type not in KAP_REFERENCE_TYPES or not ptype:
         return None
     value_method = rec.get("value_method", rec.get("deger_belirleme_yontemi"))
     return {
         "official_record_id": rec.get("official_record_id", rec.get("kap_id")),
+        "source_record_ids": rec.get("source_record_ids"),
         "appraisal_value": appraisal,
+        "appraisal_value_original": appraisal_original,
+        "appraisal_currency": appraisal_currency,
+        "appraisal_vat_basis": rec.get("appraisal_vat_basis"),
         "reference_price_type": ref_type,
         "appraisal_date": rec.get("appraisal_date"),
         "sale_price": sale,
+        "sale_price_original": sale_original,
+        "sale_currency": sale_currency,
+        "sale_vat_basis": rec.get("sale_vat_basis"),
+        "exchange_rate": exchange_rate,
+        "exchange_rate_series": rec.get("exchange_rate_series"),
+        "conversion_date": rec.get("conversion_date"),
         "sale_date": rec.get("sale_date", rec.get("islem_tarihi")),
         "province": rec.get("province", rec.get("il")),
         "district": rec.get("district", rec.get("ilce")),
         "property_type": ptype,
         "gross_m2": _num(rec.get("gross_m2", rec.get("brut_m2"))),
         "value_method": value_method,
+        "sale_mechanism": rec.get("sale_mechanism"),
         "negotiated": _is_negotiated(value_method),
         "related_party": related,
+        "related_party_basis": rec.get("related_party_basis"),
         "source_audited": bool(rec.get("source_audited", False)),
     }
 

@@ -2,31 +2,39 @@
   {
     "candidate_id": "KAP-265789-312317",
     "source_record_ids": [265789, 312317],
-    "disclosure_chain": "KAP 265789 (real-estate disposal) -> KAP 312317 (completion update)",
     "linked_single_transaction": true,
-    "audit_status": "PENDING_AUDIT",
+    "audit_status": "ADMITTED",
     "domain": "kap",
-    "appraisal_value": 15487102,
-    "appraisal_currency": "TRY",
-    "appraisal_vat_basis": "unknown",
-    "reported_sale_value": 8000000,
-    "reported_sale_currency": "USD",
-    "reported_sale_vat_basis": "plus_vat",
-    "transaction_method": "negotiation",
-    "transaction_completion_date": "2013-10-01",
-    "related_party": null,
-    "satisfied_conditions": [
+    "admitted_to": "validation/structural/kap.json",
+    "admission_date": "2026-07-06",
+    "disclosure_chain": "KAP 265789 (real-estate disposal) -> KAP 312317 (completion update); same linked Kapadık, Esenyurt, 382 ada 11 parsel disposal; completion 2013-10-01",
+    "resolution": {
+      "1_same_transaction_officially_verified": "RESOLVED — official KAP disclosure chain links 265789 -> 312317 through the previous-notification reference and the same Kapadık, Esenyurt, 382 ada 11 parsel disposal; final update reports completion on 2013-10-01. Recorded as ONE transaction, not two independent sales.",
+      "4_related_party_verified": "RESOLVED — official KAP forms report 'Karşı Taraf İle Olan İlişkinin Niteliği = Yoktur'; related_party=false with related_party_basis=official_old_form_relation_none. No modern structured SPK boolean was invented (the old form did not contain one).",
+      "5_same_currency": "RESOLVED — sale (USD) normalized to TRY so both economic amounts are in the same currency.",
+      "6_documented_official_tcmb_rate": "RESOLVED — TCMB EVDS series TP.DK.USD.A.YTL, USD/TRY buying rate 2.03650000, conversion date 2013-10-01 (transaction completion date). No rate fabricated.",
+      "7_vat_comparable": "RESOLVED — official valuation-report attachment reports appraisal on a KDV Hariç basis; sale is 7,533,161 USD + KDV (excluding VAT). Both compared excluding VAT; no VAT added to either side.",
+      "8_no_mismatched_vat_ratio": "RESOLVED — follows from #7: both sides excluding VAT, so log(sale/appraisal) mixes no gross-of-VAT and net-of-VAT bases."
+    },
+    "previously_satisfied_conditions": [
       {"condition": 2, "name": "completed_disposal", "detail": "completion update 312317 with transaction_completion_date 2013-10-01 indicates a completed real-estate disposal"},
-      {"condition": 3, "name": "negotiation_compatible_method", "detail": "official disclosure states negotiation / pazarlik at a value close to the valuation-report result"}
+      {"condition": 3, "name": "negotiation_compatible_method", "detail": "official disclosure states Pazarlık Usulü at a value close to the valuation-report result"}
     ],
-    "blocking_conditions": [
-      {"condition": 1, "name": "same_transaction_officially_verified", "status": "OPERATOR_LINKED", "detail": "operator links 265789 -> 312317 as one transaction; independent official confirmation of the chain identity is not encoded here"},
-      {"condition": 4, "name": "related_party_verified", "status": "UNVERIFIED", "detail": "related-party status is not reported in the supplied official fields; KAP eligibility requires related_party=false to be verified"},
-      {"condition": 5, "name": "same_currency", "status": "BLOCKED", "detail": "appraisal is 15,487,102 TRY but sale is 8,000,000 USD; values are not in the same currency"},
-      {"condition": 6, "name": "documented_official_tcmb_rate", "status": "BLOCKED", "detail": "no documented official TCMB USD/TRY rate and conversion date is available to this system; an exchange rate will NOT be fabricated"},
-      {"condition": 7, "name": "vat_comparable", "status": "BLOCKED", "detail": "sale is reported as USD + VAT (net-of-VAT plus VAT); the appraisal VAT basis is unknown, so VAT treatment cannot be made comparable"},
-      {"condition": 8, "name": "no_mismatched_vat_ratio", "status": "BLOCKED", "detail": "follows from condition 7 — a log(sale/appraisal) ratio cannot be computed without mixing gross-of-VAT and net-of-VAT bases"}
-    ],
-    "_note": "PENDING_AUDIT genuine official KAP candidate (KAP 265789 -> 312317), recorded as ONE linked transaction across two disclosures (NOT two independent sales). It is NOT admitted to the negotiation-calibration dataset and is NOT used in kap_log_ratio. Admission requires all 8 audit conditions; currency normalization (a documented official TCMB rate + conversion date), VAT comparability, and related-party verification are currently unmet, so the candidate stays pending. No exchange rate, VAT basis, or related-party status was fabricated."
+    "final_realized_consideration": {
+      "sale_price_original": 7533161.00,
+      "sale_currency": "USD",
+      "sale_vat_basis": "excluding_vat",
+      "note": "final update 312317 reports 7,533,161 USD + KDV; supersedes the earlier 8,000,000 USD proposed consideration"
+    },
+    "normalized": {
+      "exchange_rate": 2.03650000,
+      "exchange_rate_series": "TP.DK.USD.A.YTL",
+      "conversion_date": "2013-10-01",
+      "normalized_sale_price_try": 15341282.3765,
+      "appraisal_value_try": 15487102.00,
+      "sale_to_appraisal_ratio": 0.9905844474001656,
+      "log_sale_to_appraisal_ratio": -0.009460159132789749
+    },
+    "_note": "PENDING_AUDIT -> ADMITTED after manual source-audit against the official KAP disclosure chain, the official KAP valuation-report attachment (KDV Hariç), and the official TCMB EVDS exchange-rate series (TP.DK.USD.A.YTL). Recorded as ONE linked transaction across two disclosures (NOT two independent sales). Now a genuine audited KAP negotiated-disposal observation in validation/structural/kap.json; it enters the negotiation-calibration subset and kap_log_ratio, and remains excluded from asking_to_closing_labels(). No exchange rate, VAT basis, or related-party status was fabricated; all were source-audited."
   }
 ]

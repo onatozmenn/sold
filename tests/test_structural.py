@@ -457,12 +457,18 @@ def test_genuine_datasets_load_and_reconcile_with_level2():
     assert a["parcel_area_m2"] == 509.0 and a["unit_net_m2"] == 32.5
     assert pd.isna(a["unit_gross_m2"])         # gross null (509 ENJEKTE EDİLMEZ)
     assert bool(a["legal_floor_exact"]) is False  # kısmî (claims/costs yok)
-    # KAP: 1 müzakereli disposal (prior_appraisal)
-    assert len(g["kap"]) == 1
-    k = g["kap"].iloc[0]
-    assert k["sale_price"] == 5_508_474.60 and k["appraisal_value"] == 5_200_000
-    assert k["reference_price_type"] == "prior_appraisal"
-    assert bool(k["negotiated"]) is True and bool(k["related_party"]) is False
+    # KAP: 2 müzakereli disposal (963554 prior_appraisal + admitte bağlı zincir 265789->312317 appraisal)
+    assert len(g["kap"]) == 2
+    k = g["kap"].set_index("official_record_id")
+    k0 = k.loc["963554"]
+    assert k0["sale_price"] == 5_508_474.60 and k0["appraisal_value"] == 5_200_000
+    assert k0["reference_price_type"] == "prior_appraisal"
+    assert bool(k0["negotiated"]) is True and bool(k0["related_party"]) is False
+    # Admitte bağlı zincir: USD sale → dökümanlı TCMB kuruyla TL-normalize; her iki taraf KDV hariç
+    k1 = k.loc["265789-312317"]
+    assert k1["sale_price"] == pytest.approx(7_533_161.00 * 2.0365, abs=1e-6)
+    assert k1["appraisal_value"] == 15_487_102 and k1["reference_price_type"] == "appraisal"
+    assert bool(k1["negotiated"]) is True and bool(k1["related_party"]) is False
     # TOKİ: 3 ardışık denetlenmiş disclosure → 4 geçerli dönem kohortu (mutabakat-bloklu strata hariç)
     assert len(g["toki_disclosures"]) == 3
     assert len(g["toki_result"]["cohorts"]) == 4
@@ -474,9 +480,9 @@ def test_dataset_status_genuine_counts():
     g = st["genuine"]
     assert g["uyap"]["total_audited_auctions"] == 1 and g["uyap"]["sold"] == 1 and g["uyap"]["unsold"] == 0
     assert g["uyap"]["exact_legal_floors_observed"] == 0  # kısmî taban
-    assert g["kap"]["audited_eligible_disposals"] == 1
-    assert g["kap"]["negotiated_calibration_observations"] == 1
-    assert g["kap"]["prior_appraisal_observations"] == 1 and g["kap"]["appraisal_observations"] == 0
+    assert g["kap"]["audited_eligible_disposals"] == 2
+    assert g["kap"]["negotiated_calibration_observations"] == 2
+    assert g["kap"]["prior_appraisal_observations"] == 1 and g["kap"]["appraisal_observations"] == 1
     assert g["toki"]["audited_disclosures"] == 3
     assert g["toki"]["valid_derived_period_cohorts"] == 4
     assert g["toki"]["reconciliation_blocked_strata"] == 3
@@ -503,10 +509,14 @@ def test_build_observed_moments_reports_provenance_and_unavailable():
     assert prov["kap_log_ratio_mean"] == "kap" and prov["uyap_sale_prob"] == "uyap"
     un_moments = {u["moment"] for u in un}
     assert "uyap_win_over_appraisal_sd" in un_moments  # n=1 sold
-    assert "kap_log_ratio_sd" in un_moments            # n=1 negotiated
+    # KAP artık 2 müzakereli gözlem (963554 + admitte bağlı zincir) → kap_log_ratio_sd AÇILDI
+    assert "kap_log_ratio_sd" in m and "kap_log_ratio_sd" not in un_moments
+    assert prov["kap_log_ratio_sd"] == "kap"
     # TOKİ kohort momenti artık AVAILABLE (3 gerçek disclosure → 4 kohort), unavailable DEĞİL
     assert "toki_cohort_avg_price" in m and "toki_cohort_moments" not in un_moments
-    assert m["kap_log_ratio_mean"] == pytest.approx(np.log(5_508_474.60 / 5_200_000), abs=1e-6)
+    # 2 müzakereli gözlemin ORTALAMASI (963554 + USD→TL normalize edilmiş bağlı zincir)
+    _lr = [np.log(5_508_474.60 / 5_200_000), np.log((7_533_161.00 * 2.0365) / 15_487_102)]
+    assert m["kap_log_ratio_mean"] == pytest.approx(float(np.mean(_lr)), abs=1e-9)
 
 
 def test_kap_negotiated_subset_only():
@@ -533,8 +543,8 @@ def test_identify_genuine_data_not_identified():
         provenance=built["provenance"], unavailable=built["unavailable"],
     )
     assert rep["status"] == "NOT_IDENTIFIED"
-    assert rep["rank"] < rep["n_structural_parameters"]
-    assert rep["n_observed_moments"] <= 3  # 3 gerçek tek-gözlem ortalaması
+    assert rep["rank"] < rep["n_structural_parameters"]  # rank 3 < dim 6
+    assert rep["n_observed_moments"] == 4  # uyap sale_prob + win/appraisal mean + kap mean + kap sd
     assert rep["prediction_mode"] == "sensitivity_mode"
     assert rep["moment_provenance"] and rep["unavailable_moments"]
 
@@ -575,10 +585,10 @@ def test_source_jacobian_ranks_on_genuine_data():
     sj = source_jacobian_ranks(
         StructuralParams(), ctx, DEFAULT_FREE, built["moments"], built["provenance"]
     )
-    assert sj["J_TOKI"]["rank"] == 0 and sj["J_TOKI"]["n_moments"] == 0  # kohort yok
-    assert sj["J_KAP"]["rank"] == 1 and sj["J_KAP"]["n_moments"] == 1
+    assert sj["J_TOKI"]["rank"] == 0 and sj["J_TOKI"]["n_moments"] == 0  # kohort external benchmark
+    assert sj["J_KAP"]["rank"] == 2 and sj["J_KAP"]["n_moments"] == 2  # mean + sd (2 müzakereli gözlem)
     assert sj["J_UYAP"]["rank"] == 1  # sale_prob=1.0 dejenere → 1 bağımsız yön
-    assert sj["J_combined"]["rank"] == 2  # birleşik = ölçülen rank
+    assert sj["J_combined"]["rank"] == 3  # birleşik = ölçülen rank (2→3, gerçek KAP admisyonu)
 
 
 # --- Snapshot karşılaştırması (identification-katkı) ------------------------ #
@@ -690,8 +700,8 @@ def test_genuine_toki_moment_available_but_no_sim_counterpart():
         provenance=built["provenance"],
     )
     assert "toki_cohort_avg_price" in rep["observed_without_simulated_counterpart"]
-    assert rep["source_jacobians"]["J_TOKI"]["rank"] == 0  # sim karşılığı yok
-    assert rep["source_jacobians"]["J_combined"]["rank"] == 2  # değişmedi
+    assert rep["source_jacobians"]["J_TOKI"]["rank"] == 0  # sim karşılığı yok (TOKİ hâlâ 0 katkı)
+    assert rep["source_jacobians"]["J_combined"]["rank"] == 3  # KAP sd'den 3; TOKİ katkısı YOK
     assert rep["status"] == "NOT_IDENTIFIED"
 
 
@@ -717,26 +727,56 @@ def test_toki_reclassified_as_external_benchmark_not_unavailable():
     assert rep["status"] == "NOT_IDENTIFIED"  # SMM durumu değişmez
 
 
-# --- KAP 265789 -> 312317 PENDING_AUDIT adayı (kabul EDİLMEZ) ---------------- #
-def test_kap_candidate_pending_not_admitted():
+# --- KAP 265789 -> 312317 ADMITTED (kaynak-denetimli genuine gözlem) --------- #
+def test_kap_265789_312317_admitted_genuine_audited():
+    """Bağlı KAP açıklama zinciri 265789->312317, kaynak-denetim sonrası TEK genuine
+    müzakereli gözlem olarak admitte edildi. 10 admisyon iddiası (direktif)."""
     g = load_genuine_datasets()
-    assert len(g["kap"]) == 1  # aday admitte KAP setine GİRMEZ
+    k = g["kap"].set_index("official_record_id")
+    assert "265789-312317" in k.index  # admitte edildi (genuine sete girdi)
+    rec = k.loc["265789-312317"]
+    # (1) source_record_ids TEK işlem olarak bağlı kalır (iki bağımsız satış DEĞİL)
+    assert list(rec["source_record_ids"]) == [265789, 312317]
+    # (2) nihai gerçekleşen bedel 7,533,161 USD (önceki 8,000,000 USD teklifi DEĞİL)
+    assert rec["sale_price_original"] == 7_533_161.00 and rec["sale_currency"] == "USD"
+    # (3) TCMB seri kodu
+    assert rec["exchange_rate_series"] == "TP.DK.USD.A.YTL"
+    # (4) dönüşüm tarihi (işlem tamamlanma tarihi)
+    assert rec["conversion_date"] == "2013-10-01"
+    # (5) döviz kuru
+    assert rec["exchange_rate"] == 2.03650000
+    # (6) normalize TL satış bedeli
+    assert rec["sale_price"] == pytest.approx(15_341_282.3765, abs=1e-3)
+    # (7) ekspertiz
+    assert rec["appraisal_value"] == 15_487_102
+    # (8) her iki ekonomik tutar KDV HARİÇ karşılaştırılır
+    assert rec["sale_vat_basis"] == "excluding_vat" and rec["appraisal_vat_basis"] == "excluding_vat"
+    # (9) log oran dökümanlı toleransta (1e-9) -0.009460159132789749 ile eşleşir
+    assert float(np.log(rec["sale_price"] / rec["appraisal_value"])) == pytest.approx(
+        -0.009460159132789749, abs=1e-9
+    )
+    # (10) gözlem asking_to_closing_labels()'tan DIŞLANIR (kurumsal müzakere → doğrudan-resale DEĞİL)
+    from sold.labels.registry import asking_to_closing_labels
+    kap_row = pd.DataFrame([{
+        "reference_price_type": "appraisal",
+        "sale_mechanism": rec["sale_mechanism"],  # corporate_negotiated_non_related
+        "related_party": False,
+        "label_source": "kap",
+        "quality_status": "accepted",
+        "origin": "manual_import",
+    }])
+    assert asking_to_closing_labels(kap_row).empty
+    # mekanizma sınırı korunur (kurumsal müzakere kalibrasyonu; sıradan-resale GERÇEĞİ DEĞİL)
+    assert rec["sale_mechanism"] == "corporate_negotiated_non_related"
+    assert rec["value_method"] == "negotiation" and bool(rec["related_party"]) is False
+    assert rec["related_party_basis"] == "official_old_form_relation_none"
+
+
+def test_kap_candidate_recorded_as_admitted_not_pending():
+    # Aday artık PENDING_AUDIT DEĞİL → ADMITTED; bekleyen aday listesi BOŞ
     cands = load_kap_candidates()
-    assert len(cands) == 1
-    c = cands[0]
-    assert c["audit_status"] == "PENDING_AUDIT"
-    assert c["source_record_ids"] == [265789, 312317]  # bağlı açıklama zinciri korunur
-    # currency (5,6), VAT (7,8) ve related-party (4) doğrulanamaz → bloklu
-    blocked = {b["condition"] for b in c["blocking_conditions"]}
-    assert {4, 5, 6, 7, 8}.issubset(blocked)
-    # KAP momenti henüz sd AÇILMAZ (yalnızca 1 admitte gözlem)
-    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
-    assert "kap_log_ratio_sd" not in built["moments"]
-
-
-def test_dataset_status_reports_pending_kap_candidate():
+    assert len(cands) == 1 and cands[0]["audit_status"] == "ADMITTED"
+    assert cands[0]["admitted_to"] == "validation/structural/kap.json"
     st = dataset_status()
-    assert st["genuine"]["kap"]["audited_eligible_disposals"] == 1  # admitte değişmez
-    pend = st["kap_pending_candidates"]
-    assert len(pend) == 1 and pend[0]["candidate_id"] == "KAP-265789-312317"
-    assert pend[0]["source_record_ids"] == [265789, 312317]
+    assert st["kap_pending_candidates"] == []  # bekleyen aday yok
+    assert st["genuine"]["kap"]["audited_eligible_disposals"] == 2  # admitte edildi

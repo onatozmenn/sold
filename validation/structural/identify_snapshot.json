@@ -1,8 +1,9 @@
 {
   "n_structural_parameters": 6,
-  "n_observed_moments": 3,
+  "n_observed_moments": 4,
   "available_moments": [
     "kap_log_ratio_mean",
+    "kap_log_ratio_sd",
     "toki_cohort_avg_price",
     "toki_cohort_count",
     "toki_share_2+1",
@@ -15,8 +16,8 @@
     "uyap_sale_prob": 1,
     "uyap_win_over_appraisal_mean": 1,
     "uyap_win_over_appraisal_sd": 1,
-    "kap_log_ratio_mean": 1,
-    "kap_log_ratio_sd": 1,
+    "kap_log_ratio_mean": 2,
+    "kap_log_ratio_sd": 2,
     "toki_cohort_moments": 4,
     "toki_cohort_avg_price": 4,
     "toki_cohort_count": 4,
@@ -24,14 +25,14 @@
     "toki_share_3+1": 4,
     "toki_share_4+1": 4
   },
-  "rank": 2,
-  "smallest_nonzero_singular_value": 0.5793385803552313,
-  "condition_number": Infinity,
+  "rank": 3,
+  "smallest_nonzero_singular_value": 0.11806910872685365,
+  "condition_number": 1.3592933569668142e+18,
   "weak_directions": [
     {
-      "sigma_b": -0.9894,
-      "mu_b": 0.1268,
-      "auction_shift": 0.0705
+      "sigma_s": -0.7818,
+      "mu_b": -0.3856,
+      "auction_shift": 0.3802
     }
   ],
   "status": "NOT_IDENTIFIED"
