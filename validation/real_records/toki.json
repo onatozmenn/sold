@@ -1,5 +1,5 @@
-{
-  "_instructions": "REAL-RECORD VALIDATION CASE (level-2), COMPLETED. TOKI/GYO project disclosure 'Projede Benzer Nitelikte Olan Bagimsiz Bolumlerin Ortalama Satis Fiyatlari (31 Aralik 2019 tarihi itibariyle)' for Park Mavera III (PMVR3), manually audited by the operator. METHODOLOGICAL CORE: the disclosure reports TWO DISTINCT aggregate populations - OFFERED inventory (84 units) and CUMULATIVE REALIZED sales (387 units). These are NOT the same units, so they are NOT a paired reference->realized observation: NO synthetic pair and NO closing discount between 1,172,785.71 and 997,375.19 is computed. This record is therefore NOT a RealizedLabel; it is represented as TWO unpaired aggregate observations (observation_model=aggregate_observation) that lack realized_price/reference_price by construction and are EXCLUDED from asking_to_closing_labels(). The adapter normalizes the operator-extracted structured table fields (no raw PDF parsing). Room-type strata are preserved by the schema (strata field); the per-room-type rows were NOT part of this transcription and can be appended later without changing the audited cohort aggregates.",
+ {
+  "_instructions": "REAL-RECORD VALIDATION CASE (level-2), COMPLETED. TOKI/GYO project disclosure 'Projede Benzer Nitelikte Olan Bagimsiz Bolumlerin Ortalama Satis Fiyatlari (31 Aralik 2019 tarihi itibariyle)' for Park Mavera III (PMVR3), manually audited by the operator. METHODOLOGICAL CORE: the disclosure reports TWO DISTINCT aggregate populations - OFFERED inventory (84 units) and CUMULATIVE REALIZED sales (387 units). These are NOT the same units, so they are NOT a paired reference->realized observation: NO synthetic pair and NO closing discount between 1,172,785.71 and 997,375.19 is computed. This record is therefore NOT a RealizedLabel; it is represented as TWO unpaired aggregate observations (observation_model=aggregate_observation) that lack realized_price/reference_price by construction and are EXCLUDED from asking_to_closing_labels(). The adapter normalizes the operator-extracted structured table fields (no raw PDF parsing). Room-type strata (2+1 / 3+1 / 4+1 / 5+1) ARE included per population, manually audited from the SAME official disclosure; each stratum carries count / total_price / total_gross_m2 / average_price / average_m2_price, and the strata counts and totals sum EXACTLY to the cohort aggregates (84 -> 98,514,000.00; 387 -> 385,984,197.52), which therefore remain unchanged.",
   "manifest": {
     "source": "toki",
     "domain": "toki",
@@ -11,7 +11,7 @@
     "is_real_official_record": true,
     "manually_audited": true,
     "redistribution_ok": false,
-    "notes": "Park Mavera III (PMVR3) as of 2019-12-31. UNPAIRED aggregates: offered_inventory count=84 total=98,514,000.00 avg=1,172,785.71; cumulative_realized_sales count=387 total=385,984,197.52 avg=997,375.19. NOT paired -> no reference->realized, no closing discount. Represented as two aggregate observations; excluded from asking_to_closing_labels(). parser_version here pins the AGGREGATE parser (1.0.0), independent of the paired PARSER_VERSION."
+    "notes": "Park Mavera III (PMVR3) as of 2019-12-31. UNPAIRED aggregates: offered_inventory count=84 total=98,514,000.00 avg=1,172,785.71; cumulative_realized_sales count=387 total=385,984,197.52 avg=997,375.19. NOT paired -> no reference->realized, no closing discount. Represented as two aggregate observations; excluded from asking_to_closing_labels(). Per-room-type strata (2+1/3+1/4+1/5+1) are populated and audited; strata counts/totals reconcile EXACTLY to the cohort aggregates (unchanged). parser_version here pins the AGGREGATE parser (1.0.0), independent of the paired PARSER_VERSION."
   },
   "parser_input": {
     "kind": "project_disclosure",
@@ -24,14 +24,24 @@
         "count": 84,
         "total_price": 98514000.00,
         "average_price": 1172785.71,
-        "strata": []
+        "strata": [
+          {"room_type": "2+1", "count": 80, "total_price": 92375000.00, "total_gross_m2": 10779.01, "average_price": 1154687.50, "average_m2_price": 8569.90},
+          {"room_type": "3+1", "count": 2, "total_price": 3144000.00, "total_gross_m2": 374.02, "average_price": 1572000.00, "average_m2_price": 8405.97},
+          {"room_type": "4+1", "count": 2, "total_price": 2995000.00, "total_gross_m2": 414.28, "average_price": 1497500.00, "average_m2_price": 7229.41},
+          {"room_type": "5+1", "count": 0, "total_price": 0, "total_gross_m2": 0, "average_price": 0, "average_m2_price": 0}
+        ]
       },
       {
         "observation_role": "cumulative_realized_sales",
         "count": 387,
         "total_price": 385984197.52,
         "average_price": 997375.19,
-        "strata": []
+        "strata": [
+          {"room_type": "2+1", "count": 165, "total_price": 118418019.69, "total_gross_m2": 22088.31, "average_price": 717684.97, "average_m2_price": 5361.12},
+          {"room_type": "3+1", "count": 78, "total_price": 78003128.35, "total_gross_m2": 14568.99, "average_price": 1000040.11, "average_m2_price": 5354.05},
+          {"room_type": "4+1", "count": 24, "total_price": 28932145.55, "total_gross_m2": 5143.10, "average_price": 1205506.06, "average_m2_price": 5625.43},
+          {"room_type": "5+1", "count": 120, "total_price": 160630903.93, "total_gross_m2": 27511.67, "average_price": 1338590.87, "average_m2_price": 5838.65}
+        ]
       }
     ]
   },
@@ -47,7 +57,12 @@
       "count": 84,
       "total_price": 98514000.00,
       "average_price": 1172785.71,
-      "strata": []
+      "strata": [
+        {"room_type": "2+1", "count": 80, "total_price": 92375000.00, "total_gross_m2": 10779.01, "average_price": 1154687.50, "average_m2_price": 8569.90},
+        {"room_type": "3+1", "count": 2, "total_price": 3144000.00, "total_gross_m2": 374.02, "average_price": 1572000.00, "average_m2_price": 8405.97},
+        {"room_type": "4+1", "count": 2, "total_price": 2995000.00, "total_gross_m2": 414.28, "average_price": 1497500.00, "average_m2_price": 7229.41},
+        {"room_type": "5+1", "count": 0, "total_price": 0, "total_gross_m2": 0, "average_price": 0, "average_m2_price": 0}
+      ]
     },
     {
       "domain": "toki",
@@ -60,7 +75,12 @@
       "count": 387,
       "total_price": 385984197.52,
       "average_price": 997375.19,
-      "strata": []
+      "strata": [
+        {"room_type": "2+1", "count": 165, "total_price": 118418019.69, "total_gross_m2": 22088.31, "average_price": 717684.97, "average_m2_price": 5361.12},
+        {"room_type": "3+1", "count": 78, "total_price": 78003128.35, "total_gross_m2": 14568.99, "average_price": 1000040.11, "average_m2_price": 5354.05},
+        {"room_type": "4+1", "count": 24, "total_price": 28932145.55, "total_gross_m2": 5143.10, "average_price": 1205506.06, "average_m2_price": 5625.43},
+        {"room_type": "5+1", "count": 120, "total_price": 160630903.93, "total_gross_m2": 27511.67, "average_price": 1338590.87, "average_m2_price": 5838.65}
+      ]
     }
   ]
 }

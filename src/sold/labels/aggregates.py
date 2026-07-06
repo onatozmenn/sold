@@ -94,13 +94,41 @@ def _s(v: object) -> str | None:
     return str(v)
 
 
+# Oda-tipi stratum'unun KANONİK alanları (kaynaktaki gibi; havuzlanmaz, türetilmez)
+STRATUM_FIELDS = (
+    "room_type",
+    "count",
+    "total_price",
+    "total_gross_m2",
+    "average_price",
+    "average_m2_price",
+)
+
+
+def _normalize_stratum(s: dict) -> dict:
+    """Bir oda-tipi stratum'unu kanonik 6 alanlı forma normalize eder.
+
+    RAPORLANAN değerler KORUNUR (yeniden hesaplanmaz/türetilmez); yalnızca tipler
+    zorlanır. Böylece 5+1 (count=0, total=0) gibi satırlar 0/0 bölmesine düşmez.
+    """
+    return {
+        "room_type": _s(s.get("room_type")),
+        "count": _i(s.get("count")),
+        "total_price": _f(s.get("total_price")),
+        "total_gross_m2": _f(s.get("total_gross_m2")),
+        "average_price": _f(s.get("average_price")),
+        "average_m2_price": _f(s.get("average_m2_price")),
+    }
+
+
 def normalize_aggregate(raw: dict) -> dict:
     """Ham toplu gözlemi doğrular/normalize eder.
 
     Zorunlu: geçerli ``domain`` + ``aggregation_level`` + ``comparison_scope`` +
     ``observation_role``, ``count`` > 0, ``total_price`` > 0. ``average_price`` yoksa
     ``total_price / count``'tan türetilir (kaynak raporladıysa RAPORLANAN değer korunur;
-    yeniden hesaplanıp ÜZERİNE YAZILMAZ). ``strata`` kaynaktaki gibi KORUNUR.
+    yeniden hesaplanıp ÜZERİNE YAZILMAZ). ``strata`` (oda-tipi kırılımı) kanonik 6-alanlı
+    forma normalize edilir; RAPORLANAN değerler KORUNUR (havuzlanmaz/türetilmez).
     """
     domain = str(raw.get("domain") or "").strip()
     level = str(raw.get("aggregation_level") or "").strip()
@@ -125,9 +153,8 @@ def normalize_aggregate(raw: dict) -> dict:
     if average is None:
         average = round(total / count, 2)
 
-    strata = raw.get("strata")
-    if strata is None:
-        strata = []
+    strata_raw = raw.get("strata") or []
+    strata = [_normalize_stratum(s) for s in strata_raw]
 
     return {
         "domain": domain,

@@ -30,15 +30,29 @@ def _session() -> Session:
     return sessionmaker(bind=engine, expire_on_commit=False)()
 
 
-# Park Mavera III — operatörün elle denetleyip çıkardığı YAPISAL açıklama
+# Park Mavera III — operatörün elle DENETLEDİĞİ oda-tipi strata (31 Aralık 2019 resmî açıklaması)
+_OFFERED_STRATA = [
+    {"room_type": "2+1", "count": 80, "total_price": 92375000.00, "total_gross_m2": 10779.01, "average_price": 1154687.50, "average_m2_price": 8569.90},
+    {"room_type": "3+1", "count": 2, "total_price": 3144000.00, "total_gross_m2": 374.02, "average_price": 1572000.00, "average_m2_price": 8405.97},
+    {"room_type": "4+1", "count": 2, "total_price": 2995000.00, "total_gross_m2": 414.28, "average_price": 1497500.00, "average_m2_price": 7229.41},
+    {"room_type": "5+1", "count": 0, "total_price": 0.0, "total_gross_m2": 0.0, "average_price": 0.0, "average_m2_price": 0.0},
+]
+_REALIZED_STRATA = [
+    {"room_type": "2+1", "count": 165, "total_price": 118418019.69, "total_gross_m2": 22088.31, "average_price": 717684.97, "average_m2_price": 5361.12},
+    {"room_type": "3+1", "count": 78, "total_price": 78003128.35, "total_gross_m2": 14568.99, "average_price": 1000040.11, "average_m2_price": 5354.05},
+    {"room_type": "4+1", "count": 24, "total_price": 28932145.55, "total_gross_m2": 5143.10, "average_price": 1205506.06, "average_m2_price": 5625.43},
+    {"room_type": "5+1", "count": 120, "total_price": 160630903.93, "total_gross_m2": 27511.67, "average_price": 1338590.87, "average_m2_price": 5838.65},
+]
+
+# Park Mavera III — operatörün elle denetleyip çıkardığı YAPISAL açıklama (strata dahil)
 _PMVR3 = {
     "kind": "project_disclosure",
     "project_id": "PMVR3",
     "as_of_date": "2019-12-31",
     "disclosure_title": "Projede Benzer Nitelikte Olan Bağımsız Bölümlerin Ortalama Satış Fiyatları (31 Aralık 2019)",
     "populations": [
-        {"observation_role": "offered_inventory", "count": 84, "total_price": 98514000.00, "average_price": 1172785.71, "strata": []},
-        {"observation_role": "cumulative_realized_sales", "count": 387, "total_price": 385984197.52, "average_price": 997375.19, "strata": []},
+        {"observation_role": "offered_inventory", "count": 84, "total_price": 98514000.00, "average_price": 1172785.71, "strata": _OFFERED_STRATA},
+        {"observation_role": "cumulative_realized_sales", "count": 387, "total_price": 385984197.52, "average_price": 997375.19, "strata": _REALIZED_STRATA},
     ],
 }
 
@@ -140,22 +154,37 @@ def test_mine_aggregates_unknown_source():
         mine_aggregates("sahibinden", [_PMVR3])
 
 
-# ---- strata KORUNUR (havuzlanmaz) ------------------------------------------ #
-def test_room_type_strata_preserved():
-    strata = [
-        {"room_type": "2+1", "count": 30, "total_price": 33000000.0, "average_price": 1100000.0},
-        {"room_type": "3+1", "count": 54, "total_price": 65514000.0, "average_price": 1213222.22},
-    ]
-    rec = {
-        "project_id": "PMVR3",
-        "as_of_date": "2019-12-31",
-        "populations": [
-            {"observation_role": "offered_inventory", "count": 84, "total_price": 98514000.0, "strata": strata}
-        ],
-    }
-    out = mine_aggregates("toki", [rec])
-    assert len(out) == 1
-    assert out[0]["strata"] == strata  # kaynaktaki gibi AYNEN korunur
+# ---- strata: TAM normalize + tutarlılık (havuzlanmaz) ---------------------- #
+def test_pmvr3_strata_normalized_complete():
+    """Park Mavera III oda-tipi strata TAM ve normalize edilmiş korunur.
+
+    Sadece 'strata korunabiliyor' demez; DENETLENMİŞ tüm değerleri (room_type, count,
+    total_price, total_gross_m2, average_price, average_m2_price) ve strata↔popülasyon
+    tutarlılığını (toplam sayı/bedel DEĞİŞMEDEN eşleşir) doğrular. EŞLEŞTİRME YOKTUR.
+    """
+    from sold.labels.aggregates import STRATUM_FIELDS
+
+    obs = {o["observation_role"]: o for o in mine_aggregates("toki", [_PMVR3])}
+    offered = obs["offered_inventory"]
+    realized = obs["cumulative_realized_sales"]
+
+    # (1) TAM normalize strata — her denetlenmiş alan aynen korunur
+    assert offered["strata"] == _OFFERED_STRATA
+    assert realized["strata"] == _REALIZED_STRATA
+
+    # (2) Kanonik 6 alan + oda-tipi sırası (2+1/3+1/4+1/5+1)
+    for strata in (offered["strata"], realized["strata"]):
+        assert [s["room_type"] for s in strata] == ["2+1", "3+1", "4+1", "5+1"]
+        for s in strata:
+            assert set(s) == set(STRATUM_FIELDS)
+
+    # (3) strata ↔ popülasyon tutarlılığı: toplamlar DEĞİŞMEDEN eşleşir
+    assert sum(s["count"] for s in offered["strata"]) == 84
+    assert sum(s["count"] for s in realized["strata"]) == 387
+    assert abs(sum(s["total_price"] for s in offered["strata"]) - 98514000.00) < 0.01
+    assert abs(sum(s["total_price"] for s in realized["strata"]) - 385984197.52) < 0.01
+    assert offered["total_price"] == 98514000.00  # popülasyon toplamı DEĞİŞMEDİ
+    assert realized["total_price"] == 385984197.52
 
 
 # ---- kalıcılık (AYRI tablo) ------------------------------------------------ #
@@ -171,6 +200,7 @@ def test_persist_and_load_aggregates_roundtrip():
     realized = df[df["observation_role"] == "cumulative_realized_sales"].iloc[0]
     assert realized["count"] == 387
     assert float(realized["total_price"]) == 385984197.52
+    assert len(realized["strata"]) == 4  # strata JSON kolonu round-trip eder
     # rol filtresi
     only = load_aggregates(session, observation_role="offered_inventory")
     assert len(only) == 1
