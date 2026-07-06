@@ -1,27 +1,61 @@
-"""Sentetik konut piyasası üreteci (motoru doğrulamak için).
+"""Sentetik konut piyası üreteci — GERÇEK TCMB ekspertiz TL/m²'ye kalibre.
 
-Gerçek satış fiyatı verisi kıt olduğundan, tahmincinin doğruluğunu ölçmenin
-bilimsel yolu, GERÇEĞİN BİLİNDİĞİ sentetik bir piyasa kurmaktır. Burada her ilan
-için gizli bir ``true_realized_price`` üretilir; gözlemlenebilir sinyaller
-(ilan fiyatları, time-on-market, fiyat düşüşleri) bundan türetilir. Motor daha
-sonra sadece gözlemlenebilir sinyallerden ``true_realized_price``'ı geri
-kurmaya çalışır.
+Gerçek tek-tek ilan/satış verisi Türkiye'de yasal olarak halka açık DEĞİLDİR
+(yalnızca kazımayla, o da ToS/yasa dışı). Bu yüzden per-listing veriyi simüle
+ederiz; ANCAK fiyat SEVİYELERİ uydurma değildir: her ilin taban TL/m² değeri
+TCMB'nin ekspertiz tabanlı GERÇEK birim fiyatlarından gelir (EVDS bie_birimfiyat →
+datasets/unit_prices.csv). Yani seviyeler + iller arası fark + (KFE ile) trend
+GERÇEK; yalnızca her dairenin bireysel sapması ve gizli ``true_realized_price``
+simüledir. MEVA/Endeksa/TCMB de ground-truth olarak ekspertize dayanır.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
-# İllustratif ilçe bazlı TL/m² taban değerleri (gerçek değil, göstermelik).
-DISTRICT_PPM2 = {
-    "Kadıköy": 92000.0,
-    "Beşiktaş": 125000.0,
-    "Üsküdar": 82000.0,
-    "Ataşehir": 88000.0,
-    "Bağcılar": 46000.0,
-    "Esenyurt": 39000.0,
+UNIT_PRICES_CSV = Path("datasets/unit_prices.csv")
+
+# Gerçek TCMB ekspertiz TL/m² (2026-Q1, EVDS bie_birimfiyat). datasets/unit_prices.csv
+# mevcutsa CANLI değerler kullanılır; yoksa bu snapshot'a (hermetik test) düşülür.
+REAL_PPM2_SNAPSHOT: dict[str, float] = {
+    "İstanbul": 79306, "Muğla": 79110, "Antalya": 54443, "İzmir": 52456,
+    "Balıkesir": 45904, "Ankara": 44036, "Kocaeli": 42338, "Denizli": 40428,
+    "Manisa": 39555, "Sakarya": 39348, "Bursa": 39327, "Adana": 38369,
+    "Eskişehir": 37465, "Mersin": 37068, "Konya": 34796, "Trabzon": 34866,
+    "Samsun": 34374, "Diyarbakır": 34277, "Gaziantep": 31170, "Kayseri": 27879,
+    "Hatay": 26923, "Erzurum": 26245, "Şanlıurfa": 25448, "Malatya": 24070,
 }
+
+# İl piyasa ağırlıkları (kabaca işlem hacmi payı) — örnekleme dağılımı için.
+MARKET_WEIGHTS: dict[str, float] = {
+    "İstanbul": 20, "Ankara": 10, "İzmir": 8, "Bursa": 6, "Antalya": 6,
+    "Kocaeli": 4, "Adana": 4, "Konya": 4, "Sakarya": 3, "Mersin": 3,
+    "Gaziantep": 3, "Muğla": 3, "Denizli": 3, "Manisa": 3, "Balıkesir": 3,
+    "Kayseri": 3, "Samsun": 2, "Eskişehir": 2, "Trabzon": 2, "Hatay": 2,
+    "Diyarbakır": 2, "Şanlıurfa": 2, "Malatya": 2, "Erzurum": 2,
+}
+
+
+def load_province_ppm2(path: Path = UNIT_PRICES_CSV) -> dict[str, float]:
+    """İl -> gerçek TL/m² (en güncel). CSV yoksa/bozuksa baked snapshot'a düşer."""
+    try:
+        if path.exists():
+            df = pd.read_csv(path)
+            if not df.empty and {"province", "period", "tl_m2"}.issubset(df.columns):
+                latest = df.sort_values("period").groupby("province").tail(1)
+                live = {
+                    str(r["province"]): float(r["tl_m2"]) for _, r in latest.iterrows()
+                }
+                out = {p: live[p] for p in MARKET_WEIGHTS if p in live}
+                if out:
+                    return out
+    except Exception:  # noqa: BLE001 — dosya bozuksa yedeğe düş
+        pass
+    return {p: v for p, v in REAL_PPM2_SNAPSHOT.items() if p in MARKET_WEIGHTS}
+
 
 HEATING_OPTIONS = np.array(
     ["Kombi (Doğalgaz)", "Merkezi (Pay Ölçer)", "Klima", "Yok"]
@@ -35,12 +69,24 @@ HEATING_FACTOR = {
 
 
 def generate_market(n: int = 2500, seed: int = 42) -> pd.DataFrame:
-    """Gözlemlenebilir özellikler + gizli ``true_realized_price`` üretir."""
+    """Gözlemlenebilir özellikler + gizli ``true_realized_price`` üretir.
+
+    Taban TL/m² GERÇEK (il bazlı TCMB ekspertiz); iller piyasa ağırlığıyla
+    örneklenir, il içi ilçe farkı simüle bir çarpanla eklenir.
+    """
     rng = np.random.default_rng(seed)
 
-    district_names = np.array(list(DISTRICT_PPM2))
-    district = district_names[rng.integers(0, len(district_names), n)]
-    base_ppm2 = np.array([DISTRICT_PPM2[d] for d in district])
+    ppm2_map = load_province_ppm2()
+    provinces = np.array(list(ppm2_map))
+    weights = np.array([MARKET_WEIGHTS.get(p, 1.0) for p in provinces], dtype=float)
+    weights = weights / weights.sum()
+    province = rng.choice(provinces, size=n, p=weights)
+    province_ppm2 = np.array([ppm2_map[p] for p in province])
+
+    # İl içi ilçe/bölge farkı — gerçek ilçe TL/m² kamuya açık olmadığından simüle.
+    zone = rng.integers(1, 7, n)
+    district = np.array([f"{province[i]}-B{zone[i]}" for i in range(n)])
+    base_ppm2 = province_ppm2 * np.exp(rng.normal(0.0, 0.16, n))
     neighborhood = np.array(
         [f"{district[i]}-M{rng.integers(1, 6)}" for i in range(n)]
     )
@@ -90,11 +136,11 @@ def generate_market(n: int = 2500, seed: int = 42) -> pd.DataFrame:
             "source": "synthetic",
             "source_listing_id": [f"SYN-{i:05d}" for i in range(n)],
             "listing_type": "sale",
-            "province": "İstanbul",
+            "province": province,
             "district": district,
             "neighborhood": neighborhood,
-            "lat": 41.0 + rng.normal(0, 0.05, n),
-            "lon": 29.0 + rng.normal(0, 0.06, n),
+            "lat": np.nan,
+            "lon": np.nan,
             "gross_m2": gross_m2.round(0),
             "net_m2": (gross_m2 * 0.85).round(0),
             "room_count_num": room_count_num,

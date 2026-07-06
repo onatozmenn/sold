@@ -100,6 +100,39 @@ def evds_house_sales(
         _store_house_sales(long_df)
 
 
+@evds_app.command("unit-prices")
+def evds_unit_prices(
+    start: str = typer.Option("01-01-2013", help="Başlangıç (DD-MM-YYYY)"),
+    end: str = typer.Option("", help="Bitiş (DD-MM-YYYY); boşsa bugün"),
+    out: Path = typer.Option(Path("data/unit_prices.csv"), help="Çıktı CSV yolu"),
+) -> None:
+    """TCMB ekspertiz TL/m² konut birim fiyatlarını (il bazında, GERÇEK) çeker."""
+    from .evds.client import EvdsAuthError, EvdsClient
+    from .evds.unit_prices import fetch_unit_prices
+
+    try:
+        with EvdsClient() as client:
+            df = fetch_unit_prices(
+                client, start_date=start, end_date=end or dt.date.today()
+            )
+    except EvdsAuthError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    if df.empty:
+        typer.secho(
+            "Veri gelmedi. Kodları `sold evds series bie_birimfiyat` ile kontrol edin.",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit(code=1)
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out, index=False)
+    n_prov = df["province"].nunique()
+    typer.secho(f"{len(df)} satır ({n_prov} il) -> {out}", fg=typer.colors.GREEN)
+    typer.echo(df.tail(8).to_string(index=False))
+
+
 @evds_app.command("series")
 def evds_series(
     datagroup: str = typer.Argument("bie_kfe", help="Veri grubu kodu"),

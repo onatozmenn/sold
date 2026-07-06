@@ -31,3 +31,8 @@ DEFAULT_HOUSE_SALES_SERIES: dict[str, str] = {
     "TP.AKONUTSAT1.KTR411": "Bursa Konut Toplam Satış",
     "TP.AKONUTSAT1.KTR611": "Antalya Konut Toplam Satış",
 }
+
+# EVDS veri grubu — TCMB ekspertiz TL/m² konut birim fiyatları (il bazında, GERÇEK,
+# çeyreklik). Seriler TP.BIRIMFIYAT.{il} (İstanbul=IST, Ankara=ANK, İzmir=IZM;
+# diğerleri tam il adı). Kodlar keşifle alınır (discover_unit_price_codes).
+UNIT_PRICE_DATAGROUP = "bie_birimfiyat"

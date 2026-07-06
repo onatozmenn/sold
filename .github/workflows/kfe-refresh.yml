@@ -36,11 +36,15 @@ jobs:
         env:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
         run: sold evds house-sales --start 01-01-2013 --out datasets/house_sales.csv
+      - name: Ekspertiz TL/m² birim fiyatlarını çek (TCMB)
+        env:
+          EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
+        run: sold evds unit-prices --start 01-01-2013 --out datasets/unit_prices.csv
       - name: Değiştiyse commit'le
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add datasets/kfe.csv datasets/house_sales.csv
+          git add datasets/kfe.csv datasets/house_sales.csv datasets/unit_prices.csv
           if git diff --staged --quiet; then
             echo "Değişiklik yok."
           else
