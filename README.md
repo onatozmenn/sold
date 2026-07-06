@@ -133,7 +133,7 @@ Equivalent REST endpoints: `POST /outcome` and `GET /analytics`. Sold arm's-leng
 
 ## Public Label Bootstrap
 
-Rather than waiting on institutional access, `sold` bootstraps **real, observed** transaction labels from public domains through a `PublicLabelMiner` with per-source adapters:
+Rather than waiting on institutional access, `sold` can turn **operator-supplied** official public records into provenance-aware realized-price labels via a `PublicLabelMiner` with per-source adapters. This is a **parser layer, not continuous ingestion** — you hand it a record you already downloaded (an auction result, a KAP disclosure) and the adapter normalizes it. Nothing is discovered, fetched, or ingested automatically, and labels do **not** "flow in" on their own.
 
 | Source | Adapter | Reference → Realized | Mechanism | Confidence |
 |---|---|---|---|---|
@@ -143,17 +143,25 @@ Rather than waiting on institutional access, `sold` bootstraps **real, observed*
 
 Every label lands in a single **provenance-aware registry** with mandatory `domain`, `label_source`, `sale_mechanism`, and `reference_price_type` fields.
 
-**The methodological core — domains are never mixed:**
+### Three levels of validation, kept distinct
 
-- `asking_to_closing_labels()` feeds the **asking → closing** ML head **only** with direct-closing observations (broker / seller, `reference = asking`, arm's-length). UYAP / KAP / TOKİ are **excluded** here.
-- `fair_value_labels()` feeds a **separate FairValue → realized** calibration with the public appraisal / reserve labels, each kept tagged by mechanism.
+1. **Parser / adapter validation** — unit tests confirm each adapter maps fields to the schema correctly, on **illustrative fixtures**. ✅ done.
+2. **Real-record validation** — running the adapters against *actual downloaded* official records and verifying the parsed values. ⬜ not yet done.
+3. **Live source ingestion** — continuously fetching new records per source. ⬜ not built (a ToS-reviewed operator step, deliberately out of scope).
+
+> The demo figures `5,000,000 → 5,400,000` (UYAP) and `5,200,000 → 5,508,475` (KAP) are **illustrative fixtures authored to exercise the parser** — see [samples/labels/illustrative_kap.json](samples/labels/illustrative_kap.json). The KAP figure mirrors a publicly reported disclosure, but the values are **not** proof that the system downloaded or verified real records (that would be level 2 above).
+
+### Domains are never pooled
+
+- `asking_to_closing_labels()` feeds the **asking → closing** ML head **only** with direct-closing observations (broker / seller, `reference = asking`, arm's-length). UYAP / KAP / TOKİ are **excluded**.
+- `fair_value_labels()` is a **registry query, not a training set**. The four public relationships — appraisal→corporate-sale, appraisal→auction, reserve→auction, offered_avg→primary-market — are **distinct** and must not be pooled into one target. Use `fair_value_strata()` (splits by `sale_mechanism` × `reference_price_type`) and calibrate each stratum with its own model.
 
 ```bash
-sold labels mine kap --file disclosures.json --to-db
+sold labels mine kap --file samples/labels/illustrative_kap.json --to-db
 sold labels stats     # counts by domain / mechanism / confidence + the domain split
 ```
 
-> **On collection:** the adapters *parse official / public records you provide* (a downloaded disclosure, an auction result). Live fetching is intentionally **not** shipped — each source has its own terms, so it stays a ToS-reviewed operator step, consistent with the project's no-scraping stance.
+> **On collection:** the adapters *parse official records you provide*; live fetching is intentionally not shipped, consistent with the project's no-scraping stance.
 
 ## Data Sources
 

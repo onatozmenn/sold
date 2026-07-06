@@ -180,3 +180,33 @@ def test_persist_and_load_labels():
     df = load_labels(session)
     assert len(df) == 2
     assert set(df["domain"]) == {"public_auction", "corporate"}
+
+
+def test_fair_value_strata_not_pooled():
+    """FairValue etiketleri (mechanism, reference_price_type) ile AYRI kalır — havuzlanmaz."""
+    from sold.labels import fair_value_strata
+
+    df = pd.DataFrame(
+        [
+            normalize_label(UYAPAdapter().parse(_UYAP)),  # auction / appraisal
+            normalize_label(KAPAdapter().parse(_KAP)),  # corporate_arm_length / appraisal
+            normalize_label(
+                TOKIAdapter().parse(
+                    {"kind": "auction", "muhammen_bedel_toplam": 50_000_000, "teklif_toplam": 54_000_000}
+                )
+            ),  # public_auction / reserve
+            normalize_label(
+                TOKIAdapter().parse(
+                    {"kind": "project_avg", "offered_avg": 6_000_000, "realized_avg": 5_700_000}
+                )
+            ),  # primary_market / offered_avg
+        ]
+    )
+    strata = fair_value_strata(df)
+    assert set(strata.keys()) == {
+        ("auction", "appraisal"),
+        ("corporate_arm_length", "appraisal"),
+        ("public_auction", "reserve"),
+        ("primary_market", "offered_avg"),
+    }
+    assert all(len(group) == 1 for group in strata.values())  # hiçbir strata havuzlanmadı

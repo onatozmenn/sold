@@ -203,12 +203,32 @@ def asking_to_closing_labels(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def fair_value_labels(df: pd.DataFrame) -> pd.DataFrame:
-    """FairValue→realized kalibrasyonu için etiketler (appraisal/reserve/offered_avg).
+    """FairValue→realized için ADAY etiketleri döndürür (appraisal/reserve/offered_avg).
 
-    UYAP/KAP/TOKİ buraya gelir; ``sale_mechanism`` korunur (ayrı ayrı kalibre edilir).
+    UYARI: Bu bir REGISTRY SORGUSUDUR — eğitim kümesi DEĞİL. Dönen küme farklı
+    domain/mekanizma/referans türlerini içerir ve TEK bir hedefe HAVUZLANMAMALIDIR
+    (appraisal→kurumsal satış, appraisal→ihale, reserve→ihale, offered_avg→birincil
+    piyasa AYRI ilişkilerdir). Stratifikasyon için ``fair_value_strata`` kullanın; her
+    stratum ayrı kalibre edilir. ``sale_mechanism`` ve ``reference_price_type`` korunur.
     """
     if df.empty:
         return df
     return df[
         df["reference_price_type"].isin(["appraisal", "reserve", "offered_avg"])
     ].reset_index(drop=True)
+
+
+def fair_value_strata(df: pd.DataFrame) -> dict[tuple[str, str], pd.DataFrame]:
+    """FairValue etiketlerini AYRI stratalara böler: (sale_mechanism, reference_price_type).
+
+    KRİTİK: farklı referans→realized ilişkileri (appraisal→kurumsal, appraisal→ihale,
+    reserve→ihale, offered_avg→birincil) tek bir hedefe HAVUZLANMAZ; her stratum kendi
+    kalibratörüyle modellenmelidir. Boşsa {} döner.
+    """
+    fv = fair_value_labels(df)
+    if fv.empty:
+        return {}
+    out: dict[tuple[str, str], pd.DataFrame] = {}
+    for (mech, ref), group in fv.groupby(["sale_mechanism", "reference_price_type"]):
+        out[(str(mech), str(ref))] = group.reset_index(drop=True)
+    return out

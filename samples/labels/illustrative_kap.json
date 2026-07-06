@@ -1,0 +1,14 @@
+[
+  {
+    "_note": "ILLUSTRATIVE fixture, NOT a downloaded record. The 5.2M -> 5.508M figures mirror a publicly reported KAP real-estate disposal disclosure; all other fields are placeholders. Used only to exercise KAPAdapter (level-1 parser validation).",
+    "toplam_satis_bedeli": 5508474.60,
+    "degerleme_tutari": 5200000,
+    "iliskili_taraf": false,
+    "il": "İstanbul",
+    "ilce": "Şişli",
+    "tasinmaz_turu": "konut",
+    "brut_m2": 140,
+    "islem_tarihi": "2026-02-10",
+    "kap_id": "ILLUSTRATIVE-1"
+  }
+]

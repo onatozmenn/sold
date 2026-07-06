@@ -6,6 +6,12 @@ birincil satış duyurusu) normalize eder. **Canlı kazıma BU MODÜLDE YOKTUR**
 kaynağın kendi ToS/robots kuralları ayrıdır, canlı çekim ToS incelemesi sonrası
 ayrı bir operatör adımıdır (mevcut scraper/adapters desenindeki gibi).
 
+Bu bir PARSER katmanıdır — sürekli ingestion DEĞİL: hiçbir kayıt otomatik keşfedilmez
+ya da çekilmez, etiketler "kendiliğinden akmaz". Operatör bir kaydı verir, adapter
+normalize eder. Üç doğrulama düzeyi ayrıdır: (1) parser/adapter doğrulaması (alan
+eşleme testleri, örnek fixture'larla), (2) GERÇEK-KAYIT doğrulaması (indirilmiş resmî
+kayıtlarla — henüz yapılmadı), (3) canlı kaynak ingestion (kurulmadı).
+
 Her adapter etiketin domain'ini + mekanizmasını + referans fiyat türünü açıkça
 etiketler; böylece registry domain'leri karıştırmaz (UYAP/KAP/TOKİ asla
 asking→closing head'ine girmez).
