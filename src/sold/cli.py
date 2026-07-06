@@ -1136,6 +1136,84 @@ def flywheel_analytics_cmd(
     typer.echo(f"  Sonuç dağılımı: {a['outcome_counts']}")
 
 
+# --------------------------------------------------------------------------- #
+# Public Label Miner (kamu domain'lerinden gerçekleşen-fiyat etiketi)
+# --------------------------------------------------------------------------- #
+labels_app = typer.Typer(
+    help="Public Label Miner: UYAP/KAP/TOKİ resmî kayıtlarından etiket + domain ayrımı",
+    no_args_is_help=True,
+)
+app.add_typer(labels_app, name="labels")
+
+
+@labels_app.command("mine")
+def labels_mine_cmd(
+    source: str = typer.Argument(..., help="uyap / kap / toki"),
+    file: Path = typer.Option(..., "--file", help="JSON (kayıt listesi) veya CSV"),
+    to_db: bool = typer.Option(False, "--to-db", help="Etiketleri veritabanına yaz"),
+) -> None:
+    """Bir kamu kaynağının RESMÎ kayıtlarını etikete çevirir (canlı kazıma YOK)."""
+    from .labels import LabelError, PublicLabelMiner, persist_labels
+
+    try:
+        labels = PublicLabelMiner().mine_file(source, file)
+    except LabelError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    if not labels:
+        typer.secho("Uygun etiket bulunamadı.", fg=typer.colors.YELLOW)
+        raise typer.Exit()
+
+    typer.secho(f"{len(labels)} etiket üretildi ({source}).", fg=typer.colors.GREEN)
+    for lab in labels[:5]:
+        ref = lab.get("reference_price") or 0
+        typer.echo(
+            f"  {lab['sale_mechanism']:<20} {lab['reference_price_type']:<10} "
+            f"ref={ref:>14,.0f} → gerçekleşen={lab['realized_price']:>14,.0f} "
+            f"[güven {lab['label_confidence']}]"
+        )
+    if to_db:
+        from .db import get_engine, get_sessionmaker, init_db
+
+        engine = get_engine()
+        init_db(engine)
+        with get_sessionmaker(engine)() as session:
+            n = persist_labels(session, labels)
+            session.commit()
+        typer.secho(f"{n} etiket veritabanına yazıldı.", fg=typer.colors.GREEN)
+
+
+@labels_app.command("stats")
+def labels_stats_cmd() -> None:
+    """Etiketleri özetler + DOMAIN AYRIMINI gösterir (asking→closing vs FairValue)."""
+    from .db import get_engine, get_sessionmaker, init_db
+    from .labels import asking_to_closing_labels, fair_value_labels, load_labels
+
+    engine = get_engine()
+    init_db(engine)
+    with get_sessionmaker(engine)() as session:
+        df = load_labels(session)
+
+    if df.empty:
+        typer.secho(
+            "Etiket yok. `sold labels mine <kaynak> --file ... --to-db`",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit()
+
+    typer.secho(f"Toplam gerçekleşen-fiyat etiketi: {len(df)}", fg=typer.colors.CYAN, bold=True)
+    typer.echo(f"  Domain: {df['domain'].value_counts().to_dict()}")
+    typer.echo(f"  Mekanizma: {df['sale_mechanism'].value_counts().to_dict()}")
+    typer.echo(f"  Kaynak: {df['label_source'].value_counts().to_dict()}")
+    typer.echo(f"  Güven: {df['label_confidence'].value_counts().to_dict()}")
+    a2c = asking_to_closing_labels(df)
+    fv = fair_value_labels(df)
+    typer.secho("  Domain ayrımı (KARIŞTIRILMAZ):", fg=typer.colors.CYAN)
+    typer.echo(f"    asking→closing head (yalnızca doğrudan closing): {len(a2c)}")
+    typer.echo(f"    FairValue→realized kalibrasyonu (appraisal/reserve): {len(fv)}")
+
+
 @app.command("serve")
 def serve_cmd(
     host: str = typer.Option("127.0.0.1", help="Dinlenecek adres"),

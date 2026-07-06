@@ -241,3 +241,37 @@ class ListingOutcome(Base):
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class RealizedLabel(Base):
+    """Birleşik, provenance-aware GERÇEKLEŞEN-fiyat etiketi (çok-domainli).
+
+    Kamuya açık işlem domain'lerinden (UYAP icra, KAP kurumsal, TOKİ/GYO birincil)
+    ve doğrudan closing gözleyen kaynaklardan (broker/seller) gelen etiketleri TEK
+    kayıtta toplar — ama ``domain`` ve ``sale_mechanism`` AYRI tutulur. asking→closing
+    ML head'i YALNIZCA doğrudan closing kaynaklarını (reference='asking', arm_length)
+    görür; kamu domain'leri FairValue→realized kalibrasyonuna gider (asla karıştırılmaz).
+    """
+
+    __tablename__ = "realized_labels"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(24), nullable=False)  # public_auction/corporate/primary_market/consumer/broker
+    label_source: Mapped[str] = mapped_column(String(32), nullable=False)  # uyap/kap/toki/seller_self_reported/...
+    sale_mechanism: Mapped[str] = mapped_column(String(24), nullable=False)  # auction/corporate_arm_length/primary_market/arm_length
+    reference_price_type: Mapped[str] = mapped_column(String(16), nullable=False)  # appraisal/reserve/asking/offered_avg/none
+    reference_price: Mapped[float | None] = mapped_column(Numeric(16, 2))
+    realized_price: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False)
+    related_party: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Taşınmaz nitelikleri
+    province: Mapped[str | None] = mapped_column(String(64))
+    district: Mapped[str | None] = mapped_column(String(64))
+    property_type: Mapped[str | None] = mapped_column(String(32))
+    gross_m2: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    transaction_date: Mapped[dt.date | None] = mapped_column()
+    # Provenance
+    label_confidence: Mapped[str | None] = mapped_column(String(1))  # A/B/C
+    external_ref: Mapped[str | None] = mapped_column(String(256))  # kaynak id/URL
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

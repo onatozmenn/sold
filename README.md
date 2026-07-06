@@ -16,6 +16,7 @@
 - [Background](#background)
 - [How It Works](#how-it-works)
 - [Broker Data Flywheel](#broker-data-flywheel)
+- [Public Label Bootstrap](#public-label-bootstrap)
 - [Data Sources](#data-sources)
 - [Labels & Provenance](#labels--provenance)
 - [Install](#install)
@@ -65,20 +66,30 @@ flowchart TD
         B3["unit_prices.csv - appraisal TL/m2"]
     end
 
-    subgraph FLYWHEEL["Broker Data Flywheel"]
+    subgraph MINER["Public Label Miner - observed public transactions"]
+        U["UYAP (auction)"]
+        K["KAP (corporate)"]
+        T["TOKI / GYO (primary)"]
+    end
+
+    subgraph FLYWHEEL["Broker / Seller Flywheel - direct closing"]
         O["listing_outcomes: Sold / Withdrawn / Expired / Active / Lost / Unknown"]
         AN["Negotiation analytics"]
         O --> AN
-        AN -. value returned to broker .-> O
+        AN -. value returned .-> O
     end
-    O --> L1["ClosingDiscount labels (sold + arm's-length)"]
-    O --> L2["SaleProbability labels (all outcomes) - roadmap"]
+
+    U & K & T --> REG["Provenance-aware label registry (domain + mechanism kept separate)"]
+    O --> REG
+    REG --> FV["FairValue calibration (appraisal / reserve -> realized)"]
+    REG --> A2C["asking -> closing head (ONLY direct-closing, arm's-length)"]
 
     FEATURES --> C{RealValuator}
-    L1 --> C
+    FV --> C
+    A2C --> C
     C -->|no paired labels| E["Fallback prior (published margin + demand)"]
-    C -->|paired labels| F["RealizedValuator - ML (hedonic + discount)"]
-    E & F --> G["Estimated realized price + provenance-aware confidence"]
+    C -->|paired labels| Fm["RealizedValuator - ML (hedonic + discount)"]
+    E & Fm --> G["Estimated realized price + provenance-aware confidence"]
     G --> H["CLI - REST API - web form"]
 ```
 
@@ -119,6 +130,30 @@ sold flywheel analytics
 ```
 
 Equivalent REST endpoints: `POST /outcome` and `GET /analytics`. Sold arm's-length outcomes feed **ClosingDiscount**; all outcomes feed **SaleProbability** — the two stay separate conceptual components.
+
+## Public Label Bootstrap
+
+Rather than waiting on institutional access, `sold` bootstraps **real, observed** transaction labels from public domains through a `PublicLabelMiner` with per-source adapters:
+
+| Source | Adapter | Reference → Realized | Mechanism | Confidence |
+|---|---|---|---|---|
+| **UYAP** e-satış (judicial auction) | `UYAPAdapter` | appraisal → winning bid | `auction` | A |
+| **KAP** (corporate disclosures) | `KAPAdapter` | appraisal → sale value | `corporate_arm_length` | A |
+| **TOKİ / GYO** (primary market) | `TOKIAdapter` | reserve / offered-avg → realized | `public_auction` / `primary_market` | A |
+
+Every label lands in a single **provenance-aware registry** with mandatory `domain`, `label_source`, `sale_mechanism`, and `reference_price_type` fields.
+
+**The methodological core — domains are never mixed:**
+
+- `asking_to_closing_labels()` feeds the **asking → closing** ML head **only** with direct-closing observations (broker / seller, `reference = asking`, arm's-length). UYAP / KAP / TOKİ are **excluded** here.
+- `fair_value_labels()` feeds a **separate FairValue → realized** calibration with the public appraisal / reserve labels, each kept tagged by mechanism.
+
+```bash
+sold labels mine kap --file disclosures.json --to-db
+sold labels stats     # counts by domain / mechanism / confidence + the domain split
+```
+
+> **On collection:** the adapters *parse official / public records you provide* (a downloaded disclosure, an auction result). Live fetching is intentionally **not** shipped — each source has its own terms, so it stays a ToS-reviewed operator step, consistent with the project's no-scraping stance.
 
 ## Data Sources
 
@@ -254,7 +289,9 @@ Negotiation-margin figures from Turkish market reporting: İstanbul ≈ 10%, Ank
 - [x] Fallback valuation engine (published margin prior + demand adjustment)
 - [x] Provenance-aware ground-truth labels with automatic ML takeover
 - [x] **Broker Data Flywheel** — listing-outcome collection + non-ML negotiation analytics
+- [x] **Public Label Bootstrap** — provenance-aware registry + UYAP/KAP/TOKİ adapters with strict domain separation
 - [ ] **SaleProbability** model (`P(sold ≤ N days)`) trained on collected outcomes
+- [ ] Live, ToS-reviewed fetchers for the public label sources
 - [ ] Broker-vs-benchmark analytics over an aggregate anonymized dataset
 - [ ] Institutional label sources — TKGM Tapu Güvenilir Hesap, GABİM/TADEBİS, TÜİK microdata
 - [ ] Public dashboard (GitHub Pages)
