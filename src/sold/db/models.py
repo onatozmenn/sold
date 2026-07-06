@@ -256,13 +256,14 @@ class RealizedLabel(Base):
     __tablename__ = "realized_labels"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    domain: Mapped[str] = mapped_column(String(24), nullable=False)  # public_auction/corporate/primary_market/consumer/broker
+    domain: Mapped[str] = mapped_column(String(24), nullable=False)  # kaynak-domain: kap/uyap/toki/broker/consumer
     label_source: Mapped[str] = mapped_column(String(32), nullable=False)  # uyap/kap/toki/seller_self_reported/...
-    sale_mechanism: Mapped[str] = mapped_column(String(24), nullable=False)  # auction/corporate_arm_length/primary_market/arm_length
-    reference_price_type: Mapped[str] = mapped_column(String(16), nullable=False)  # appraisal/reserve/asking/offered_avg/none
+    sale_mechanism: Mapped[str] = mapped_column(String(40), nullable=False)  # auction/corporate_negotiated_non_related/corporate_related_party/public_auction/primary_market/arm_length
+    reference_price_type: Mapped[str] = mapped_column(String(16), nullable=False)  # appraisal/prior_appraisal/reserve/asking/offered_avg/none
     reference_price: Mapped[float | None] = mapped_column(Numeric(16, 2))
     realized_price: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False)
     related_party: Mapped[bool] = mapped_column(Boolean, default=False)
+    value_method: Mapped[str | None] = mapped_column(String(32))  # negotiation/auction/administrative...
     # Taşınmaz nitelikleri
     province: Mapped[str | None] = mapped_column(String(64))
     district: Mapped[str | None] = mapped_column(String(64))

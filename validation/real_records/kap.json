@@ -1,17 +1,42 @@
 {
-  "_instructions": "REAL-RECORD VALIDATION SLOT (level-2). Operator: (1) download a real KAP real-estate disposal disclosure, (2) fill parser_input with the non-personal structured fields the KAPAdapter reads, (3) fill expected_output with the manually-audited normalized label, (4) set manifest.record_id + retrieval_date, (5) flip is_real_official_record and manually_audited to true. Do NOT commit the raw disclosure artifact. Until both flags are true, tests/test_real_records.py SKIPS this slot (PENDING).",
+  "_instructions": "REAL-RECORD VALIDATION CASE (level-2), COMPLETED. KAP notification 963554, manually audited by the operator. EDGE CASE: the KAP structured valuation field is EMPTY and valuation_report_prepared=false; the 5,200,000 figure is a PRIOR appraisal (Ekol Gayrimenkul, 2020-12-28, report Oi-710) referenced only in the explanation text. The parser therefore DERIVES reference_price_type=prior_appraisal (not a current structured 'appraisal') and it is NOT injected as degerleme_tutari. Raw disclosure artifact is NOT redistributed; only non-personal audited fields are stored.",
   "manifest": {
     "source": "kap",
-    "domain": "corporate",
-    "record_id": "PENDING",
+    "domain": "kap",
+    "record_id": "963554",
     "record_type": "real_estate_disposal_disclosure",
-    "retrieval_date": null,
-    "parser_version": "1.0.0",
-    "is_real_official_record": false,
-    "manually_audited": false,
+    "retrieval_date": "2026-07-06",
+    "parser_version": "1.1.0",
+    "is_real_official_record": true,
+    "manually_audited": true,
     "redistribution_ok": false,
-    "notes": "Awaiting operator retrieval of a genuine KAP real-estate disposal disclosure. Not validated."
+    "notes": "Sisli/Istanbul apartment. Realized sale TRY 5,508,474.60 excl. VAT; completion 2021-09-13; natural-person counterparty; related_party=false but NOT asserted arm's-length -> corporate_negotiated_non_related. Structured valuation empty + report_prepared=false -> 5,200,000 is a PRIOR appraisal (Ekol GYO, 2020-12-28, Oi-710) from explanation text -> reference_price_type=prior_appraisal."
   },
-  "parser_input": {},
-  "expected_output": {}
+  "parser_input": {
+    "kap_id": "963554",
+    "toplam_satis_bedeli": 5508474.60,
+    "degerleme_raporu_hazirlandi": false,
+    "degerleme_tutari": null,
+    "prior_appraisal_value": 5200000,
+    "prior_appraisal_ref": "Oi-710",
+    "prior_appraisal_date": "2020-12-28",
+    "iliskili_taraf": false,
+    "deger_belirleme_yontemi": "negotiation",
+    "il": "İstanbul",
+    "ilce": "Şişli",
+    "tasinmaz_turu": "konut",
+    "islem_tarihi": "2021-09-13"
+  },
+  "expected_output": {
+    "domain": "kap",
+    "label_source": "kap",
+    "sale_mechanism": "corporate_negotiated_non_related",
+    "reference_price_type": "prior_appraisal",
+    "reference_price": 5200000,
+    "realized_price": 5508474.60,
+    "related_party": false,
+    "value_method": "negotiation",
+    "transaction_date": "2021-09-13"
+  }
 }
+

@@ -47,6 +47,10 @@ def test_real_record_parser_matches_audited_expected(record):
     assert len(got) == 1, f"{record.source}: parser tam 1 etiket üretmeli"
     out, exp = got[0], record.expected_output
     for key in COMPARED_FIELDS:
-        assert out.get(key) == exp.get(key), (
-            f"{record.source}.{key}: parser={out.get(key)!r} != beklenen={exp.get(key)!r}"
+        got_val = out.get(key)
+        exp_val = exp.get(key)
+        if key == "transaction_date":  # parser date nesnesi → str kıyas
+            got_val = str(got_val) if got_val is not None else None
+        assert got_val == exp_val, (
+            f"{record.source}.{key}: parser={got_val!r} != beklenen={exp_val!r}"
         )

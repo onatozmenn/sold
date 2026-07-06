@@ -21,20 +21,32 @@ from sqlalchemy.orm import Session
 
 from ..db.models import RealizedLabel
 
-# Domainler — her biri AYRI selection mekanizması
-DOMAINS = ("public_auction", "corporate", "primary_market", "consumer", "broker")
+# Domainler — KAYNAK/domain ekseni (kaynak-domain yanlılığı ölçümü için);
+# ekonomik mekanizma ayrıca ``sale_mechanism``'de tutulur.
+DOMAINS = ("kap", "uyap", "toki", "broker", "consumer")
 SALE_MECHANISMS = (
     "auction",  # UYAP icra
-    "corporate_arm_length",  # KAP kurumsal satış
+    "corporate_arm_length",  # KAP: yalnızca GÜÇLÜ arm's-length kanıtı varsa
+    "corporate_negotiated_non_related",  # KAP: ilişkisiz, pazarlıkla (arm's-length İDDİA EDİLMEZ)
+    "corporate_related_party",  # KAP: ilişkili taraf
     "public_auction",  # TOKİ / GYO açık artırma
     "primary_market",  # TOKİ / GYO birincil satış
     "arm_length",  # sıradan ikinci el (broker/seller)
 )
-REFERENCE_PRICE_TYPES = ("appraisal", "reserve", "asking", "offered_avg", "none")
+# appraisal = O İŞLEM İÇİN hazırlanmış GÜNCEL yapısal değerleme; prior_appraisal =
+# açıklama metninde atıf yapılan ÖNCEKİ/emsal ekspertiz (yapısal alan boş).
+REFERENCE_PRICE_TYPES = (
+    "appraisal",
+    "prior_appraisal",
+    "reserve",
+    "asking",
+    "offered_avg",
+    "none",
+)
 
 # Parser sürümü — gerçek-kayıt doğrulama manifestleri buna referans verir; parser
 # davranışı değişince beklenen çıktılar yeniden denetlenmelidir.
-PARSER_VERSION = "1.0.0"
+PARSER_VERSION = "1.1.0"
 
 # Doğrudan closing gözleyen kaynaklar (asking→closing head'ine YALNIZCA bunlar girer)
 DIRECT_CLOSING_SOURCES = frozenset(
@@ -105,6 +117,7 @@ def normalize_label(raw: dict) -> dict:
         "reference_price": _f(raw.get("reference_price")),
         "realized_price": realized,
         "related_party": related,
+        "value_method": _s(raw.get("value_method")),
         "province": _s(raw.get("province")),
         "district": _s(raw.get("district")),
         "property_type": _s(raw.get("property_type")),
@@ -144,6 +157,7 @@ _COLUMNS = [
     "reference_price",
     "realized_price",
     "related_party",
+    "value_method",
     "province",
     "district",
     "property_type",
@@ -172,6 +186,7 @@ def load_labels(session: Session, domain: str | None = None) -> pd.DataFrame:
                 "reference_price": _f(r.reference_price),
                 "realized_price": _f(r.realized_price),
                 "related_party": bool(r.related_party),
+                "value_method": r.value_method,
                 "province": r.province,
                 "district": r.district,
                 "property_type": r.property_type,
@@ -218,7 +233,9 @@ def fair_value_labels(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     return df[
-        df["reference_price_type"].isin(["appraisal", "reserve", "offered_avg"])
+        df["reference_price_type"].isin(
+            ["appraisal", "prior_appraisal", "reserve", "offered_avg"]
+        )
     ].reset_index(drop=True)
 
 

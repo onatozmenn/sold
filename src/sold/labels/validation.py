@@ -41,7 +41,7 @@ MANIFEST_FIELDS = (
     "notes",
 )
 
-# Karşılaştırılan normalize çıktı alanları
+# Karşılaştırılan normalize çıktı alanları (transaction_date test'te str olarak kıyaslanır)
 COMPARED_FIELDS = (
     "domain",
     "label_source",
@@ -50,6 +50,8 @@ COMPARED_FIELDS = (
     "reference_price",
     "realized_price",
     "related_party",
+    "value_method",
+    "transaction_date",
 )
 
 

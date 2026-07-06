@@ -138,18 +138,18 @@ Rather than waiting on institutional access, `sold` can turn **operator-supplied
 | Source | Adapter | Reference → Realized | Mechanism | Confidence |
 |---|---|---|---|---|
 | **UYAP** e-satış (judicial auction) | `UYAPAdapter` | appraisal → winning bid | `auction` | A |
-| **KAP** (corporate disclosures) | `KAPAdapter` | appraisal → sale value | `corporate_arm_length` | A |
+| **KAP** (corporate disclosures) | `KAPAdapter` | appraisal *or* prior-appraisal → sale value | `corporate_negotiated_non_related` | A |
 | **TOKİ / GYO** (primary market) | `TOKIAdapter` | reserve / offered-avg → realized | `public_auction` / `primary_market` | A |
 
-Every label lands in a single **provenance-aware registry** with mandatory `domain`, `label_source`, `sale_mechanism`, and `reference_price_type` fields.
+Every label lands in a single **provenance-aware registry** with mandatory `domain`, `label_source`, `sale_mechanism`, and `reference_price_type` fields. `domain` is the **source-domain** axis (`kap` / `uyap` / `toki` / `broker` / `consumer`) so source-domain bias stays measurable, while `sale_mechanism` carries the economic mechanism separately. Two provenance subtleties are enforced by the KAP adapter: it distinguishes a **current structured valuation** (`appraisal`) from a **prior appraisal referenced only in the disclosure text** (`prior_appraisal`), and it never calls a sale `arm_length` on the basis of `related_party = false` alone — it uses the more defensible `corporate_negotiated_non_related`.
 
 ### Three levels of validation, kept distinct
 
 1. **Parser / adapter validation** — unit tests confirm each adapter maps fields to the schema correctly, on **illustrative fixtures**. ✅ done.
-2. **Real-record validation** — the operator downloads one real official record per source, feeds its non-personal fields through the parser, and commits the **manually-audited expected output** (never the raw artifact) under [`validation/real_records/`](validation/real_records/). [`tests/test_real_records.py`](tests/test_real_records.py) then enforces `parser output == audited expectation` and pins `parser_version`. **Status: harness in place; the KAP / UYAP / TOKİ slots are `PENDING` operator retrieval** (tests skip until `is_real_official_record` and `manually_audited` are both set).
+2. **Real-record validation** — the operator downloads one real official record per source, feeds its non-personal fields through the parser, and commits the **manually-audited expected output** (never the raw artifact) under [`validation/real_records/`](validation/real_records/). [`tests/test_real_records.py`](tests/test_real_records.py) then enforces `parser output == audited expectation` and pins `parser_version`. **Status: harness enforcing; the first real-record case is validated — KAP notification `963554`** ([`validation/real_records/kap.json`](validation/real_records/kap.json), a manually-audited Şişli/İstanbul disposal where the structured valuation is empty and the parser derives `prior_appraisal` from the text-referenced prior valuation). The UYAP / TOKİ slots remain `PENDING` operator retrieval (tests skip until `is_real_official_record` and `manually_audited` are both set).
 3. **Live source ingestion** — continuously fetching new records per source. ⬜ not built (a ToS-reviewed operator step, deliberately out of scope).
 
-> The demo figures `5,000,000 → 5,400,000` (UYAP) and `5,200,000 → 5,508,475` (KAP) are **illustrative fixtures authored to exercise the parser** — see [samples/labels/illustrative_kap.json](samples/labels/illustrative_kap.json). The KAP figure mirrors a publicly reported disclosure, but the values are **not** proof that the system downloaded or verified real records (that would be level 2 above). Level-1 illustrative fixtures live in `samples/labels/`; level-2 real-record slots live in `validation/real_records/` — the two are kept strictly separate.
+> Level-1 **illustrative fixtures** (e.g. [samples/labels/illustrative_kap.json](samples/labels/illustrative_kap.json)) use invented placeholder values to exercise the parser — the UYAP `5,000,000 → 5,400,000` figure is illustrative only. Level-2 **real-record** cases live separately under `validation/real_records/`, each with a manifest and manually-audited expected output; the first is the real KAP disclosure **`963554`**. The two tiers are kept strictly separate and never conflated.
 
 ### Domains are never pooled
 

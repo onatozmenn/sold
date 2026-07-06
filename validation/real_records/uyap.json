@@ -2,11 +2,11 @@
   "_instructions": "REAL-RECORD VALIDATION SLOT (level-2). Operator: (1) download a real UYAP e-satis COMPLETED real-estate auction result (sale realized), (2) fill parser_input with the non-personal structured fields the UYAPAdapter reads (redact any party/personal data - the adapter does not use it), (3) fill expected_output with the manually-audited normalized label, (4) set manifest.record_id + retrieval_date, (5) flip is_real_official_record and manually_audited to true. Do NOT commit the raw auction artifact. Until both flags are true, tests SKIP this slot (PENDING).",
   "manifest": {
     "source": "uyap",
-    "domain": "public_auction",
+    "domain": "uyap",
     "record_id": "PENDING",
     "record_type": "completed_real_estate_auction_result",
     "retrieval_date": null,
-    "parser_version": "1.0.0",
+    "parser_version": "1.1.0",
     "is_real_official_record": false,
     "manually_audited": false,
     "redistribution_ok": false,

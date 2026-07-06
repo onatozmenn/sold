@@ -1,7 +1,8 @@
 [
   {
-    "_note": "ILLUSTRATIVE fixture, NOT a downloaded record. The 5.2M -> 5.508M figures mirror a publicly reported KAP real-estate disposal disclosure; all other fields are placeholders. Used only to exercise KAPAdapter (level-1 parser validation).",
+    "_note": "ILLUSTRATIVE fixture, NOT a downloaded record. The 5.2M -> 5.508M figures mirror a publicly reported KAP real-estate disposal disclosure; all other fields are placeholders. Used only to exercise KAPAdapter (level-1 parser validation). For the REAL audited case with a prior-appraisal nuance, see validation/real_records/kap.json (KAP 963554).",
     "toplam_satis_bedeli": 5508474.60,
+    "degerleme_raporu_hazirlandi": true,
     "degerleme_tutari": 5200000,
     "iliskili_taraf": false,
     "il": "İstanbul",

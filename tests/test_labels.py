@@ -44,6 +44,7 @@ _UYAP = {
 }
 _KAP = {
     "toplam_satis_bedeli": 5_508_474.60,
+    "degerleme_raporu_hazirlandi": True,
     "degerleme_tutari": 5_200_000,
     "iliskili_taraf": False,
     "il": "İstanbul",
@@ -69,15 +70,15 @@ def test_normalize_rejects_invalid():
     with pytest.raises(LabelError):
         normalize_label({"domain": "banana", "sale_mechanism": "auction", "reference_price_type": "appraisal", "realized_price": 1})
     with pytest.raises(LabelError):
-        normalize_label({"domain": "corporate", "sale_mechanism": "x", "reference_price_type": "appraisal", "realized_price": 1})
+        normalize_label({"domain": "kap", "sale_mechanism": "x", "reference_price_type": "appraisal", "realized_price": 1})
     with pytest.raises(LabelError):  # realized zorunlu
-        normalize_label({"domain": "corporate", "sale_mechanism": "corporate_arm_length", "reference_price_type": "appraisal"})
+        normalize_label({"domain": "kap", "sale_mechanism": "corporate_negotiated_non_related", "reference_price_type": "appraisal"})
 
 
 # ---- adapterlar ------------------------------------------------------------ #
 def test_uyap_adapter():
     label = UYAPAdapter().parse(_UYAP)
-    assert label["domain"] == "public_auction"
+    assert label["domain"] == "uyap"
     assert label["sale_mechanism"] == "auction"
     assert label["reference_price_type"] == "appraisal"
     assert label["reference_price"] == 5_000_000
@@ -92,10 +93,37 @@ def test_uyap_adapter_skips_unsold():
 
 def test_kap_adapter():
     label = KAPAdapter().parse(_KAP)
-    assert label["sale_mechanism"] == "corporate_arm_length"
+    assert label["domain"] == "kap"
+    assert label["sale_mechanism"] == "corporate_negotiated_non_related"
+    assert label["reference_price_type"] == "appraisal"  # güncel yapısal değerleme
     assert label["reference_price"] == 5_200_000
     assert label["realized_price"] == 5_508_474.60
     assert label["related_party"] is False
+
+
+def test_kap_adapter_prior_appraisal_from_text():
+    # Yapısal değerleme BOŞ + rapor hazırlanmamış; 5.2M metindeki ÖNCEKİ ekspertiz.
+    label = KAPAdapter().parse(
+        {
+            "toplam_satis_bedeli": 5_508_474.60,
+            "degerleme_raporu_hazirlandi": False,
+            "degerleme_tutari": None,
+            "prior_appraisal_value": 5_200_000,
+            "iliskili_taraf": False,
+            "deger_belirleme_yontemi": "negotiation",
+        }
+    )
+    assert label["reference_price_type"] == "prior_appraisal"  # GÜNCEL değil
+    assert label["reference_price"] == 5_200_000
+    assert label["sale_mechanism"] == "corporate_negotiated_non_related"
+    assert label["value_method"] == "negotiation"
+
+
+def test_kap_adapter_related_party_and_no_reference():
+    label = KAPAdapter().parse({"toplam_satis_bedeli": 1_000_000, "iliskili_taraf": True})
+    assert label["sale_mechanism"] == "corporate_related_party"
+    assert label["reference_price_type"] == "none"  # ne güncel ne önceki değerleme
+    assert label["reference_price"] is None
 
 
 def test_toki_adapter_auction_and_project():
@@ -118,7 +146,7 @@ def test_toki_adapter_auction_and_project():
 def test_miner_mine_and_skip():
     labels = PublicLabelMiner().mine("kap", [_KAP, {"toplam_satis_bedeli": 0}])
     assert len(labels) == 1  # ikincisi (bedel yok) atlanır
-    assert labels[0]["domain"] == "corporate"
+    assert labels[0]["domain"] == "kap"
 
 
 def test_miner_unknown_source():
@@ -164,7 +192,7 @@ def test_fair_value_labels_are_public_domains():
     df = _mixed_labels()
     fv = fair_value_labels(df)
     assert len(fv) == 2  # uyap + kap (appraisal)
-    assert set(fv["sale_mechanism"]) == {"auction", "corporate_arm_length"}
+    assert set(fv["sale_mechanism"]) == {"auction", "corporate_negotiated_non_related"}
 
 
 # ---- kalıcılık ------------------------------------------------------------- #
@@ -179,7 +207,7 @@ def test_persist_and_load_labels():
     assert n == 2
     df = load_labels(session)
     assert len(df) == 2
-    assert set(df["domain"]) == {"public_auction", "corporate"}
+    assert set(df["domain"]) == {"uyap", "kap"}
 
 
 def test_fair_value_strata_not_pooled():
@@ -189,7 +217,7 @@ def test_fair_value_strata_not_pooled():
     df = pd.DataFrame(
         [
             normalize_label(UYAPAdapter().parse(_UYAP)),  # auction / appraisal
-            normalize_label(KAPAdapter().parse(_KAP)),  # corporate_arm_length / appraisal
+            normalize_label(KAPAdapter().parse(_KAP)),  # corporate_negotiated_non_related / appraisal
             normalize_label(
                 TOKIAdapter().parse(
                     {"kind": "auction", "muhammen_bedel_toplam": 50_000_000, "teklif_toplam": 54_000_000}
@@ -204,9 +232,9 @@ def test_fair_value_strata_not_pooled():
     )
     strata = fair_value_strata(df)
     assert set(strata.keys()) == {
-        ("public_auction", "auction", "appraisal"),
-        ("corporate", "corporate_arm_length", "appraisal"),
-        ("public_auction", "public_auction", "reserve"),
-        ("primary_market", "primary_market", "offered_avg"),
+        ("uyap", "auction", "appraisal"),
+        ("kap", "corporate_negotiated_non_related", "appraisal"),
+        ("toki", "public_auction", "reserve"),
+        ("toki", "primary_market", "offered_avg"),
     }
     assert all(len(group) == 1 for group in strata.values())  # hiçbir strata havuzlanmadı

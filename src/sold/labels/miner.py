@@ -50,7 +50,7 @@ class UYAPAdapter(PublicSourceAdapter):
         if bid in (None, "", 0) or ("sat" in result and "satılma" in result):
             return None  # ihale gerçekleşmedi / bedel yok
         return {
-            "domain": "public_auction",
+            "domain": "uyap",
             "label_source": self.source,
             "sale_mechanism": "auction",
             "reference_price_type": "appraisal",
@@ -69,8 +69,10 @@ class UYAPAdapter(PublicSourceAdapter):
 class KAPAdapter(PublicSourceAdapter):
     """KAP — maddi duran varlık (gayrimenkul) satış bildirimi.
 
-    Değerleme tutarı → gerçekleşen satış bedeli. sale_mechanism=corporate_arm_length.
-    İlişkili taraf işlemleri işaretlenir (arm_length eğitimden dışlanır).
+    Referans fiyat provenance'ı yapısal alanlardan TÜRETİLİR: güncel değerleme raporu
+    varsa (appraisal), yoksa açıklama metnindeki önceki ekspertiz (prior_appraisal),
+    ikisi de yoksa none. İlişkili taraf → corporate_related_party; aksi halde
+    corporate_negotiated_non_related (related_party=false tek başına arm_length yapmaz).
     """
 
     source = "kap"
@@ -79,22 +81,52 @@ class KAPAdapter(PublicSourceAdapter):
         sale = record.get("toplam_satis_bedeli", record.get("sale_value"))
         if sale in (None, "", 0):
             return None
+
+        # Referans fiyat PROVENANCE'ı: o işlem için hazırlanmış GÜNCEL yapısal
+        # değerleme mi, yoksa açıklama metnindeki ÖNCEKİ/emsal ekspertiz mi?
+        # (KAP'ta yapısal değerleme alanı boş olup metinde önceki ekspertize atıf
+        # yapılabilir — bu ikisi FARKLI referans türüdür.)
+        report_prepared = bool(
+            record.get(
+                "degerleme_raporu_hazirlandi",
+                record.get("valuation_report_prepared", False),
+            )
+        )
+        current_val = record.get("degerleme_tutari", record.get("valuation_amount"))
+        prior_val = record.get(
+            "prior_appraisal_value", record.get("emsal_degerleme_tutari")
+        )
+        if report_prepared and current_val not in (None, "", 0):
+            ref_price, ref_type = current_val, "appraisal"
+        elif prior_val not in (None, "", 0):
+            ref_price, ref_type = prior_val, "prior_appraisal"
+        else:
+            ref_price, ref_type = None, "none"
+
+        related = bool(record.get("iliskili_taraf", record.get("related_party", False)))
+        # related_party=false TEK BAŞINA arm's-length KANITI DEĞİLDİR.
+        mechanism = (
+            "corporate_related_party" if related else "corporate_negotiated_non_related"
+        )
         return {
-            "domain": "corporate",
+            "domain": "kap",
             "label_source": self.source,
-            "sale_mechanism": "corporate_arm_length",
-            "reference_price_type": "appraisal",
-            "reference_price": record.get("degerleme_tutari", record.get("valuation_amount")),
+            "sale_mechanism": mechanism,
+            "reference_price_type": ref_type,
+            "reference_price": ref_price,
             "realized_price": sale,
-            "related_party": bool(
-                record.get("iliskili_taraf", record.get("related_party", False))
+            "related_party": related,
+            "value_method": record.get(
+                "deger_belirleme_yontemi", record.get("value_method")
             ),
             "province": record.get("il", record.get("province")),
             "district": record.get("ilce", record.get("district")),
             "property_type": record.get("tasinmaz_turu", record.get("property_type")),
             "gross_m2": record.get("brut_m2", record.get("gross_m2")),
             "transaction_date": record.get("islem_tarihi", record.get("date")),
-            "external_ref": record.get("kap_id", record.get("ref")),
+            "external_ref": record.get(
+                "kap_id", record.get("record_id", record.get("ref"))
+            ),
         }
 
 
@@ -114,7 +146,7 @@ class TOKIAdapter(PublicSourceAdapter):
             if realized in (None, "", 0):
                 return None
             return {
-                "domain": "primary_market",
+                "domain": "toki",
                 "label_source": self.source,
                 "sale_mechanism": "primary_market",
                 "reference_price_type": "offered_avg",
@@ -131,7 +163,7 @@ class TOKIAdapter(PublicSourceAdapter):
         if bid in (None, "", 0):
             return None
         return {
-            "domain": "public_auction",
+            "domain": "toki",
             "label_source": self.source,
             "sale_mechanism": "public_auction",
             "reference_price_type": "reserve",
