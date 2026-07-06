@@ -301,6 +301,7 @@ Negotiation-margin figures from Turkish market reporting: İstanbul ≈ 10%, Ank
 - [x] Provenance-aware ground-truth labels with automatic ML takeover
 - [x] **Broker Data Flywheel** — listing-outcome collection + non-ML negotiation analytics
 - [x] **Public Label Bootstrap** — provenance-aware registry + UYAP/KAP/TOKİ adapters with strict domain separation, plus an unpaired **aggregate observation** abstraction for cohort disclosures (TOKİ project averages)
+- [x] **Real-record (Level-2) validation** — three independent official records validated against the parsers with manually-audited expected output (KAP `963554`, TOKİ Park Mavera III, UYAP `16766356960`); zero skips, `parser_version`-pinned, raw artifacts never committed
 - [ ] **SaleProbability** model (`P(sold ≤ N days)`) trained on collected outcomes
 - [ ] Live, ToS-reviewed fetchers for the public label sources
 - [ ] Broker-vs-benchmark analytics over an aggregate anonymized dataset
