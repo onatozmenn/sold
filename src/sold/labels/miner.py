@@ -141,6 +141,13 @@ class TOKIAdapter(PublicSourceAdapter):
     (2) proje birincil satış agregatı (offered_avg → realized_avg).
 
     ``record['kind']`` = 'auction' | 'project_avg' ile ayrışır.
+
+    DİKKAT (metodolojik sınır): ``project_avg`` yolu YALNIZCA AYNI kohortun gerçekten
+    EŞLEŞEN offered→realized ortalaması için uygundur. SUNULAN envanter ile KÜMÜLATİF
+    gerçekleşen satışlar gibi FARKLI popülasyonları raporlayan açıklamalar (ör. "benzer
+    nitelikteki bağımsız bölümlerin ortalama satış fiyatları") EŞLENMEZ → bunlar
+    ``labels/aggregates.py`` içindeki eşlenmemiş toplu-gözlem yolundan (offered_inventory
+    / cumulative_realized_sales) geçmelidir; buraya SOKULMAZ.
     """
 
     source = "toki"

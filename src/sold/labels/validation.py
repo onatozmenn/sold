@@ -60,11 +60,20 @@ class ValidationRecord:
     path: Path
     manifest: dict
     parser_input: dict
-    expected_output: dict
+    expected_output: dict | list
 
     @property
     def source(self) -> str:
         return str(self.manifest.get("source", ""))
+
+    @property
+    def observation_model(self) -> str:
+        """Kayıt modeli: 'realized_label' (paired) veya 'aggregate_observation'.
+
+        Varsayılan 'realized_label' — mevcut KAP/UYAP manifestleri bu alanı
+        taşımaz ve DEĞİŞMEDEN kalır (yalnızca toplu-gözlem kayıtları işaretlenir).
+        """
+        return str(self.manifest.get("observation_model", "realized_label"))
 
     @property
     def ready(self) -> bool:

@@ -8,6 +8,20 @@ kaynaklardan (broker/seller) etiketleri toplar; domain'leri AYRI tutar. Metodolo
 
 from __future__ import annotations
 
+from .aggregates import (
+    AGGREGATE_COMPARED_FIELDS,
+    AGGREGATE_PARSER_VERSION,
+    AGGREGATION_LEVELS,
+    COMPARISON_SCOPES,
+    OBSERVATION_ROLES,
+    AggregateError,
+    ProjectDisclosureAdapter,
+    aggregate_sources,
+    load_aggregates,
+    mine_aggregates,
+    normalize_aggregate,
+    persist_aggregates,
+)
 from .miner import (
     KAPAdapter,
     PublicLabelMiner,
@@ -52,4 +66,17 @@ __all__ = [
     "UYAPAdapter",
     "KAPAdapter",
     "TOKIAdapter",
+    # Eşlenmemiş toplu (cohort) gözlem soyutlaması — RealizedLabel'dan AYRI
+    "AGGREGATION_LEVELS",
+    "COMPARISON_SCOPES",
+    "OBSERVATION_ROLES",
+    "AGGREGATE_PARSER_VERSION",
+    "AGGREGATE_COMPARED_FIELDS",
+    "AggregateError",
+    "normalize_aggregate",
+    "ProjectDisclosureAdapter",
+    "aggregate_sources",
+    "mine_aggregates",
+    "persist_aggregates",
+    "load_aggregates",
 ]

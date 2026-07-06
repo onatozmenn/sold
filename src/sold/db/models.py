@@ -16,6 +16,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    JSON,
     Numeric,
     String,
     UniqueConstraint,
@@ -273,6 +274,39 @@ class RealizedLabel(Base):
     # Provenance
     label_confidence: Mapped[str | None] = mapped_column(String(1))  # A/B/C
     external_ref: Mapped[str | None] = mapped_column(String(256))  # kaynak id/URL
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class AggregateObservation(Base):
+    """Eşlenmemiş TOPLU (cohort) gözlem — paired ``RealizedLabel``'a ZORLANMAZ.
+
+    Bazı resmî açıklamalar (ör. TOKİ/GYO proje "benzer nitelikteki bağımsız
+    bölümlerin ortalama satış fiyatları") AYNI taşınmaz için reference→realized
+    ÇİFTİ vermez; FARKLI popülasyonların toplu istatistiğini verir: (a) sunulan
+    envanter ortalaması, (b) KÜMÜLATİF gerçekleşen satış ortalaması. Bu ikisi AYNI
+    birimler DEĞİLDİR → reference→realized olarak EŞLEŞTİRİLEMEZ, aralarında closing
+    indirimi HESAPLANMAZ. Bu tablo onları eşlenmemiş toplu gözlem olarak, kendi
+    ``observation_role``'üyle saklar ve YAPISAL olarak ``realized_price``/
+    ``reference_price`` alanı YOKTUR (asking→closing head'ine giremez).
+    """
+
+    __tablename__ = "aggregate_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(24), nullable=False)  # kaynak-domain: toki/...
+    label_source: Mapped[str | None] = mapped_column(String(32))
+    aggregation_level: Mapped[str] = mapped_column(String(24), nullable=False)  # cohort
+    comparison_scope: Mapped[str] = mapped_column(String(32), nullable=False)  # unpaired_aggregate
+    observation_role: Mapped[str] = mapped_column(String(32), nullable=False)  # offered_inventory/cumulative_realized_sales
+    project_id: Mapped[str | None] = mapped_column(String(64))
+    as_of_date: Mapped[dt.date | None] = mapped_column()
+    count: Mapped[int | None] = mapped_column(Integer)
+    total_price: Mapped[float | None] = mapped_column(Numeric(18, 2))
+    average_price: Mapped[float | None] = mapped_column(Numeric(16, 2))
+    strata: Mapped[list | None] = mapped_column(JSON)  # oda-tipi kırılımı, kaynaktaki gibi KORUNUR
+    external_ref: Mapped[str | None] = mapped_column(String(256))
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

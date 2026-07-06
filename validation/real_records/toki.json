@@ -1,17 +1,66 @@
 {
-  "_instructions": "REAL-RECORD VALIDATION SLOT (level-2). Operator: (1) download a real TOKI/GYO record - either a completed public auction (kind=auction: reserve total -> winning-bid total) or a realized primary-market average (kind=project_avg: offered avg -> realized avg), (2) fill parser_input with the non-personal structured fields the TOKIAdapter reads, (3) fill expected_output with the manually-audited normalized label, (4) set manifest.record_id + retrieval_date, (5) flip is_real_official_record and manually_audited to true. Do NOT commit the raw artifact. Until both flags are true, tests SKIP this slot (PENDING).",
+  "_instructions": "REAL-RECORD VALIDATION CASE (level-2), COMPLETED. TOKI/GYO project disclosure 'Projede Benzer Nitelikte Olan Bagimsiz Bolumlerin Ortalama Satis Fiyatlari (31 Aralik 2019 tarihi itibariyle)' for Park Mavera III (PMVR3), manually audited by the operator. METHODOLOGICAL CORE: the disclosure reports TWO DISTINCT aggregate populations - OFFERED inventory (84 units) and CUMULATIVE REALIZED sales (387 units). These are NOT the same units, so they are NOT a paired reference->realized observation: NO synthetic pair and NO closing discount between 1,172,785.71 and 997,375.19 is computed. This record is therefore NOT a RealizedLabel; it is represented as TWO unpaired aggregate observations (observation_model=aggregate_observation) that lack realized_price/reference_price by construction and are EXCLUDED from asking_to_closing_labels(). The adapter normalizes the operator-extracted structured table fields (no raw PDF parsing). Room-type strata are preserved by the schema (strata field); the per-room-type rows were NOT part of this transcription and can be appended later without changing the audited cohort aggregates.",
   "manifest": {
     "source": "toki",
     "domain": "toki",
-    "record_id": "PENDING",
-    "record_type": "realized_sale_or_auction",
-    "retrieval_date": null,
-    "parser_version": "1.1.0",
-    "is_real_official_record": false,
-    "manually_audited": false,
+    "record_id": "PMVR3-2019-12-31",
+    "record_type": "project_average_price_disclosure",
+    "observation_model": "aggregate_observation",
+    "retrieval_date": "2026-07-06",
+    "parser_version": "1.0.0",
+    "is_real_official_record": true,
+    "manually_audited": true,
     "redistribution_ok": false,
-    "notes": "Awaiting operator retrieval of a genuine TOKI/GYO realized-sale or auction record. Not validated. domain stays 'toki'; sale_mechanism is public_auction (auction) or primary_market (project sale) via the record kind field."
+    "notes": "Park Mavera III (PMVR3) as of 2019-12-31. UNPAIRED aggregates: offered_inventory count=84 total=98,514,000.00 avg=1,172,785.71; cumulative_realized_sales count=387 total=385,984,197.52 avg=997,375.19. NOT paired -> no reference->realized, no closing discount. Represented as two aggregate observations; excluded from asking_to_closing_labels(). parser_version here pins the AGGREGATE parser (1.0.0), independent of the paired PARSER_VERSION."
   },
-  "parser_input": {},
-  "expected_output": {}
+  "parser_input": {
+    "kind": "project_disclosure",
+    "project_id": "PMVR3",
+    "as_of_date": "2019-12-31",
+    "disclosure_title": "Projede Benzer Nitelikte Olan Bağımsız Bölümlerin Ortalama Satış Fiyatları (31 Aralık 2019 tarihi itibariyle)",
+    "populations": [
+      {
+        "observation_role": "offered_inventory",
+        "count": 84,
+        "total_price": 98514000.00,
+        "average_price": 1172785.71,
+        "strata": []
+      },
+      {
+        "observation_role": "cumulative_realized_sales",
+        "count": 387,
+        "total_price": 385984197.52,
+        "average_price": 997375.19,
+        "strata": []
+      }
+    ]
+  },
+  "expected_output": [
+    {
+      "domain": "toki",
+      "label_source": "toki",
+      "aggregation_level": "cohort",
+      "comparison_scope": "unpaired_aggregate",
+      "observation_role": "offered_inventory",
+      "project_id": "PMVR3",
+      "as_of_date": "2019-12-31",
+      "count": 84,
+      "total_price": 98514000.00,
+      "average_price": 1172785.71,
+      "strata": []
+    },
+    {
+      "domain": "toki",
+      "label_source": "toki",
+      "aggregation_level": "cohort",
+      "comparison_scope": "unpaired_aggregate",
+      "observation_role": "cumulative_realized_sales",
+      "project_id": "PMVR3",
+      "as_of_date": "2019-12-31",
+      "count": 387,
+      "total_price": 385984197.52,
+      "average_price": 997375.19,
+      "strata": []
+    }
+  ]
 }
