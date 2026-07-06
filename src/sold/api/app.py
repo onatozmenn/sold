@@ -7,8 +7,9 @@ Uçlar:
 - GET  /discount-summary etiketlerden gerçek indirim özeti
 - GET  /health           sağlık kontrolü
 
-Model, `data/models/valuator.joblib` varsa yüklenir; yoksa sentetik veriyle
-eğitilip kaydedilir (ilk istekte).
+Varsayılan tahmin GERÇEK veriyle çalışır (MOCK YOK): ilan fiyatı × (1 − yayınlı
+pazarlık payı), TCMB ekspertiz TL/m² çıprazıyla. GERÇEK satış etiketi (ground_truth)
+eklenip ML modeli üretilirse (RealizedValuator), otomatik devralınır.
 """
 
 from __future__ import annotations
@@ -22,25 +23,22 @@ from pydantic import BaseModel, Field
 
 from ..features.build import parse_room_count
 from ..model.estimator import RealizedValuator
+from ..model.valuation import RealValuator
 
 MODEL_PATH = Path("data/models/valuator.joblib")
 
 app = FastAPI(title="sold — Gerçekleşen Konut Fiyatı Tahmini", version="0.1.0")
 
-_valuator: RealizedValuator | None = None
+_valuator: "RealizedValuator | RealValuator | None" = None
+_real = RealValuator()  # gerçek-veri motoru (piyasa değeri çıprazı + etiketsiz default)
 
 
-def get_valuator() -> RealizedValuator:
-    """Kayıtlı modeli yükler; yoksa sentetik veriyle eğitip kaydeder."""
+def get_valuator():
+    """GERÇEK satış etiketiyle eğitilmiş ML modeli varsa onu, yoksa gerçek-veri
+    (yayınlı pazarlık payı) motorunu döndürür. Sentetik/mock ASLA servis edilmez."""
     global _valuator
     if _valuator is None:
-        if MODEL_PATH.exists():
-            _valuator = RealizedValuator.load(MODEL_PATH)
-        else:
-            from ..model.synthetic import generate_market
-
-            _valuator = RealizedValuator.train(generate_market(3000, seed=42))
-            _valuator.save(MODEL_PATH)
+        _valuator = RealizedValuator.load(MODEL_PATH) if MODEL_PATH.exists() else _real
     return _valuator
 
 
@@ -65,6 +63,8 @@ class ValuationOut(BaseModel):
     asking_price: float
     realized_estimate: float
     implied_discount_pct: float
+    province_avg_tl_m2: float | None = None
+    basis: str = "yayınlı pazarlık payı + TCMB ekspertiz (gerçek veri)"
 
 
 class SoldRecordIn(BaseModel):
@@ -122,10 +122,18 @@ def valuate(prop: PropertyIn) -> ValuationOut:
     valuator = get_valuator()
     estimate = float(valuator.estimate(_to_frame(prop))[0])
     discount = (1 - estimate / prop.asking_price) * 100 if prop.asking_price else 0.0
+    mv = _real.province_ppm2(prop.province)
+    basis = (
+        "gerçek satış etiketleriyle eğitilmiş ML"
+        if isinstance(valuator, RealizedValuator)
+        else "yayınlı pazarlık payı + TCMB ekspertiz (gerçek veri)"
+    )
     return ValuationOut(
         asking_price=prop.asking_price,
         realized_estimate=round(estimate, 0),
         implied_discount_pct=round(discount, 2),
+        province_avg_tl_m2=round(mv, 0) if mv is not None else None,
+        basis=basis,
     )
 
 

@@ -495,7 +495,7 @@ def model_demo_cmd(
     seed: int = typer.Option(42, help="Rastgelelik tohumu"),
     test_size: float = typer.Option(0.25, help="Test oranı"),
 ) -> None:
-    """Sentetik piyasada motoru eğitir ve GERÇEK (bilinen) değere karşı doğrular."""
+    """ML YÖNTEMİNİ simüle veriyle doğrular (gerçek tahmin DEĞİL; onun için `sold serve`)."""
     import numpy as np
 
     from .model.calibrate import mape, median_ape
@@ -516,8 +516,11 @@ def model_demo_cmd(
     naive_last = t["last_price"].to_numpy(float)
 
     typer.secho(
-        "\nRealized fiyat tahmini — sentetik doğrulama", fg=typer.colors.CYAN, bold=True
+        "\nML yöntem doğrulaması — SİMÜLE veri (gerçek tahmin DEĞİL)",
+        fg=typer.colors.CYAN,
+        bold=True,
     )
+    typer.echo("  Gerçek tahmin için: `sold serve` ya da `sold model value` (gerçek TCMB/pazarlık verisi)")
     typer.echo(f"  Eğitim/Test: {len(train)}/{len(t)} ilan\n")
     typer.echo(f"  {'Yöntem':<26}{'MAPE':>8}{'MedAPE':>9}")
     typer.echo("  " + "-" * 43)
@@ -633,6 +636,42 @@ def model_estimate_cmd(
         if c in df.columns
     ]
     typer.echo(df[cols].head(10).to_string(index=False))
+
+
+@model_app.command("value")
+def model_value_cmd(
+    asking: float = typer.Argument(..., help="İlan (istenen) fiyat, TL"),
+    province: str = typer.Option("İstanbul", help="İl"),
+    gross_m2: float = typer.Option(0.0, help="Brüt m² (0=bilinmiyor)"),
+) -> None:
+    """GERÇEK veriyle satış tahmini (yayınlı pazarlık payı + TCMB TL/m²; MOCK yok)."""
+    import pandas as pd
+
+    from .model.valuation import RealValuator, effective_discount
+
+    rv = RealValuator()
+    frame = pd.DataFrame(
+        [{"province": province, "last_price": asking, "gross_m2": gross_m2 or None}]
+    )
+    sold = float(rv.estimate(frame)[0])
+    disc = effective_discount(province)
+    avg = rv.province_ppm2(province)
+    suffix = f", {gross_m2:.0f} m²" if gross_m2 else ""
+    typer.secho(f"İlan: {asking:,.0f} TL  ({province}{suffix})", fg=typer.colors.CYAN)
+    typer.secho(
+        f"Tahmini satış: {sold:,.0f} TL   (yayınlı pazarlık ~%{disc * 100:.0f})",
+        fg=typer.colors.GREEN,
+        bold=True,
+    )
+    if gross_m2 and avg:
+        listing_ppm2 = asking / gross_m2
+        rel = (listing_ppm2 / avg - 1) * 100
+        yon = "üstünde" if rel >= 0 else "altında"
+        typer.echo(
+            f"Bu ilan: {listing_ppm2:,.0f} TL/m²  ·  {province} ort. (TCMB): {avg:,.0f} TL/m²"
+        )
+        typer.echo(f"→ İlan, il ortalamasının %{abs(rel):.0f} {yon}.")
+    typer.echo("Kaynak: TCMB TL/m² + yayınlı pazarlık + TÜİK talep — uydurma yok.")
 
 
 @model_app.command("features")
