@@ -1,0 +1,17 @@
+[
+  {
+    "project_id": "PMVR3",
+    "as_of_date": "2019-12-31",
+    "observation_role": "cumulative_realized_sales",
+    "table_semantics": "cumulative_realized_sales_by_room_type",
+    "source_audited": true,
+    "_validation_ref": "validation/real_records/toki.json",
+    "_note": "GENUINE audited TOKİ disclosure derived from validated Level-2 Park Mavera III (PMVR3) aggregate record. This is a SINGLE disclosure (one as-of date); repeated consecutive disclosures for the SAME project are required to difference cumulative strata into period cohorts, so ZERO period cohorts can be derived from this alone. The offered_inventory population is NOT paired with realized sales (different populations); only the cumulative_realized_sales strata are carried for future period differencing.",
+    "strata": [
+      {"room_type": "2+1", "cum_count": 165, "cum_total": 118418019.69},
+      {"room_type": "3+1", "cum_count": 78, "cum_total": 78003128.35},
+      {"room_type": "4+1", "cum_count": 24, "cum_total": 28932145.55},
+      {"room_type": "5+1", "cum_count": 120, "cum_total": 160630903.93}
+    ]
+  }
+]

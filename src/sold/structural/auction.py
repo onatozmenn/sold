@@ -180,7 +180,7 @@ def auction_moments(sold, win_over_appraisal) -> dict:
     return {
         "uyap_sale_prob": sale_prob,
         "uyap_win_over_appraisal_mean": float(ratios.mean()) if ratios.size else float("nan"),
-        "uyap_win_over_appraisal_sd": float(ratios.std()) if ratios.size > 1 else 0.0,
+        "uyap_win_over_appraisal_sd": float(ratios.std()) if ratios.size > 1 else float("nan"),
     }
 
 

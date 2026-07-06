@@ -20,9 +20,11 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .auction import auction_moments, simulate_auctions
+from .auction import auction_moments, simulate_auctions, uyap_observed_moments
 from .bargaining import simulate_negotiations
+from .kap import kap_observed_moments
 from .params import StructuralParams
+from .toki import toki_composition_moments
 
 
 @dataclass
@@ -53,7 +55,7 @@ def _log_ratio_moments(ratio: np.ndarray, prefix: str) -> dict:
     lr = np.log(r) if r.size else r
     return {
         f"{prefix}_mean": float(lr.mean()) if lr.size else float("nan"),
-        f"{prefix}_sd": float(lr.std()) if lr.size > 1 else 0.0,
+        f"{prefix}_sd": float(lr.std()) if lr.size > 1 else float("nan"),
     }
 
 
@@ -144,6 +146,81 @@ def context_from_datasets(
         reps=reps,
         auction_bidders=bidders,
     )
+
+
+def _add_moment(
+    moments: dict,
+    provenance: dict,
+    unavailable: list,
+    key: str,
+    value: object,
+    source: str,
+    reason: str,
+) -> None:
+    if value is not None and np.isfinite(value):
+        moments[key] = float(value)
+        provenance[key] = source
+    else:
+        unavailable.append({"moment": key, "source": source, "reason": reason})
+
+
+def build_observed_moments(
+    uyap: pd.DataFrame | None = None,
+    kap: pd.DataFrame | None = None,
+    toki_result: dict | None = None,
+) -> dict:
+    """GERÇEK denetlenmiş veriden m_obs + moment PROVENANCE + unavailable (neden).
+
+    Hesaplanamayan moment (yetersiz gözlem) UYDURULMAZ; ``unavailable`` listesine nedeniyle
+    yazılır. Böylece ``m_obs`` gerçek veriye dinamik uyar ve identification raporu hangi
+    kaynak ailesinin hangi momente katkı verdiğini gösterebilir.
+    """
+    moments: dict = {}
+    provenance: dict = {}
+    unavailable: list = []
+
+    # --- UYAP ---
+    if uyap is not None and len(uyap):
+        um = uyap_observed_moments(uyap)
+        n = int(len(uyap))
+        n_sold = int(uyap["sold"].astype(bool).sum())
+        _add_moment(moments, provenance, unavailable, "uyap_sale_prob",
+                    um.get("uyap_sale_prob"), "uyap", f"needs>=1 auction, have {n}")
+        _add_moment(moments, provenance, unavailable, "uyap_win_over_appraisal_mean",
+                    um.get("uyap_win_over_appraisal_mean"), "uyap", f"needs>=1 sold, have {n_sold}")
+        var = um.get("uyap_win_over_appraisal_var")
+        sd = float(np.sqrt(var)) if (var is not None and np.isfinite(var) and n_sold >= 2) else None
+        _add_moment(moments, provenance, unavailable, "uyap_win_over_appraisal_sd",
+                    sd, "uyap", f"needs>=2 sold, have {n_sold}")
+    else:
+        for k in ("uyap_sale_prob", "uyap_win_over_appraisal_mean", "uyap_win_over_appraisal_sd"):
+            unavailable.append({"moment": k, "source": "uyap", "reason": "no_uyap_observations"})
+
+    # --- KAP (negotiated-calibration subset) ---
+    if kap is not None and len(kap):
+        km = kap_observed_moments(kap, negotiated_only=True)
+        kn = int(km.get("kap_n", 0))
+        _add_moment(moments, provenance, unavailable, "kap_log_ratio_mean",
+                    km.get("kap_log_ratio_mean"), "kap", f"needs>=1 negotiated, have {kn}")
+        _add_moment(moments, provenance, unavailable, "kap_log_ratio_sd",
+                    km.get("kap_log_ratio_sd"), "kap", f"needs>=2 negotiated, have {kn}")
+    else:
+        for k in ("kap_log_ratio_mean", "kap_log_ratio_sd"):
+            unavailable.append({"moment": k, "source": "kap", "reason": "no_kap_observations"})
+
+    # --- TOKİ agregat kohortlar ---
+    if toki_result and toki_result.get("cohorts"):
+        for k, v in toki_composition_moments(toki_result["cohorts"]).items():
+            if isinstance(v, (int, float)) and np.isfinite(v):
+                moments[k] = float(v)
+                provenance[k] = "toki"
+    else:
+        unavailable.append({
+            "moment": "toki_cohort_moments", "source": "toki",
+            "reason": "no_derivable_period_cohorts (needs >=2 consecutive consistent disclosures)",
+        })
+
+    return {"moments": moments, "provenance": provenance, "unavailable": unavailable}
 
 
 def align(m_obs: dict, m_sim: dict) -> tuple[np.ndarray, np.ndarray, list[str]]:

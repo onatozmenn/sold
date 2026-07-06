@@ -26,6 +26,16 @@ import pandas as pd
 # Ekspertiz referans türleri (registry ile aynı anlam; yapısal moment için ayrı görünüm)
 KAP_REFERENCE_TYPES = ("appraisal", "prior_appraisal")
 
+# Yalnızca AÇIKÇA müzakereli satış yöntemini destekleyen değerler (müzakere-kalibrasyon alt kümesi).
+# İlişkisiz olmak TEK BAŞINA müzakere ÇIKARIMI yaptırmaz.
+_NEGOTIATED_TOKENS = ("negoti", "pazarl", "müzakere", "muzakere", "anlaşmal", "anlasmal")
+
+
+def _is_negotiated(value_method: object) -> bool:
+    vm = str(value_method or "").strip().lower()
+    return bool(vm) and any(tok in vm for tok in _NEGOTIATED_TOKENS)
+
+
 KAP_FIELDS = (
     "official_record_id",
     "appraisal_value",
@@ -38,6 +48,7 @@ KAP_FIELDS = (
     "property_type",
     "gross_m2",            # nullable
     "value_method",
+    "negotiated",          # value_method AÇIKÇA müzakereyi destekliyor mu (kalibrasyon alt kümesi)
     "related_party",
     "source_audited",
 )
@@ -73,6 +84,7 @@ def normalize_kap_disposal(rec: dict) -> dict | None:
     ptype = rec.get("property_type", rec.get("tasinmaz_turu"))
     if sale is None or appraisal is None or ref_type not in KAP_REFERENCE_TYPES or not ptype:
         return None
+    value_method = rec.get("value_method", rec.get("deger_belirleme_yontemi"))
     return {
         "official_record_id": rec.get("official_record_id", rec.get("kap_id")),
         "appraisal_value": appraisal,
@@ -84,7 +96,8 @@ def normalize_kap_disposal(rec: dict) -> dict | None:
         "district": rec.get("district", rec.get("ilce")),
         "property_type": ptype,
         "gross_m2": _num(rec.get("gross_m2", rec.get("brut_m2"))),
-        "value_method": rec.get("value_method", rec.get("deger_belirleme_yontemi")),
+        "value_method": value_method,
+        "negotiated": _is_negotiated(value_method),
         "related_party": related,
         "source_audited": bool(rec.get("source_audited", False)),
     }
@@ -96,28 +109,41 @@ def load_kap_disposals(records: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=list(KAP_FIELDS))
 
 
-def kap_observed_moments(kap: pd.DataFrame) -> dict:
-    """log(sale_price/appraisal_value) momentleri: mean, sd (SMM eşlemesi) + betimsel."""
+def kap_observed_moments(kap: pd.DataFrame, negotiated_only: bool = True) -> dict:
+    """log(sale_price/appraisal_value) momentleri: mean, sd (SMM eşlemesi) + betimsel.
+
+    ``negotiated_only=True`` (varsayılan): yalnızca AÇIKÇA müzakereli satışlar (kalibrasyon
+    alt kümesi). n<2 iken varyans/kuantiller UYDURULMAZ; NaN (mevcut değil) döner.
+    Bu momentler eta'yı TEK BAŞINA tanımlamaz; pazarlık gücü + KAP mekanizma kaymasını
+    ORTAK kalibre etmeye katkı verir.
+    """
     if kap is None or len(kap) == 0:
         return {"kap_n": 0, "kap_log_ratio_mean": float("nan")}
-    sale = pd.to_numeric(kap["sale_price"], errors="coerce").to_numpy(float)
-    appr = pd.to_numeric(kap["appraisal_value"], errors="coerce").to_numpy(float)
+    df = kap
+    if negotiated_only and "negotiated" in df.columns:
+        df = df[df["negotiated"].astype(bool)]
+    if len(df) == 0:
+        return {"kap_n": 0, "kap_log_ratio_mean": float("nan")}
+    sale = pd.to_numeric(df["sale_price"], errors="coerce").to_numpy(float)
+    appr = pd.to_numeric(df["appraisal_value"], errors="coerce").to_numpy(float)
     with np.errstate(invalid="ignore", divide="ignore"):
         ratio = np.where((appr > 0) & (sale > 0), sale / appr, np.nan)
     r = ratio[np.isfinite(ratio) & (ratio > 0)]
     lr = np.log(r) if r.size else r
-    out: dict = {"kap_n": int(len(kap))}
-    if lr.size:
+    out: dict = {"kap_n": int(len(df))}
+    if lr.size >= 1:
+        out["kap_log_ratio_mean"] = float(lr.mean())
+    else:
+        out["kap_log_ratio_mean"] = float("nan")
+    # Varyans/medyan/kuantiller yalnızca örneklem DESTEKLERSE (n>=2); aksi halde NaN.
+    if lr.size >= 2:
         out.update(
             {
-                "kap_log_ratio_mean": float(lr.mean()),
-                "kap_log_ratio_sd": float(lr.std()) if lr.size > 1 else 0.0,
-                "kap_log_ratio_var": float(lr.var()) if lr.size > 1 else 0.0,
+                "kap_log_ratio_sd": float(lr.std()),
+                "kap_log_ratio_var": float(lr.var()),
                 "kap_log_ratio_median": float(np.median(lr)),
                 "kap_log_ratio_q10": float(np.quantile(lr, 0.10)),
                 "kap_log_ratio_q90": float(np.quantile(lr, 0.90)),
             }
         )
-    else:
-        out["kap_log_ratio_mean"] = float("nan")
     return out

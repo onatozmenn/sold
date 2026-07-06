@@ -21,7 +21,9 @@ from sold.structural import (
     StructuralClosingPredictor,
     StructuralParams,
     auction_moments,
+    build_observed_moments,
     context_from_datasets,
+    dataset_status,
     dataset_summary,
     difference_disclosures,
     estimate_smm,
@@ -29,6 +31,7 @@ from sold.structural import (
     kap_observed_moments,
     legal_floor,
     load_auctions,
+    load_genuine_datasets,
     load_kap_disposals,
     moment_jacobian,
     negotiated_price,
@@ -318,7 +321,8 @@ def test_kap_excludes_related_party_and_missing():
 def test_kap_log_ratio_moments():
     recs = [
         {"sale_price": 5_400_000, "appraisal_value": 5_000_000,
-         "reference_price_type": "appraisal", "property_type": "konut"}
+         "reference_price_type": "appraisal", "property_type": "konut",
+         "value_method": "negotiation"}
         for _ in range(5)
     ]
     m = kap_observed_moments(load_kap_disposals(recs))
@@ -436,3 +440,121 @@ def test_predictor_identified_mode_labeling():
     )
     assert out["mode"] == "identified"
     assert "ÇIKARIMSAL" in out["note"] and "DEĞİL" in out["note"]
+
+
+# --- GERÇEK denetlenmiş yapısal veri kümesi (Level-2 türevi) ---------------- #
+def test_genuine_datasets_load_and_reconcile_with_level2():
+    g = load_genuine_datasets()
+    # UYAP: 1 denetlenmiş açık artırma; appraised_value = doğrulanmış Q (rezerv DEĞİL)
+    assert len(g["uyap"]) == 1
+    a = g["uyap"].iloc[0]
+    assert a["appraised_value"] == 4_500_000  # doğrulanmış reference_price (Q)
+    assert a["winning_bid"] == 4_545_000       # doğrulanmış realized_price
+    assert bool(a["sold"]) is True
+    assert a["parcel_area_m2"] == 509.0 and a["unit_net_m2"] == 32.5
+    assert pd.isna(a["unit_gross_m2"])         # gross null (509 ENJEKTE EDİLMEZ)
+    assert bool(a["legal_floor_exact"]) is False  # kısmî (claims/costs yok)
+    # KAP: 1 müzakereli disposal (prior_appraisal)
+    assert len(g["kap"]) == 1
+    k = g["kap"].iloc[0]
+    assert k["sale_price"] == 5_508_474.60 and k["appraisal_value"] == 5_200_000
+    assert k["reference_price_type"] == "prior_appraisal"
+    assert bool(k["negotiated"]) is True and bool(k["related_party"]) is False
+    # TOKİ: 1 disclosure → 0 dönem kohortu (tek disclosure farklanamaz)
+    assert len(g["toki_disclosures"]) == 1
+    assert g["toki_result"]["cohorts"] == []
+
+
+def test_dataset_status_genuine_counts():
+    st = dataset_status()
+    g = st["genuine"]
+    assert g["uyap"]["total_audited_auctions"] == 1 and g["uyap"]["sold"] == 1 and g["uyap"]["unsold"] == 0
+    assert g["uyap"]["exact_legal_floors_observed"] == 0  # kısmî taban
+    assert g["kap"]["audited_eligible_disposals"] == 1
+    assert g["kap"]["negotiated_calibration_observations"] == 1
+    assert g["kap"]["prior_appraisal_observations"] == 1 and g["kap"]["appraisal_observations"] == 0
+    assert g["toki"]["audited_disclosures"] == 1 and g["toki"]["valid_derived_period_cohorts"] == 0
+    assert st["non_audited_records"]["uyap"] == 0
+
+
+# --- Dürüst moment kullanılabilirliği (tek gözlemde varyans YOK) ------------ #
+def test_single_observation_variance_is_unavailable_not_zero():
+    m = auction_moments(np.array([True]), np.array([1.01]))
+    assert np.isnan(m["uyap_win_over_appraisal_sd"])  # n=1 → sd tanımsız (0 DEĞİL)
+    df = load_kap_disposals(
+        [{"sale_price": 5.4e6, "appraisal_value": 5e6, "reference_price_type": "appraisal",
+          "property_type": "konut", "value_method": "negotiation"}]
+    )
+    km = kap_observed_moments(df)
+    assert "kap_log_ratio_sd" not in km  # n=1 → sd HESAPLANMAZ (uydurulmaz)
+
+
+def test_build_observed_moments_reports_provenance_and_unavailable():
+    g = load_genuine_datasets()
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    m, prov, un = built["moments"], built["provenance"], built["unavailable"]
+    assert "uyap_sale_prob" in m and "uyap_win_over_appraisal_mean" in m and "kap_log_ratio_mean" in m
+    assert prov["kap_log_ratio_mean"] == "kap" and prov["uyap_sale_prob"] == "uyap"
+    un_moments = {u["moment"] for u in un}
+    assert "uyap_win_over_appraisal_sd" in un_moments  # n=1 sold
+    assert "kap_log_ratio_sd" in un_moments            # n=1 negotiated
+    assert "toki_cohort_moments" in un_moments         # 0 cohorts
+    assert m["kap_log_ratio_mean"] == pytest.approx(np.log(5_508_474.60 / 5_200_000), abs=1e-6)
+
+
+def test_kap_negotiated_subset_only():
+    df = load_kap_disposals(
+        [
+            {"sale_price": 5.4e6, "appraisal_value": 5e6, "reference_price_type": "appraisal",
+             "property_type": "konut", "value_method": "negotiation"},
+            {"sale_price": 6e6, "appraisal_value": 5e6, "reference_price_type": "appraisal",
+             "property_type": "konut", "value_method": "tender"},  # müzakereli DEĞİL
+        ]
+    )
+    assert int(df["negotiated"].sum()) == 1
+    assert kap_observed_moments(df, negotiated_only=True)["kap_n"] == 1  # yalnızca müzakereli
+
+
+# --- Kimliklendirme: gerçek veri → NOT_IDENTIFIED; 3'lü durum --------------- #
+def test_identify_genuine_data_not_identified():
+    g = load_genuine_datasets()
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    ctx = context_from_datasets(g["uyap"], g["kap"])
+    rep = identification_report(
+        ctx, StructuralParams(), DEFAULT_FREE, m_obs=built["moments"],
+        auctions=g["uyap"], kap=g["kap"], toki_result=g["toki_result"],
+        provenance=built["provenance"], unavailable=built["unavailable"],
+    )
+    assert rep["status"] == "NOT_IDENTIFIED"
+    assert rep["rank"] < rep["n_structural_parameters"]
+    assert rep["n_observed_moments"] <= 3  # 3 gerçek tek-gözlem ortalaması
+    assert rep["prediction_mode"] == "sensitivity_mode"
+    assert rep["moment_provenance"] and rep["unavailable_moments"]
+
+
+def test_identify_single_param_can_be_identified():
+    # 1 param (eta) + 1 bilgilendirici moment (kap mean) → IDENTIFIED (3'lü durum çalışır)
+    theta0 = StructuralParams(eta=0.6)
+    realized, appraisal = _kap_observed(theta0)
+    full = observed_moments(kap_realized=realized, kap_appraisal=appraisal)
+    m_obs = {"kap_log_ratio_mean": full["kap_log_ratio_mean"]}  # tam olarak 1 moment
+    ctx = MomentContext(
+        auction_appraised=np.array([]), auction_floors=np.array([]),
+        kap_appraisal=np.ones(60), reps=300,
+    )
+    rep = identification_report(ctx, StructuralParams(), ("eta",), m_obs=m_obs)
+    assert rep["rank"] == 1 and rep["n_structural_parameters"] == 1
+    assert rep["status"] == "IDENTIFIED" and rep["prediction_mode"] == "identified"
+
+
+def test_jacobian_restricted_to_observed_moments():
+    # Simülatör 5 moment üretse de, m_obs 1 moment ise Jacobian 1 sütun-satır sınırında
+    ctx = MomentContext(
+        auction_appraised=np.array([]), auction_floors=np.array([]),
+        kap_appraisal=np.ones(40), reps=200,
+    )
+    J, keys = moment_jacobian(
+        StructuralParams(), ctx, ("eta", "mu_s"), moment_keys=["kap_log_ratio_mean"]
+    )
+    assert keys == ["kap_log_ratio_mean"]  # yalnızca gözlenen moment
+    assert J.shape == (1, 2)

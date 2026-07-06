@@ -34,6 +34,8 @@ JACOBIAN_STEP = 1e-3
 WEAK_SINGULAR_REL = 1e-3
 # Profil hedefi göreli aralığı bunun altındaysa parametre zayıf-kimliklendirilmiş
 PROFILE_FLAT_REL = 1e-2
+# Tam rank olsa bile bu koşul sayısının üzerinde: WEAKLY_IDENTIFIED (ağır kondisyon bozukluğu)
+ILL_CONDITIONED = 1e6
 
 
 def moment_jacobian(
@@ -42,8 +44,14 @@ def moment_jacobian(
     free_names: tuple[str, ...],
     seed: int = 12345,
     step: float = JACOBIAN_STEP,
+    moment_keys: list[str] | None = None,
 ) -> tuple[np.ndarray, list[str]]:
-    """J(θ)=∂m_sim/∂θ' — merkezi sonlu fark + ortak rastgele sayılar. (J, moment_keys)."""
+    """J(θ)=∂m_sim/∂θ' — merkezi sonlu fark + ortak rastgele sayılar. (J, moment_keys).
+
+    ``moment_keys`` verilirse Jacobian YALNIZCA o momentler üzerinde hesaplanır (gerçekten
+    GÖZLENEN momentler). Böylece simülatörün ürettiği ama VERİDE OLMAYAN momentler
+    kimliklendirme gücünü şişirmez (ör. tek gözlemde sd gerçekte yok).
+    """
 
     def msim(x: np.ndarray) -> dict:
         p = params.with_free(free_names, x)
@@ -53,6 +61,9 @@ def moment_jacobian(
     x0 = params.free_vector(free_names)
     base = msim(x0)
     keys = [k for k in sorted(base) if np.isfinite(base[k])]
+    if moment_keys is not None:
+        allowed = set(moment_keys)
+        keys = [k for k in keys if k in allowed]
     if not keys or len(free_names) == 0:
         return np.zeros((len(keys), len(free_names))), keys
     J = np.zeros((len(keys), len(free_names)))
@@ -149,12 +160,25 @@ def identification_report(
     auctions: pd.DataFrame | None = None,
     kap: pd.DataFrame | None = None,
     toki_result: dict | None = None,
+    provenance: dict | None = None,
+    unavailable: list | None = None,
     seed: int = 12345,
     step: float = JACOBIAN_STEP,
 ) -> dict:
-    """Tam kimliklendirme raporu. rank(J) < dim(θ) → NOT_IDENTIFIED (sensitivity mode)."""
+    """Tam kimliklendirme raporu. 3'lü durum:
+
+    - ``rank(J) < dim(θ)`` → ``NOT_IDENTIFIED`` (sensitivity mode),
+    - tam rank ama ağır kondisyon bozukluğu / düz profiller → ``WEAKLY_IDENTIFIED`` (sensitivity),
+    - rank + tekil-değer yapısı + profiller destekliyorsa → ``IDENTIFIED``.
+
+    Gözlem sayısı eşiği (50/100/500 gibi) kimliklendirme ölçütü OLARAK KULLANILMAZ.
+    """
     summary = dataset_summary(auctions, kap, toki_result)
-    J, keys = moment_jacobian(params, ctx, free_names, seed=seed, step=step)
+    # Kimliklendirme YALNIZCA gerçekten gözlenen momentlerden gelir (m_obs anahtarları).
+    obs_keys = list(m_obs.keys()) if m_obs else None
+    J, keys = moment_jacobian(
+        params, ctx, free_names, seed=seed, step=step, moment_keys=obs_keys
+    )
     dim = len(free_names)
     n_moments = len(keys)
 
@@ -164,6 +188,8 @@ def identification_report(
         "n_observed_moments": n_moments,
         "free_parameters": list(free_names),
         "moment_keys": keys,
+        "moment_provenance": provenance or {},
+        "unavailable_moments": unavailable or [],
         "jacobian_step": step,
     }
 
@@ -199,21 +225,9 @@ def identification_report(
             }
             weak_dirs.append({"singular_value": float(sv), "direction": loading})
 
-    identified = rank >= dim
-    report.update(
-        {
-            "status": "IDENTIFIED" if identified else "NOT_IDENTIFIED",
-            "rank": rank,
-            "singular_values": [float(x) for x in s],
-            "condition_number": cond,
-            "weakly_identified_directions": weak_dirs,
-            "prediction_mode": "identified" if identified else "sensitivity_mode",
-        }
-    )
-
     # Profil tanılaması: en az eta + mekanizma-kaymaları (m_obs varsa)
+    profiles: dict = {}
     if m_obs:
-        profiles = {}
         profile_grids = {
             "eta": np.linspace(0.05, 0.95, 19),
             "kap_shift": np.linspace(-0.3, 0.3, 13),
@@ -223,4 +237,28 @@ def identification_report(
             profiles[pname] = profile_objective(m_obs, ctx, params, pname, grid, seed=seed)
         report["profiles"] = profiles
 
+    # Durum: yalnızca SERBEST parametrelerin düz profili kimliklendirmeyi zayıflatır
+    # (serbest OLMAYAN mekanizma-kaymalarının profili bilgi amaçlıdır, durumu belirlemez).
+    any_flat_profile = any(
+        profiles[p].get("weakly_identified") for p in free_names if p in profiles
+    )
+
+    if rank < dim:
+        status, mode = "NOT_IDENTIFIED", "sensitivity_mode"
+    elif cond > ILL_CONDITIONED or any_flat_profile:
+        # Tam rank ama ağır kondisyon bozukluğu ya da düz profiller
+        status, mode = "WEAKLY_IDENTIFIED", "sensitivity_mode"
+    else:
+        status, mode = "IDENTIFIED", "identified"
+
+    report.update(
+        {
+            "status": status,
+            "rank": rank,
+            "singular_values": [float(x) for x in s],
+            "condition_number": cond,
+            "weakly_identified_directions": weak_dirs,
+            "prediction_mode": mode,
+        }
+    )
     return report

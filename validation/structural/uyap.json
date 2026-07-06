@@ -1,0 +1,22 @@
+[
+  {
+    "public_record_id": "16766356960",
+    "auction_date": "2026-06-24",
+    "province": "Ankara",
+    "district": "Yenimahalle",
+    "property_type": "dükkan",
+    "appraised_value": 4500000.00,
+    "sold": true,
+    "winning_bid": 4545000.00,
+    "offer_count": null,
+    "bidder_count": null,
+    "priority_claims": null,
+    "realization_costs": null,
+    "parcel_area_m2": 509.00,
+    "unit_net_m2": 32.50,
+    "unit_gross_m2": null,
+    "source_audited": true,
+    "_validation_ref": "validation/real_records/uyap.json",
+    "_note": "GENUINE audited structural observation derived from validated Level-2 UYAP record 16766356960. appraised_value=Q (court muhammen bedel), NOT the reserve/floor. Area semantics: parcel 509 m2 and unit net 32.5 m2 are DISTINCT; unit gross is NOT reported -> null (509 not injected). priority_claims/realization_costs not reported -> legal_floor is partial (legal_floor_exact=false). offer/bidder counts not reported -> null (not fabricated)."
+  }
+]

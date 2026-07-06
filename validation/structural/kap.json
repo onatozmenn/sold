@@ -1,0 +1,19 @@
+[
+  {
+    "official_record_id": "963554",
+    "appraisal_value": 5200000,
+    "reference_price_type": "prior_appraisal",
+    "appraisal_date": "2020-12-28",
+    "sale_price": 5508474.60,
+    "sale_date": "2021-09-13",
+    "province": "İstanbul",
+    "district": "Şişli",
+    "property_type": "konut",
+    "gross_m2": null,
+    "value_method": "negotiation",
+    "related_party": false,
+    "source_audited": true,
+    "_validation_ref": "validation/real_records/kap.json",
+    "_note": "GENUINE audited structural observation derived from validated Level-2 KAP record 963554 (Şişli/İstanbul disposal). related_party=false and sale method explicitly 'negotiation' -> eligible for the negotiation-calibration subset. reference_price_type=prior_appraisal (structured valuation empty; operator-extracted prior appraisal 5,200,000). This contributes to JOINT calibration of bargaining power AND the KAP mechanism shift; it does NOT directly identify eta."
+  }
+]

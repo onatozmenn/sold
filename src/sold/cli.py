@@ -1483,17 +1483,59 @@ def structural_estimate_cmd(
     )
 
 
+@structural_app.command("dataset")
+def structural_dataset_cmd() -> None:
+    """GERÇEK denetlenmiş yapısal gözlem durumu — fixture/illustratif kayıtlardan AYRI."""
+    from .structural import dataset_status
+
+    st = dataset_status()
+    g = st["genuine"]
+    typer.secho("Yapısal veri kümesi durumu (GERÇEK denetlenmiş)", fg=typer.colors.CYAN, bold=True)
+    u = g["uyap"]
+    typer.echo(
+        f"  UYAP: denetlenmiş açık artırma {u['total_audited_auctions']} "
+        f"(satılan {u['sold']} · satılmayan {u['unsold']})"
+    )
+    typer.echo(
+        f"        kazanan teklif {u['winning_bids_observed']} · teklif sayısı {u['offer_counts_observed']} "
+        f"· artıran {u['bidder_counts_observed']} · tam yasal-taban {u['exact_legal_floors_observed']}"
+    )
+    k = g["kap"]
+    typer.echo(
+        f"  KAP: uygun elden çıkarma {k['audited_eligible_disposals']} "
+        f"(müzakere-kalibrasyon {k['negotiated_calibration_observations']}) · "
+        f"appraisal {k['appraisal_observations']} · prior-appraisal {k['prior_appraisal_observations']}"
+    )
+    t = g["toki"]
+    typer.echo(
+        f"  TOKİ: denetlenmiş açıklama {t['audited_disclosures']} · proje {t['projects_represented']} "
+        f"· oda-tipi kümülatif strata {t['room_type_cumulative_strata']}"
+    )
+    typer.echo(
+        f"        geçerli dönem kohortu {t['valid_derived_period_cohorts']} "
+        f"· revizyonla-bloklanan {t['revision_blocked_cohorts']}"
+    )
+    na = st["non_audited_records"]
+    typer.secho(
+        f"  Denetlenmemiş (fixture/illustratif, GERÇEK sayıma KATILMAZ): "
+        f"UYAP {na['uyap']} · KAP {na['kap']} · TOKİ {na['toki']}",
+        fg=typer.colors.YELLOW,
+    )
+
+
 @structural_app.command("identify")
 def structural_identify_cmd(
-    auctions_file: Optional[Path] = typer.Option(None, "--auctions", help="UYAP açık artırma kayıtları (JSON)"),
-    kap_file: Optional[Path] = typer.Option(None, "--kap", help="KAP elden çıkarma kayıtları (JSON)"),
+    auctions_file: Optional[Path] = typer.Option(None, "--auctions", help="UYAP kayıtları (JSON) — verilirse gerçek seti geçersiz kılar"),
+    kap_file: Optional[Path] = typer.Option(None, "--kap", help="KAP kayıtları (JSON)"),
     toki_file: Optional[Path] = typer.Option(None, "--toki", help="TOKİ açıklamaları (JSON)"),
-    demo: bool = typer.Option(False, "--demo", help="Sentetik veriyle diagnostiği göster"),
+    demo: bool = typer.Option(False, "--demo", help="Sentetik veriyle diagnostiği göster (gerçek değil)"),
 ) -> None:
-    """Yapısal KİMLİKLENDİRME raporu: dataset sayıları + Jacobian rank/SVD/koşul + profiller.
+    """Yapısal KİMLİKLENDİRME raporu — VARSAYILAN olarak GERÇEK denetlenmiş veri kümesinden.
 
-    Optimizer yakınsaması KİMLİKLENDİRME DEĞİLDİR. rank(J) < dim(θ) ise NOT_IDENTIFIED ve
-    tahmin sensitivity moduna geçer. Epistemik katı: veri yoksa 0 raporlanır (uydurma yok).
+    Dataset sayıları + kullanılabilir/eksik momentler (+ neden) + moment provenance +
+    Jacobian rank/SVD/koşul + zayıf yönler + eta/kayma profilleri + 3'lü durum. Optimizer
+    yakınsaması KİMLİKLENDİRME DEĞİLDİR. rank(J)<dim → NOT_IDENTIFIED; tam rank ama ağır
+    kondisyon bozukluğu/düz profil → WEAKLY_IDENTIFIED; ikisi de değilse IDENTIFIED.
     """
     import json
 
@@ -1503,20 +1545,22 @@ def structural_identify_cmd(
         DEFAULT_FREE,
         MomentContext,
         StructuralParams,
+        build_observed_moments,
         context_from_datasets,
         difference_disclosures,
         identification_report,
-        kap_observed_moments,
         load_auctions,
+        load_genuine_datasets,
         load_kap_disposals,
         observed_moments,
         simulate_negotiations,
-        uyap_observed_moments,
     )
 
     auctions_df = kap_df = None
     toki_res = None
     m_obs: dict = {}
+    provenance: dict = {}
+    unavailable: list = []
 
     if demo:
         theta0 = StructuralParams(eta=0.6)
@@ -1525,48 +1569,52 @@ def structural_identify_cmd(
         neg = simulate_negotiations(rng, V, theta0, 20000, mechanism="kap")
         tr = neg["traded"]
         m_obs = observed_moments(kap_realized=neg["price"][tr], kap_appraisal=V[tr])
+        provenance = {k: "synthetic" for k in m_obs}
         ctx = MomentContext(
             auction_appraised=np.array([]), auction_floors=np.array([]),
             kap_appraisal=np.ones(60), reps=300,
         )
     else:
-        if auctions_file:
-            auctions_df = load_auctions(
-                json.loads(Path(auctions_file).read_text(encoding="utf-8"))
-            )
-            m_obs.update(uyap_observed_moments(auctions_df))
-        if kap_file:
-            kap_df = load_kap_disposals(
-                json.loads(Path(kap_file).read_text(encoding="utf-8"))
-            )
-            m_obs.update(kap_observed_moments(kap_df))
-        if toki_file:
-            toki_res = difference_disclosures(
-                json.loads(Path(toki_file).read_text(encoding="utf-8"))
-            )
+        if auctions_file or kap_file or toki_file:
+            if auctions_file:
+                auctions_df = load_auctions(json.loads(Path(auctions_file).read_text(encoding="utf-8")))
+            if kap_file:
+                kap_df = load_kap_disposals(json.loads(Path(kap_file).read_text(encoding="utf-8")))
+            if toki_file:
+                toki_res = difference_disclosures(json.loads(Path(toki_file).read_text(encoding="utf-8")))
+        else:
+            genuine = load_genuine_datasets()  # VARSAYILAN: gerçek denetlenmiş veri
+            auctions_df, kap_df, toki_res = genuine["uyap"], genuine["kap"], genuine["toki_result"]
+        built = build_observed_moments(auctions_df, kap_df, toki_res)
+        m_obs, provenance, unavailable = built["moments"], built["provenance"], built["unavailable"]
         ctx = context_from_datasets(auctions_df, kap_df)
 
     rep = identification_report(
         ctx, StructuralParams(), DEFAULT_FREE, m_obs=m_obs,
         auctions=auctions_df, kap=kap_df, toki_result=toki_res,
+        provenance=provenance, unavailable=unavailable,
     )
     ds = rep["dataset"]
     typer.secho("Yapısal kimliklendirme raporu", fg=typer.colors.CYAN, bold=True)
     typer.echo(
-        f"  UYAP: toplam {ds['uyap_total']} · satılan {ds['uyap_sold']} · "
-        f"satılmayan {ds['uyap_unsold']}"
-    )
-    typer.echo(
-        f"        teklif gözlemli {ds['uyap_offer_count_observed']} · artıran gözlemli "
-        f"{ds['uyap_bidder_count_observed']} · tam yasal-taban {ds['uyap_exact_legal_floor_observed']}"
+        f"  UYAP: toplam {ds['uyap_total']} · satılan {ds['uyap_sold']} · satılmayan {ds['uyap_unsold']} "
+        f"· teklif göz. {ds['uyap_offer_count_observed']} · artıran {ds['uyap_bidder_count_observed']} "
+        f"· tam-taban {ds['uyap_exact_legal_floor_observed']}"
     )
     typer.echo(f"  KAP müzakereli elden çıkarma: {ds['kap_negotiated_disposals']}")
-    typer.echo(f"  TOKİ geçerli proje-dönem strata: {ds['toki_valid_project_period_strata']}")
+    typer.echo(f"  TOKİ geçerli proje-dönem kohortu: {ds['toki_valid_project_period_strata']}")
     typer.echo(
-        f"  Yapısal parametre (dim θ): {rep['n_structural_parameters']} · "
-        f"gözlenen moment: {rep['n_observed_moments']}"
+        f"  dim(θ): {rep['n_structural_parameters']} · kullanılabilir moment: {rep['n_observed_moments']}"
     )
-    color = typer.colors.GREEN if rep["status"] == "IDENTIFIED" else typer.colors.RED
+    if rep.get("moment_provenance"):
+        typer.echo(f"  Moment provenance: {rep['moment_provenance']}")
+    for un in rep.get("unavailable_moments", []):
+        typer.echo(f"  Eksik moment: {un['moment']} [{un['source']}] — {un['reason']}")
+    color = {
+        "IDENTIFIED": typer.colors.GREEN,
+        "WEAKLY_IDENTIFIED": typer.colors.YELLOW,
+        "NOT_IDENTIFIED": typer.colors.RED,
+    }.get(rep["status"], typer.colors.RED)
     typer.secho(
         f"  DURUM: {rep['status']}  (rank {rep['rank']} / dim {rep['n_structural_parameters']}) "
         f"· mod: {rep['prediction_mode']}",
@@ -1577,7 +1625,7 @@ def structural_identify_cmd(
         sv = ", ".join(f"{x:.2e}" for x in rep["singular_values"])
         typer.echo(f"  Tekil değerler: [{sv}]  ·  koşul sayısı: {rep['condition_number']:.2e}")
     for wd in rep.get("weakly_identified_directions", []):
-        typer.echo(f"  Zayıf-kimliklendirilmiş yön (s={wd['singular_value']:.2e}): {wd['direction']}")
+        typer.echo(f"  Zayıf yön (s={wd['singular_value']:.2e}): {wd['direction']}")
     for pname, pr in (rep.get("profiles") or {}).items():
         rr = pr.get("relative_range")
         flag = "ZAYIF" if pr.get("weakly_identified") else "belirgin"
@@ -1585,8 +1633,9 @@ def structural_identify_cmd(
         typer.echo(f"  Profil {pname}: göreli hedef aralığı {rr_txt} → {flag}")
     if rep["status"] != "IDENTIFIED":
         typer.secho(
-            "  Not: rank < dim → optimizer sonucu NOKTA TAHMİNİ olarak SUNULMAZ; sensitivity "
-            "mode. (Optimizer yakınsaması ≠ kimliklendirme.) Sonraki iş: veri kümesi genişletmesi.",
+            "  Not: rank < dim veya zayıf kimliklendirme → optimizer sonucu NOKTA TAHMİNİ olarak "
+            "SUNULMAZ; sensitivity/prototip mode. (Optimizer yakınsaması ≠ kimliklendirme.) "
+            "Sonraki iş: gerçek UYAP/KAP/tekrarlı TOKİ gözlem genişletmesi.",
             fg=typer.colors.YELLOW,
         )
 
