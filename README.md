@@ -1,108 +1,230 @@
-# sold — Gerçekleşen (Realized) Konut Fiyatı Tahmini
+# sold
 
-> İlan ("intended"/asking) fiyatından, **gerçekleşen** (realized/transaction)
-> satış fiyatının bir **proxy'sini** üretmek — ABD'deki MLS "sold data"
-> katmanının Türkiye'de eksik olan karşılığı.
+[![CI](https://github.com/onatozmenn/sold/actions/workflows/ci.yml/badge.svg)](https://github.com/onatozmenn/sold/actions/workflows/ci.yml)
+[![Data refresh](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml/badge.svg)](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-54%20passing-brightgreen.svg)](tests/)
+[![Data](https://img.shields.io/badge/data-TCMB%20%C2%B7%20T%C3%9C%C4%B0K-informational.svg)](#data-sources)
 
-## Problem
+> Estimate the **realized** (transaction) sale price of a Turkish home from its **asking** price — using only real, official data.
 
-Türkiye'de bireysel işlem düzeyinde temiz "gerçek satış fiyatı" verisi kamuya
-açık **değildir**:
+**sold** is a residential valuation engine for the Turkish market. Listing portals publish only *asking* prices, and the actual *sold* price of a property is not public anywhere in Türkiye. `sold` closes that gap by combining official appraisal data (TCMB), housing demand (TÜİK), and published negotiation margins into a transparent, self-updating estimate of what a home will actually sell for — with **zero fabricated data**.
 
-- **Tapu** kayıtlarında beyan edilen bedeller sistematik olarak düşüktür (harç).
-- **MLS** benzeri, satılan fiyatı şeffaf paylaşan bir sistem yoktur.
-- İlan siteleri yalnızca **asking (istenen)** fiyatı tutar.
+## Table of Contents
 
-Sonuç: değerleme modelleri (AVM) ilan fiyatıyla eğitildiğinde yukarı yanlı olur.
+- [Background](#background)
+- [How It Works](#how-it-works)
+- [Data Sources](#data-sources)
+- [Install](#install)
+- [Usage](#usage)
+- [Automation](#automation)
+- [Project Structure](#project-structure)
+- [Testing](#testing)
+- [Methodology & References](#methodology--references)
+- [Roadmap](#roadmap)
+- [Legal & Ethics](#legal--ethics)
+- [Contributing](#contributing)
+- [License](#license)
+- [Acknowledgements](#acknowledgements)
 
-## Yaklaşım
+## Background
 
-Eksik veriyi **çekmek** yerine **tahmin ederiz**:
+### The problem
 
-1. **Longitudinal ilan takibi** — ilanları her gün izleyip fiyat düşüşlerini ve
-   *time-on-market*'i kaydederiz; ilan kaybolunca "delisted" işaretleriz
-   (gerçekleşen fiyata en yakın gözlemlenebilir sinyal).
-2. **Kalibrasyon** — TCMB'nin **ekspertiz tabanlı** Konut Fiyat Endeksi'ne (KFE)
-   oturtarak agregada tutarlılık sağlarız.
-3. **Modelleme** (sonraki faz) — hedonik fiyat + indirim (sale-to-list) modeli.
+In the United States, MLS "sold data" makes transaction prices transparent. Türkiye has no equivalent:
 
-## Kurulum
+- **Title deeds (Tapu)** record declared values that are systematically understated to reduce transfer tax.
+- **No MLS** — no system publishes the price a home actually sold for.
+- **Listing portals** expose only the **asking** price.
 
-```powershell
+Consequently, automated valuation models (AVMs) trained naively on listings are biased upward, and there is no public label for "what it really sold for."
+
+### The approach
+
+`sold` does not try to *scrape* the missing data — it *estimates* it, the same way the industry does (e.g. Endeksa) and the way the academic literature validates:
+
+> **sold price ≈ asking price × (1 − negotiation margin)**
+
+Every term is grounded in real, citable data:
+
+- the **asking price** is the input;
+- the **negotiation margin** ("pazarlık payı") comes from published market reporting;
+- it is adjusted by **real housing demand** derived from TÜİK sales volumes.
+
+An independent **appraisal-based value** (TCMB TL/m² × area) is provided as a cross-check. When you supply your own real sold examples, a machine-learning model takes over and learns the margins directly from your data.
+
+## How It Works
+
+```mermaid
+flowchart TD
+    A["GitHub Actions (weekly, no PC required)"] --> B[Three real datasets]
+    B --> B1["kfe.csv — TCMB price index (trend)"]
+    B --> B2["house_sales.csv — TUIK sales volume (demand)"]
+    B --> B3["unit_prices.csv — TCMB appraisal TL/m2 (level)"]
+    B1 & B2 & B3 --> C{Valuation engine}
+    D["ground_truth.csv — your real sold records"] --> C
+    C -->|no real labels| E["RealValuator (real-data formula)"]
+    C -->|labels present| F["RealizedValuator (ML model)"]
+    E & F --> G["Estimated sale price + negotiation %"]
+    G --> H["CLI: sold model value"]
+    G --> I["API / web form: sold serve"]
+```
+
+**Two-tier engine**
+
+| Mode | When | What it does |
+|------|------|--------------|
+| `RealValuator` | Default (no labels yet) | `asking × (1 − published discount)`, demand-adjusted, with a TCMB TL/m² cross-check |
+| `RealizedValuator` | Once you add real sold labels | Two-stage ML (hedonic price + sale-to-list discount) trained on your ground truth |
+
+No synthetic or mock data is ever served. The simulator (`synthetic.py`) exists solely to unit-test the ML method.
+
+## Data Sources
+
+All data is fetched from the official **TCMB EVDS** API and refreshed automatically. Nothing is scraped.
+
+| Dataset | Source | Meaning | Coverage |
+|---|---|---|---|
+| `datasets/kfe.csv` | TCMB | Residential Property Price Index (trend) | 2010 → now, monthly |
+| `datasets/house_sales.csv` | TÜİK via EVDS | House sales counts (demand / liquidity) | 2013 → now, monthly, by province |
+| `datasets/unit_prices.csv` | TCMB | Appraisal-based unit prices (TL/m²) | 2013 → now, quarterly, 77 provinces |
+| `datasets/ground_truth.csv` | You | Real asking → sold examples (optional labels) | user-provided |
+
+Published negotiation margins used by the default engine (İstanbul ≈ 10%, Ankara ≈ 5%, İzmir ≈ 8%) are sourced from Turkish market reporting — see [References](#methodology--references).
+
+## Install
+
+**Prerequisites:** Python 3.11+ and a free [TCMB EVDS API key](https://evds2.tcmb.gov.tr) (only required to refresh data yourself).
+
+```bash
+git clone https://github.com/onatozmenn/sold.git
+cd sold
+
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"          # üretimde ayrıca: .[postgres]  ve  .[model]
-Copy-Item .env.example .env      # sonra .env içine EVDS_API_KEY yazın
+source .venv/bin/activate          # Windows: .\.venv\Scripts\Activate.ps1
+
+pip install -e ".[dev]"            # optional extras: .[model] .[api] .[postgres]
+cp .env.example .env               # then set EVDS_API_KEY in .env
 ```
 
-## Hızlı başlangıç
+## Usage
 
-```powershell
-# 1) Testler (ağ/anahtar gerektirmez)
-pytest
+### Estimate a sale price (CLI)
 
-# 2) Scraper -> pipeline hattını yerel örnekle çalıştır (siteye istek atmaz)
-sold scrape-demo
+```console
+$ sold model value 3200000 --province İstanbul --gross-m2 120
+İlan: 3,200,000 TL  (İstanbul, 120 m²)
+Tahmini satış: 2,880,000 TL   (yayınlı pazarlık ~%10)      # est. sale ≈ 2.88M (~10% below asking)
+Bu ilan: 26,667 TL/m²  ·  İstanbul ort. (TCMB): 79,306 TL/m²
+→ İlan, il ortalamasının %66 altında.                      # listing is 66% below the provincial average
+```
 
-# 2b) Faz 1: iki günlük yerel "site" ile longitudinal taramayı gör (siteye istek atmaz)
-sold crawl run --path samples/site/day1 --date 2026-01-01
-sold crawl run --path samples/site/day2 --date 2026-01-15
-sold crawl stats
+### Run the web app / REST API
 
-# 3) Faz 2-3: realized fiyat tahmin motorunu sentetik veride doğrula (.[model] gerekir)
-sold model demo
+```bash
+sold serve            # → http://127.0.0.1:8000  (web form + REST endpoints)
+```
 
-# 4) Faz 4: gerçek etiket akışı (demo) — k-fold CV ile doğrula
-sold gt demo --out data/gt.csv
-sold gt import --csv data/gt.csv
-sold gt analyze
+`POST /valuate` returns the estimate as JSON; `GET /` serves a simple form.
+
+### Refresh the real data (requires `EVDS_API_KEY`)
+
+```bash
+sold evds kfe          --out datasets/kfe.csv
+sold evds house-sales  --out datasets/house_sales.csv
+sold evds unit-prices  --out datasets/unit_prices.csv
+```
+
+### Add real sold labels (lets the model learn)
+
+```bash
+sold gt add ...                       # or edit datasets/ground_truth.csv directly
+sold gt analyze                       # negotiation statistics from your own data
 sold model evaluate --source gt --folds 5
-
-# 3) Faz 0: TCMB KFE verisini çek (EVDS_API_KEY gerekir)
-sold evds kfe --start 01-01-2015 --out data/kfe.csv
-#   alternatif:  python scripts/fetch_kfe.py
-
-# Kesin/güncel KFE seri kodlarını doğrula:
-sold evds series bie_kfe
-
-# Veritabanını hazırla (SQLite varsayılan; Postgres için DATABASE_URL ayarla)
-sold db init
-
-# 5) Değerleme servisi (web arayüzü + API) — .[api] gerekir
-sold serve   # sonra tarayıcıda http://127.0.0.1:8000
 ```
 
-## Yol haritası (fazlar)
+### Validate the ML method on simulated data (not a real prediction)
 
-| Faz | İçerik | Durum |
-|----|--------|-------|
-| 0 | TCMB EVDS (KFE) + TÜİK satış adetleri + veri modeli | ✅ bu repo |
-| 1 | Saygılı crawler + adapter + zamanlayıcı; longitudinal biriktirme | ✅ bu repo |
-| 2 | Time-on-market + fiyat düşüş eğrisi (asking-side indirim) | ✅ bu repo |
-| 3 | İndirim modeli + KFE kalibrasyonu → realized tahmin motoru | ✅ bu repo |
-| 4 | Broker/ekspertiz ile küçük ground-truth doğrulaması | ✅ bu repo |
+```bash
+sold model demo
+```
 
-## Proje yapısı
+## Automation
+
+Three GitHub Actions keep the project alive without your machine:
+
+| Workflow | Trigger | Action |
+|---|---|---|
+| `kfe-refresh.yml` | weekly + manual | Pulls KFE, house sales, and unit prices; commits the updated CSVs |
+| `report.yml` | on label change + weekly | Regenerates `datasets/report.md` |
+| `ci.yml` | every push / PR | Runs the test suite |
+
+Set the `EVDS_API_KEY` repository secret (Settings → Secrets and variables → Actions) to enable data refresh.
+
+## Project Structure
 
 ```
 src/sold/
-  config.py            # ayarlar (.env)
-  evds/                # TCMB EVDS istemcisi + KFE (Faz 0)
-  tuik/                # TÜİK CSV/SDMX yükleyici
-  db/                  # SQLAlchemy modelleri + PostGIS şeması
-  scraper/             # saygılı temel + longitudinal pipeline (Faz 1)
-  cli.py               # `sold` komutları
-scripts/fetch_kfe.py   # Faz 0 tek-tık script
-samples/               # demo HTML fixture (siteye istek atmaz)
-tests/                 # ağ gerektirmeyen birim/uçtan uca testler
+  config.py          # settings (.env)
+  evds/              # TCMB EVDS client: KFE, house sales, unit prices
+  features/          # demand signal (market_heat) + feature builder
+  model/             # valuation (real engine), estimator (ML), synthetic (tests only)
+  groundtruth/       # real-label loading + analysis
+  scraper/           # ToS-respectful pipeline (local demo only)
+  db/                # SQLAlchemy models + PostGIS schema
+  api/app.py         # FastAPI service + web form
+  cli.py             # `sold` command-line interface
+datasets/            # real, version-controlled data (auto-refreshed)
+scripts/             # helper scripts (data fetch, report)
+tests/               # offline unit / end-to-end tests
+.github/workflows/   # CI + data refresh + report
 ```
 
-## Hukuki / etik notlar (önemli)
+## Testing
 
-- **KVKK:** Kişisel veri (ilan sahibi adı, telefon vb.) **toplanmaz/saklanmaz**;
-  yalnızca taşınmazın nesnel nitelikleri tutulur.
-- **ToS / robots.txt:** Her sitenin kullanım koşullarına ve `robots.txt`
-  kurallarına uyulur; scraper hız sınırı + jitter uygular. Siteye özgü
-  `parse` metodunu, ilgili sitenin izinleri çerçevesinde **siz** yazarsınız.
-- **Amaç:** Ürünün konumu **değerleme doğruluğu / şeffaf fiyat tahmini**dir;
-  vergi denetimi/teşhir değildir (bkz. GİB "MEVA" projesi ayrı bir bağlamdır).
+```bash
+pytest -q             # 54 tests, fully offline (no network or API key required)
+```
+
+## Methodology & References
+
+Using listings plus a published margin (instead of unavailable transaction data) is an established, peer-reviewed method:
+
+- *Real estate listings and their usefulness for hedonic regressions* — Springer, 2021.
+- *Aggregated Housing Price Predictions with No Information About Transactions* (Warsaw) — MDPI, 2024.
+
+Negotiation-margin figures from Turkish market reporting: İstanbul ≈ 10%, Ankara ≈ 5%, İzmir ≈ 8%, rising to 15–20% in slow or high-inventory markets. Drivers include building age, distance to centre, and local inventory — the latter captured here via TÜİK sales volume.
+
+## Roadmap
+
+- [x] Real TCMB/TÜİK data pipeline (KFE, sales, TL/m²) with weekly auto-refresh
+- [x] Real-data valuation engine (published margin + demand adjustment)
+- [x] Ground-truth labeling with automatic ML takeover
+- [ ] Issue-form label entry (add real sales from the browser)
+- [ ] Per-district TL/m² once real labels allow it
+- [ ] Public dashboard (GitHub Pages)
+
+## Legal & Ethics
+
+- **No scraping.** Only official APIs (TCMB / TÜİK via EVDS) are used; individual sold prices are never accessed.
+- **Privacy (KVKK).** No personal data (names, phone numbers) is collected — only objective property attributes.
+- **Purpose.** Valuation accuracy and price transparency, not tax enforcement or exposure.
+
+## Contributing
+
+Issues and pull requests are welcome. Please:
+
+1. Open an issue to discuss significant changes first.
+2. Keep the test suite green (`pytest`) and add tests for new behavior.
+3. Never add scraped or fabricated data to the repository.
+
+## License
+
+Distributed under the **MIT License**. See [LICENSE](LICENSE).
+
+## Acknowledgements
+
+- **TCMB EVDS** — appraisal-based price index and unit prices.
+- **TÜİK** — housing sales statistics.
+- Turkish real-estate market reporting for published negotiation margins.

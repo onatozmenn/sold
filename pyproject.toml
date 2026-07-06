@@ -5,8 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sold"
 version = "0.1.0"
-description = "Gerçekleşen (realized) konut fiyatı tahmini: ilan verisinden 'sold data' proxy'si üretme."
+description = "Estimate the realized (transaction) sale price of Turkish homes from asking-price data — using only official data."
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27",
