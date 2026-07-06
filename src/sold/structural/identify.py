@@ -229,6 +229,10 @@ def identification_report(
     )
     dim = len(free_names)
     n_moments = len(keys)
+    # GÖZLENEN ama mevcut yapısal modelde SİMÜLE KARŞILIĞI OLMAYAN momentler (ör. TOKİ
+    # kohort momentleri): m_obs'ta VAR ama Jacobian'a GİRMEZ — çünkü simülatör bu
+    # mekanizmayı (henüz) üretmez. Bu bir MODEL-eşleme boşluğudur (veri değil), dürüstçe raporlanır.
+    observed_unmatched = sorted(k for k in (m_obs or {}) if k not in set(keys))
 
     report: dict = {
         "dataset": summary,
@@ -238,6 +242,7 @@ def identification_report(
         "moment_keys": keys,
         "moment_provenance": provenance or {},
         "unavailable_moments": unavailable or [],
+        "observed_without_simulated_counterpart": observed_unmatched,
         "sample_sizes": sample_sizes or {},
         "jacobian_step": step,
     }

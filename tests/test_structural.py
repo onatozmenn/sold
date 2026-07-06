@@ -462,9 +462,10 @@ def test_genuine_datasets_load_and_reconcile_with_level2():
     assert k["sale_price"] == 5_508_474.60 and k["appraisal_value"] == 5_200_000
     assert k["reference_price_type"] == "prior_appraisal"
     assert bool(k["negotiated"]) is True and bool(k["related_party"]) is False
-    # TOKİ: 1 disclosure → 0 dönem kohortu (tek disclosure farklanamaz)
-    assert len(g["toki_disclosures"]) == 1
-    assert g["toki_result"]["cohorts"] == []
+    # TOKİ: 3 ardışık denetlenmiş disclosure → 4 geçerli dönem kohortu (mutabakat-bloklu strata hariç)
+    assert len(g["toki_disclosures"]) == 3
+    assert len(g["toki_result"]["cohorts"]) == 4
+    assert g["toki_result"]["revision_detected"] is False
 
 
 def test_dataset_status_genuine_counts():
@@ -475,7 +476,9 @@ def test_dataset_status_genuine_counts():
     assert g["kap"]["audited_eligible_disposals"] == 1
     assert g["kap"]["negotiated_calibration_observations"] == 1
     assert g["kap"]["prior_appraisal_observations"] == 1 and g["kap"]["appraisal_observations"] == 0
-    assert g["toki"]["audited_disclosures"] == 1 and g["toki"]["valid_derived_period_cohorts"] == 0
+    assert g["toki"]["audited_disclosures"] == 3
+    assert g["toki"]["valid_derived_period_cohorts"] == 4
+    assert g["toki"]["reconciliation_blocked_strata"] == 3
     assert st["non_audited_records"]["uyap"] == 0
 
 
@@ -500,7 +503,8 @@ def test_build_observed_moments_reports_provenance_and_unavailable():
     un_moments = {u["moment"] for u in un}
     assert "uyap_win_over_appraisal_sd" in un_moments  # n=1 sold
     assert "kap_log_ratio_sd" in un_moments            # n=1 negotiated
-    assert "toki_cohort_moments" in un_moments         # 0 cohorts
+    # TOKİ kohort momenti artık AVAILABLE (3 gerçek disclosure → 4 kohort), unavailable DEĞİL
+    assert "toki_cohort_avg_price" in m and "toki_cohort_moments" not in un_moments
     assert m["kap_log_ratio_mean"] == pytest.approx(np.log(5_508_474.60 / 5_200_000), abs=1e-6)
 
 
@@ -644,3 +648,47 @@ def test_second_kap_unlocks_log_ratio_sd_fixture():
     )
     built = build_observed_moments(None, df, None)
     assert "kap_log_ratio_sd" in built["moments"]  # ≥2 müzakereli → sd AÇILDI
+
+
+# --- GERÇEK PMVR3 serisi (3 denetlenmiş disclosure) dönem kohortları ---------- #
+def test_genuine_pmvr3_series_derives_expected_cohorts():
+    g = load_genuine_datasets()
+    res = g["toki_result"]
+    assert res["revision_detected"] is False
+    cohorts = {(c["period_start"], c["period_end"], c["room_type"]): c for c in res["cohorts"]}
+    # Oct→Nov geçerli
+    c = cohorts[("2019-10-31", "2019-11-30", "2+1")]
+    assert c["cohort_count"] == 7 and c["cohort_total"] == pytest.approx(7113710.07)
+    assert c["cohort_avg"] == pytest.approx(1016244.2957142857)
+    c = cohorts[("2019-10-31", "2019-11-30", "3+1")]
+    assert c["cohort_count"] == 2 and c["cohort_avg"] == pytest.approx(1435225.00)
+    # Nov→Dec geçerli
+    c = cohorts[("2019-11-30", "2019-12-31", "2+1")]
+    assert c["cohort_count"] == 5 and c["cohort_avg"] == pytest.approx(1003690.00)
+    c = cohorts[("2019-11-30", "2019-12-31", "4+1")]
+    assert c["cohort_count"] == 1 and c["cohort_avg"] == pytest.approx(1684074.65)
+    assert len(res["cohorts"]) == 4  # 4+1 Oct→Nov (delta=0) kohort DEĞİL
+    # mutabakat-bloklu (delta_count=0 & delta_total≠0): 5+1 Oct→Nov, 3+1 & 5+1 Nov→Dec
+    recon = {(r["room_type"], r["period_end"]) for r in res["reconciliation"]}
+    assert ("5+1", "2019-11-30") in recon
+    assert ("3+1", "2019-12-31") in recon
+    assert ("5+1", "2019-12-31") in recon
+    assert len(res["reconciliation"]) == 3
+
+
+def test_genuine_toki_moment_available_but_no_sim_counterpart():
+    # TOKİ kohort momenti artık AÇIK, ama mevcut modelde sim KARŞILIĞI YOK → J_TOKI rank 0
+    g = load_genuine_datasets()
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    assert "toki_cohort_avg_price" in built["moments"]
+    assert built["provenance"]["toki_cohort_avg_price"] == "toki"
+    ctx = context_from_datasets(g["uyap"], g["kap"])
+    rep = identification_report(
+        ctx, StructuralParams(), DEFAULT_FREE, m_obs=built["moments"],
+        auctions=g["uyap"], kap=g["kap"], toki_result=g["toki_result"],
+        provenance=built["provenance"],
+    )
+    assert "toki_cohort_avg_price" in rep["observed_without_simulated_counterpart"]
+    assert rep["source_jacobians"]["J_TOKI"]["rank"] == 0  # sim karşılığı yok
+    assert rep["source_jacobians"]["J_combined"]["rank"] == 2  # değişmedi
+    assert rep["status"] == "NOT_IDENTIFIED"

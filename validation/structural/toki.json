@@ -1,12 +1,42 @@
 [
   {
     "project_id": "PMVR3",
+    "as_of_date": "2019-10-31",
+    "observation_role": "cumulative_realized_sales",
+    "table_semantics": "cumulative_realized_sales_by_room_type",
+    "source_audited": true,
+    "_validation_ref": "operator-audited PMVR3 official disclosure series (2019-10-31)",
+    "_note": "GENUINE manually-audited official Park Mavera III (PMVR3) cumulative realized-sales disclosure, as-of 2019-10-31, same published disclosure series and table semantics as the frozen 2019-12-31 Level-2 record. Operator-audited official table values supplied as structured fields; the aggregate adapter normalizes them — the system does NOT claim raw-PDF extraction. Official TOTAL row (audit only, NOT used for differencing): count=372 total_price=359650908.98 total_gross_m2=67112.34 average_price=966803.52 average_m2_price=5358.94.",
+    "strata": [
+      {"room_type": "2+1", "count": 153, "total_price": 106285859.62, "total_gross_m2": 20461.86, "average_price": 694678.82, "average_m2_price": 5194.34, "cum_count": 153, "cum_total": 106285859.62},
+      {"room_type": "3+1", "count": 76, "total_price": 74899258.35, "total_gross_m2": 14202.85, "average_price": 982516.56, "average_m2_price": 5273.54, "cum_count": 76, "cum_total": 74899258.35},
+      {"room_type": "4+1", "count": 23, "total_price": 27248070.90, "total_gross_m2": 4935.96, "average_price": 1184698.73, "average_m2_price": 5520.77, "cum_count": 23, "cum_total": 27248070.90},
+      {"room_type": "5+1", "count": 120, "total_price": 151217720.11, "total_gross_m2": 27511.67, "average_price": 1260147.67, "average_m2_price": 5496.49, "cum_count": 120, "cum_total": 151217720.11}
+    ]
+  },
+  {
+    "project_id": "PMVR3",
+    "as_of_date": "2019-11-30",
+    "observation_role": "cumulative_realized_sales",
+    "table_semantics": "cumulative_realized_sales_by_room_type",
+    "source_audited": true,
+    "_validation_ref": "operator-audited PMVR3 official disclosure series (2019-11-30)",
+    "_note": "GENUINE manually-audited official Park Mavera III (PMVR3) cumulative realized-sales disclosure, as-of 2019-11-30, same published disclosure series and table semantics as the frozen 2019-12-31 Level-2 record. Operator-audited official table values supplied as structured fields; the aggregate adapter normalizes them — the system does NOT claim raw-PDF extraction. Official TOTAL row (audit only, NOT used for differencing): count=381 total_price=375610239.03 total_gross_m2=68424.69 average_price=985853.65 average_m2_price=5489.40.",
+    "strata": [
+      {"room_type": "2+1", "count": 160, "total_price": 113399569.69, "total_gross_m2": 21408.07, "average_price": 708747.31, "average_m2_price": 5297.05, "cum_count": 160, "cum_total": 113399569.69},
+      {"room_type": "3+1", "count": 78, "total_price": 77769708.35, "total_gross_m2": 14568.99, "average_price": 997047.54, "average_m2_price": 5338.03, "cum_count": 78, "cum_total": 77769708.35},
+      {"room_type": "4+1", "count": 23, "total_price": 27248070.90, "total_gross_m2": 4935.96, "average_price": 1184698.73, "average_m2_price": 5520.77, "cum_count": 23, "cum_total": 27248070.90},
+      {"room_type": "5+1", "count": 120, "total_price": 157192890.09, "total_gross_m2": 27511.67, "average_price": 1309940.75, "average_m2_price": 5713.68, "cum_count": 120, "cum_total": 157192890.09}
+    ]
+  },
+  {
+    "project_id": "PMVR3",
     "as_of_date": "2019-12-31",
     "observation_role": "cumulative_realized_sales",
     "table_semantics": "cumulative_realized_sales_by_room_type",
     "source_audited": true,
     "_validation_ref": "validation/real_records/toki.json",
-    "_note": "GENUINE audited TOKİ disclosure derived from validated Level-2 Park Mavera III (PMVR3) aggregate record. This is a SINGLE disclosure (one as-of date); repeated consecutive disclosures for the SAME project are required to difference cumulative strata into period cohorts, so ZERO period cohorts can be derived from this alone. The offered_inventory population is NOT paired with realized sales (different populations); only the cumulative_realized_sales strata are carried for future period differencing.",
+    "_note": "GENUINE audited TOKİ disclosure derived from validated Level-2 Park Mavera III (PMVR3) aggregate record (FROZEN Level-2 case). Now the third point in a consecutive PMVR3 cumulative-realized-sales series (with 2019-10-31 and 2019-11-30); the audited cumulative strata values remain unchanged. The offered_inventory population is NOT paired with realized sales; only cumulative_realized_sales strata are carried for period differencing.",
     "strata": [
       {"room_type": "2+1", "cum_count": 165, "cum_total": 118418019.69},
       {"room_type": "3+1", "cum_count": 78, "cum_total": 78003128.35},

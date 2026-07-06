@@ -1513,7 +1513,8 @@ def structural_dataset_cmd() -> None:
     )
     typer.echo(
         f"        geçerli dönem kohortu {t['valid_derived_period_cohorts']} "
-        f"· revizyonla-bloklanan {t['revision_blocked_cohorts']}"
+        f"· revizyonla-bloklanan {t['revision_blocked_cohorts']} "
+        f"· mutabakatla-bloklanan strata {t.get('reconciliation_blocked_strata', 0)}"
     )
     na = st["non_audited_records"]
     typer.secho(
@@ -1618,6 +1619,12 @@ def structural_identify_cmd(
         typer.echo(f"  Moment provenance: {rep['moment_provenance']}")
     for un in rep.get("unavailable_moments", []):
         typer.echo(f"  Eksik moment: {un['moment']} [{un['source']}] — {un['reason']}")
+    owc = rep.get("observed_without_simulated_counterpart", [])
+    if owc:
+        typer.secho(
+            f"  Gözlenen ama sim KARŞILIĞI YOK (model-eşleme boşluğu; Jacobian'a girmez): {owc}",
+            fg=typer.colors.YELLOW,
+        )
     color = {
         "IDENTIFIED": typer.colors.GREEN,
         "WEAKLY_IDENTIFIED": typer.colors.YELLOW,

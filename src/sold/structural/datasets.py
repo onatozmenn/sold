@@ -103,6 +103,7 @@ def _toki_status(disclosures: list[dict], toki_result: dict) -> dict:
         "room_type_cumulative_strata": int(strata),
         "valid_derived_period_cohorts": int(len(toki_result.get("cohorts", []))),
         "revision_blocked_cohorts": int(len(toki_result.get("revisions", []))),
+        "reconciliation_blocked_strata": int(len(toki_result.get("reconciliation", []))),
     }
 
 

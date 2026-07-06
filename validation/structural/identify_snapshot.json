@@ -3,6 +3,11 @@
   "n_observed_moments": 3,
   "available_moments": [
     "kap_log_ratio_mean",
+    "toki_cohort_avg_price",
+    "toki_cohort_count",
+    "toki_share_2+1",
+    "toki_share_3+1",
+    "toki_share_4+1",
     "uyap_sale_prob",
     "uyap_win_over_appraisal_mean"
   ],
@@ -12,7 +17,12 @@
     "uyap_win_over_appraisal_sd": 1,
     "kap_log_ratio_mean": 1,
     "kap_log_ratio_sd": 1,
-    "toki_cohort_moments": 0
+    "toki_cohort_moments": 4,
+    "toki_cohort_avg_price": 4,
+    "toki_cohort_count": 4,
+    "toki_share_2+1": 4,
+    "toki_share_3+1": 4,
+    "toki_share_4+1": 4
   },
   "rank": 2,
   "smallest_nonzero_singular_value": 0.5793385803552313,
