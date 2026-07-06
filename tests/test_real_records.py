@@ -12,7 +12,6 @@ import pytest
 from sold.labels import PublicLabelMiner
 from sold.labels.registry import PARSER_VERSION
 from sold.labels.validation import (
-    COMPARED_FIELDS,
     MANIFEST_FIELDS,
     load_validation_records,
 )
@@ -54,7 +53,7 @@ def _assert_paired_matches(record):
     got = PublicLabelMiner().mine(record.source, [record.parser_input])
     assert len(got) == 1, f"{record.source}: parser tam 1 etiket üretmeli"
     out, exp = got[0], record.expected_output
-    for key in COMPARED_FIELDS:
+    for key in record.compared_fields:
         got_val = out.get(key)
         exp_val = exp.get(key)
         if key == "transaction_date":  # parser date nesnesi → str kıyas

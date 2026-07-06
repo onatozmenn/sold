@@ -76,6 +76,18 @@ class ValidationRecord:
         return str(self.manifest.get("observation_model", "realized_label"))
 
     @property
+    def compared_fields(self) -> tuple[str, ...]:
+        """Bu kayıt için karşılaştırılacak alanlar; yoksa varsayılan COMPARED_FIELDS.
+
+        Farklı gerçek kayıtlar farklı şeyleri kanıtlar (ör. UYAP: parsel/net alanın
+        gross_m2'ye ENJEKTE EDİLMEDİĞİ, yani gross_m2'nin NULL kaldığı). Manifest
+        'compared_fields' verirse o alanlar karşılaştırılır; frozen KAP/TOKİ alanı
+        vermez → default DEĞİŞMEDEN kalır.
+        """
+        cf = self.manifest.get("compared_fields")
+        return tuple(cf) if cf else COMPARED_FIELDS
+
+    @property
     def ready(self) -> bool:
         """Gerçek + elle denetlenmiş mi? (yalnızca o zaman doğrulama zorlanır)."""
         m = self.manifest

@@ -1,37 +1,45 @@
 {
-  "_instructions": "REAL-RECORD VALIDATION SLOT (level-2) - FINAL pending independent source (KAP 963554 and TOKI PMVR3 already validated & frozen): UYAP judicial e-auction (maximally mechanism-independent from KAP: a forced sale where a court-appointed CURRENT appraisal is the reserve and competitive bidding sets the price). STILL PENDING - not validated. Operator steps: (1) open a REAL UYAP e-satis result for a COMPLETED real-estate auction that actually SOLD; (2) transcribe ONLY the structured non-personal fields into parser_input below (redact EVERY party/personal datum - the adapter never uses it and performs NO free-text parsing); (3) fill the null price/date/location values in expected_output from your manual audit (the deterministic taxonomy fields are pre-set = the adapter's fixed output for ANY completed UYAP real-estate auction, not a claim about a specific record); (4) set manifest.record_id + retrieval_date; (5) flip is_real_official_record AND manually_audited to true. Do NOT commit the raw auction artifact. While either flag is false this slot is PENDING and tests SKIP it. BOUNDARY (same as KAP): the operator supplies structured audited fields; the system does not scrape or parse raw UYAP text. Use a NON-identifying public announcement/ilan reference for 'ref' (never the icra dosya/case number).",
+  "_instructions": "REAL-RECORD VALIDATION CASE (level-2), COMPLETED. UYAP judicial e-Satis COMPLETED real-estate auction (Ankara/Yenimahalle commercial unit 'dukkan'), manually audited by the operator from the official e-Satis result and auction documents. Validates appraisal -> winning-bid normalization for a completed JUDICIAL AUCTION (mechanism=auction, reference_price_type=appraisal), NOT ordinary residential asking-to-closing (excluded from asking_to_closing_labels()). CRITICAL AREA-FIELD FINDING: 509.00 m2 = cadastral PARCEL surface area; 32.50 m2 = unit measured NET usable area; the unit's GROSS floor area is NOT reported by the source, so gross_m2 is NULL and 509 is NOT injected. The existing adapter/RealizedLabel already treat gross_m2 as OPTIONAL, so no schema change was required; parcel_area_m2 and unit_net_m2 are preserved in parser_input as distinct area provenance. BOUNDARY: operator supplies structured audited fields; no raw UYAP text parsing. PRIVACY: no party/personal names, payment or account data are transcribed anywhere; external_ref uses the public KAYIT NO 16766356960, never the icra dosya/sale-file number.",
   "manifest": {
     "source": "uyap",
     "domain": "uyap",
-    "record_id": "PENDING",
+    "record_id": "16766356960",
     "record_type": "completed_real_estate_auction_result",
-    "retrieval_date": null,
+    "retrieval_date": "2026-07-06",
     "parser_version": "1.1.0",
-    "is_real_official_record": false,
-    "manually_audited": false,
+    "compared_fields": ["domain", "label_source", "sale_mechanism", "reference_price_type", "reference_price", "realized_price", "related_party", "value_method", "transaction_date", "property_type", "province", "district", "gross_m2", "external_ref"],
+    "is_real_official_record": true,
+    "manually_audited": true,
     "redistribution_ok": false,
-    "notes": "The FINAL pending Level-2 source; KAP (963554) and TOKI (PMVR3) are validated and frozen. Awaiting operator retrieval of a genuine UYAP COMPLETED (sold) real-estate auction result. Not validated. Reference = muhammen bedel (court CURRENT appraisal) -> realized = ihale bedeli (winning bid); mechanism=auction; reference_price_type=appraisal (a current appraisal, contrasting KAP's prior_appraisal)."
+    "notes": "VALIDATED completed judicial e-auction (Ankara/Yenimahalle dukkan). First-auction result: sold 2026-06-24 (11:15-11:31); court appraisal (muhammen bedel) TRY 4,500,000.00 -> winning bid (ihale bedeli) TRY 4,545,000.00; mechanism=auction; reference_price_type=appraisal. AREA-SEMANTICS AUDIT: 509.00 m2 is the CADASTRAL PARCEL surface area and 32.50 m2 is the unit's measured NET usable area; the source does NOT report the unit's GROSS floor area, so gross_m2 stays NULL (509 is NOT injected). parcel_area_m2 / unit_net_m2 preserved in parser_input as provenance. external_ref = public KAYIT NO 16766356960 (NOT the sale-file number). No party/personal or payment/account data stored. Excluded from asking_to_closing_labels()."
   },
   "parser_input": {
-    "ihale_sonucu": null,
-    "muhammen_bedel": null,
-    "ihale_bedeli": null,
-    "il": null,
-    "ilce": null,
-    "tasinmaz_turu": null,
+    "ihale_sonucu": "satıldı",
+    "muhammen_bedel": 4500000.00,
+    "ihale_bedeli": 4545000.00,
+    "il": "Ankara",
+    "ilce": "Yenimahalle",
+    "tasinmaz_turu": "dükkan",
     "brut_m2": null,
-    "ihale_tarihi": null,
-    "ref": null
+    "ihale_tarihi": "2026-06-24",
+    "ref": "16766356960",
+    "parcel_area_m2": 509.00,
+    "unit_net_m2": 32.50
   },
   "expected_output": {
     "domain": "uyap",
     "label_source": "uyap",
     "sale_mechanism": "auction",
     "reference_price_type": "appraisal",
-    "reference_price": null,
-    "realized_price": null,
+    "reference_price": 4500000.00,
+    "realized_price": 4545000.00,
     "related_party": false,
     "value_method": null,
-    "transaction_date": null
+    "transaction_date": "2026-06-24",
+    "property_type": "dükkan",
+    "province": "Ankara",
+    "district": "Yenimahalle",
+    "gross_m2": null,
+    "external_ref": "16766356960"
   }
 }
