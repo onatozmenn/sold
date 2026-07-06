@@ -69,10 +69,15 @@ class UYAPAdapter(PublicSourceAdapter):
 class KAPAdapter(PublicSourceAdapter):
     """KAP — maddi duran varlık (gayrimenkul) satış bildirimi.
 
-    Referans fiyat provenance'ı yapısal alanlardan TÜRETİLİR: güncel değerleme raporu
-    varsa (appraisal), yoksa açıklama metnindeki önceki ekspertiz (prior_appraisal),
-    ikisi de yoksa none. İlişkili taraf → corporate_related_party; aksi halde
-    corporate_negotiated_non_related (related_party=false tek başına arm_length yapmaz).
+    SINIR (dürüstlük): GİRDİ YAPISALDIR. Operatör, denetlenmiş resmî bildirim
+    temsilinden alanları (toplam_satis_bedeli, degerleme_tutari, prior_appraisal_value,
+    iliskili_taraf, …) ELLE ÇIKARIR. Bu adapter HAM KAP SERBEST METNİNİ AYRIŞTIRMAZ;
+    yalnızca yapısal alanları alıp normalized reference_price_type'ı belirler ve
+    provenance'ı KORUR: güncel yapısal değerleme (degerleme_raporu_hazirlandi +
+    degerleme_tutari) → appraisal; yoksa operatörün metinden çıkarıp prior_appraisal_value
+    alanına yazdığı önceki ekspertiz → prior_appraisal; ikisi de yoksa none.
+    İlişkili taraf → corporate_related_party; aksi halde corporate_negotiated_non_related
+    (related_party=false tek başına arm_length yapmaz).
     """
 
     source = "kap"
@@ -82,10 +87,11 @@ class KAPAdapter(PublicSourceAdapter):
         if sale in (None, "", 0):
             return None
 
-        # Referans fiyat PROVENANCE'ı: o işlem için hazırlanmış GÜNCEL yapısal
-        # değerleme mi, yoksa açıklama metnindeki ÖNCEKİ/emsal ekspertiz mi?
-        # (KAP'ta yapısal değerleme alanı boş olup metinde önceki ekspertize atıf
-        # yapılabilir — bu ikisi FARKLI referans türüdür.)
+        # Referans fiyat PROVENANCE'ı YAPISAL alanlardan belirlenir (serbest metin
+        # AYRIŞTIRILMAZ): o işlem için hazırlanmış GÜNCEL yapısal değerleme mi
+        # (degerleme_tutari), yoksa operatörün açıklama metninden çıkarıp
+        # prior_appraisal_value'ya yazdığı ÖNCEKİ/emsal ekspertiz mi? Bu ikisi
+        # FARKLI referans türüdür; adapter yalnızca hangisinin dolu olduğuna bakar.
         report_prepared = bool(
             record.get(
                 "degerleme_raporu_hazirlandi",

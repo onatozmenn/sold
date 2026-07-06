@@ -1,5 +1,5 @@
 {
-  "_instructions": "REAL-RECORD VALIDATION CASE (level-2), COMPLETED. KAP notification 963554, manually audited by the operator. EDGE CASE: the KAP structured valuation field is EMPTY and valuation_report_prepared=false; the 5,200,000 figure is a PRIOR appraisal (Ekol Gayrimenkul, 2020-12-28, report Oi-710) referenced only in the explanation text. The parser therefore DERIVES reference_price_type=prior_appraisal (not a current structured 'appraisal') and it is NOT injected as degerleme_tutari. Raw disclosure artifact is NOT redistributed; only non-personal audited fields are stored.",
+  "_instructions": "REAL-RECORD VALIDATION CASE (level-2), COMPLETED. KAP notification 963554, manually audited by the operator. EDGE CASE: the KAP structured valuation field is EMPTY and valuation_report_prepared=false; in the official disclosure the 5,200,000 figure is a PRIOR appraisal (Ekol Gayrimenkul, 2020-12-28, report Oi-710) mentioned only in the explanation text. PROVENANCE BOUNDARY: the OPERATOR manually extracted that figure into the structured prior_appraisal_value field; the system does NOT perform raw KAP free-text extraction. Given the structured input, the adapter derives the normalized reference_price_type=prior_appraisal (not a current 'appraisal') and preserves provenance — the value is NOT injected as degerleme_tutari. Raw disclosure artifact is NOT redistributed; only non-personal audited fields are stored.",
   "manifest": {
     "source": "kap",
     "domain": "kap",
@@ -10,7 +10,7 @@
     "is_real_official_record": true,
     "manually_audited": true,
     "redistribution_ok": false,
-    "notes": "Sisli/Istanbul apartment. Realized sale TRY 5,508,474.60 excl. VAT; completion 2021-09-13; natural-person counterparty; related_party=false but NOT asserted arm's-length -> corporate_negotiated_non_related. Structured valuation empty + report_prepared=false -> 5,200,000 is a PRIOR appraisal (Ekol GYO, 2020-12-28, Oi-710) from explanation text -> reference_price_type=prior_appraisal."
+    "notes": "Sisli/Istanbul apartment. Realized sale TRY 5,508,474.60 excl. VAT; completion 2021-09-13; natural-person counterparty; related_party=false but NOT asserted arm's-length -> corporate_negotiated_non_related. Structured valuation empty + report_prepared=false -> operator extracted the 5,200,000 PRIOR appraisal (Ekol GYO, 2020-12-28, Oi-710) from the disclosure text into prior_appraisal_value (no raw free-text parsing by the system) -> reference_price_type=prior_appraisal."
   },
   "parser_input": {
     "kap_id": "963554",

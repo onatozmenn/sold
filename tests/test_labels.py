@@ -101,8 +101,9 @@ def test_kap_adapter():
     assert label["related_party"] is False
 
 
-def test_kap_adapter_prior_appraisal_from_text():
-    # Yapısal değerleme BOŞ + rapor hazırlanmamış; 5.2M metindeki ÖNCEKİ ekspertiz.
+def test_kap_adapter_prior_appraisal_from_structured_field():
+    # Operatör önceki ekspertizi prior_appraisal_value'ya ÇIKARMIŞ (adapter metin ayrıştırmaz).
+    # Yapısal güncel değerleme BOŞ + rapor hazırlanmamış → prior_appraisal referans türü.
     label = KAPAdapter().parse(
         {
             "toplam_satis_bedeli": 5_508_474.60,
