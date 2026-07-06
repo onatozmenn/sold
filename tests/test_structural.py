@@ -22,6 +22,7 @@ from sold.structural import (
     StructuralParams,
     auction_moments,
     build_observed_moments,
+    compare_snapshots,
     context_from_datasets,
     dataset_status,
     dataset_summary,
@@ -42,6 +43,7 @@ from sold.structural import (
     simulate_auctions,
     simulate_negotiations,
     smm_objective,
+    source_jacobian_ranks,
     tcmb_fair_value,
     toki_composition_moments,
     trade_mask,
@@ -558,3 +560,87 @@ def test_jacobian_restricted_to_observed_moments():
     )
     assert keys == ["kap_log_ratio_mean"]  # yalnızca gözlenen moment
     assert J.shape == (1, 2)
+
+
+# --- Kaynağa özgü Jacobian (hangi kaynak bağımsız yön ekliyor?) -------------- #
+def test_source_jacobian_ranks_on_genuine_data():
+    g = load_genuine_datasets()
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    ctx = context_from_datasets(g["uyap"], g["kap"])
+    sj = source_jacobian_ranks(
+        StructuralParams(), ctx, DEFAULT_FREE, built["moments"], built["provenance"]
+    )
+    assert sj["J_TOKI"]["rank"] == 0 and sj["J_TOKI"]["n_moments"] == 0  # kohort yok
+    assert sj["J_KAP"]["rank"] == 1 and sj["J_KAP"]["n_moments"] == 1
+    assert sj["J_UYAP"]["rank"] == 1  # sale_prob=1.0 dejenere → 1 bağımsız yön
+    assert sj["J_combined"]["rank"] == 2  # birleşik = ölçülen rank
+
+
+# --- Snapshot karşılaştırması (identification-katkı) ------------------------ #
+def test_compare_snapshots_detects_unlock_and_rank_change():
+    before = {
+        "available_moments": ["uyap_sale_prob"],
+        "sample_sizes": {"uyap_win_over_appraisal_sd": 1},
+        "rank": 2, "smallest_nonzero_singular_value": 0.5,
+        "condition_number": float("inf"), "status": "NOT_IDENTIFIED",
+    }
+    after = {
+        "available_moments": ["uyap_sale_prob", "uyap_win_over_appraisal_sd"],
+        "sample_sizes": {"uyap_win_over_appraisal_sd": 2},
+        "rank": 3, "smallest_nonzero_singular_value": 0.4,
+        "condition_number": 1e5, "status": "NOT_IDENTIFIED",
+    }
+    cmp = compare_snapshots(before, after)
+    assert cmp["moments_newly_unlocked"] == ["uyap_win_over_appraisal_sd"]
+    assert cmp["moments_sample_increased"][0]["moment"] == "uyap_win_over_appraisal_sd"
+    assert cmp["rank"]["before"] == 2 and cmp["rank"]["after"] == 3
+
+
+# --- Milestone MEKANİZMASI (FIXTURE — genuine DEĞİL — makinenin çalıştığını gösterir) --- #
+def test_second_sold_auction_unlocks_win_sd_fixture():
+    df = load_auctions(
+        [
+            {"muhammen_bedel": 1_000_000, "sold": True, "winning_bid": 950_000},
+            {"muhammen_bedel": 2_000_000, "sold": True, "winning_bid": 2_100_000},
+        ]
+    )
+    built = build_observed_moments(df, None, None)
+    assert "uyap_win_over_appraisal_sd" in built["moments"]  # ≥2 satış → sd AÇILDI
+    assert built["sample_sizes"]["uyap_win_over_appraisal_mean"] == 2
+
+
+def test_unsold_auction_makes_sale_prob_non_degenerate_fixture():
+    df = load_auctions(
+        [
+            {"muhammen_bedel": 1_000_000, "sold": True, "winning_bid": 950_000},
+            {"muhammen_bedel": 2_000_000, "sold": False},
+        ]
+    )
+    built = build_observed_moments(df, None, None)
+    assert built["moments"]["uyap_sale_prob"] == 0.5  # artık mekanik 1.0 DEĞİL
+
+
+def test_two_consecutive_disclosures_unlock_toki_cohort_fixture():
+    disc = [
+        {"as_of_date": "2019-12-31", "project_id": "PMVR3", "table_semantics": "crs",
+         "strata": [{"room_type": "2+1", "cum_count": 165, "cum_total": 118_418_019.69}]},
+        {"as_of_date": "2020-06-30", "project_id": "PMVR3", "table_semantics": "crs",
+         "strata": [{"room_type": "2+1", "cum_count": 180, "cum_total": 130_000_000.0}]},
+    ]
+    res = difference_disclosures(disc)
+    assert res["revision_detected"] is False and len(res["cohorts"]) == 1
+    built = build_observed_moments(None, None, res)
+    assert "toki_cohort_avg_price" in built["moments"]  # kohort momenti AÇILDI
+
+
+def test_second_kap_unlocks_log_ratio_sd_fixture():
+    df = load_kap_disposals(
+        [
+            {"sale_price": 5.4e6, "appraisal_value": 5e6, "reference_price_type": "appraisal",
+             "property_type": "konut", "value_method": "negotiation"},
+            {"sale_price": 6.2e6, "appraisal_value": 5.5e6, "reference_price_type": "appraisal",
+             "property_type": "konut", "value_method": "negotiation"},
+        ]
+    )
+    built = build_observed_moments(None, df, None)
+    assert "kap_log_ratio_sd" in built["moments"]  # ≥2 müzakereli → sd AÇILDI

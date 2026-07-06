@@ -22,6 +22,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -76,6 +79,50 @@ def moment_jacobian(
         vm = np.array([mm.get(k, np.nan) for k in keys])
         J[:, j] = (vp - vm) / (2.0 * step)
     return J, keys
+
+
+def _rank_and_svd(J: np.ndarray) -> dict:
+    """Bir Jacobian bloğunun sayısal rank'ı + tekil değerleri + en küçük sıfır-olmayan sv."""
+    if J.size == 0 or J.shape[0] == 0:
+        return {"rank": 0, "n_moments": int(J.shape[0]), "singular_values": [], "smallest_nonzero_sv": None}
+    s = np.linalg.svd(J, compute_uv=False)
+    smax = float(s.max()) if s.size else 0.0
+    tol = max(J.shape) * np.finfo(float).eps * smax
+    nz = s[s > tol]
+    return {
+        "rank": int((s > tol).sum()),
+        "n_moments": int(J.shape[0]),
+        "singular_values": [float(x) for x in s],
+        "smallest_nonzero_sv": float(nz.min()) if nz.size else None,
+    }
+
+
+def source_jacobian_ranks(
+    params: StructuralParams,
+    ctx: MomentContext,
+    free_names: tuple[str, ...],
+    m_obs: dict,
+    provenance: dict | None = None,
+    seed: int = 12345,
+    step: float = JACOBIAN_STEP,
+) -> dict:
+    """Kaynağa özgü (J_UYAP / J_KAP / J_TOKİ) ve BİRLEŞİK Jacobian sayısal rank'ları.
+
+    Her aile YALNIZCA o ailenin katkı verdiği (gözlenen) momentlerin satırlarını kullanır.
+    Amaç: "hangi kaynak BAĞIMSIZ bir parametre yönü ekliyor?" (sadece "hangi kaynak daha
+    çok satır ekledi?" değil). NOT: kaynağa özgü rank NEDENSEL ya da TEK-BAŞINA parametre
+    kimliklendirmesi DEĞİLDİR; mevcut yapısal model altında yerel moment-duyarlılığı tanısıdır.
+    """
+    obs_keys = list(m_obs.keys()) if m_obs else None
+    J, keys = moment_jacobian(params, ctx, free_names, seed=seed, step=step, moment_keys=obs_keys)
+    prov = provenance or {}
+    out: dict = {}
+    for fam in ("uyap", "kap", "toki"):
+        rows = [i for i, k in enumerate(keys) if prov.get(k) == fam]
+        Jf = J[rows, :] if rows else np.zeros((0, len(free_names)))
+        out[f"J_{fam.upper()}"] = _rank_and_svd(Jf)
+    out["J_combined"] = _rank_and_svd(J)
+    return out
 
 
 def _weight(obs: np.ndarray) -> np.ndarray:
@@ -162,6 +209,7 @@ def identification_report(
     toki_result: dict | None = None,
     provenance: dict | None = None,
     unavailable: list | None = None,
+    sample_sizes: dict | None = None,
     seed: int = 12345,
     step: float = JACOBIAN_STEP,
 ) -> dict:
@@ -190,6 +238,7 @@ def identification_report(
         "moment_keys": keys,
         "moment_provenance": provenance or {},
         "unavailable_moments": unavailable or [],
+        "sample_sizes": sample_sizes or {},
         "jacobian_step": step,
     }
 
@@ -199,8 +248,10 @@ def identification_report(
                 "status": "NOT_IDENTIFIED",
                 "rank": 0,
                 "singular_values": [],
+                "smallest_nonzero_singular_value": None,
                 "condition_number": float("inf"),
                 "weakly_identified_directions": [],
+                "source_jacobians": {},
                 "prediction_mode": "sensitivity_mode",
                 "reason": "no_observed_moments" if n_moments == 0 else "no_free_parameters",
             }
@@ -212,6 +263,8 @@ def identification_report(
     tol = max(J.shape) * np.finfo(float).eps * smax
     rank = int((s > tol).sum())
     cond = float(smax / s.min()) if s.size and s.min() > 0 else float("inf")
+    nz = s[s > tol]
+    smallest_nonzero_sv = float(nz.min()) if nz.size else None
 
     # Zayıf yönler: küçük tekil değerlere karşılık gelen sağ-tekil vektörler
     _, s_full, vt = np.linalg.svd(J, full_matrices=False)
@@ -256,9 +309,83 @@ def identification_report(
             "status": status,
             "rank": rank,
             "singular_values": [float(x) for x in s],
+            "smallest_nonzero_singular_value": smallest_nonzero_sv,
             "condition_number": cond,
             "weakly_identified_directions": weak_dirs,
+            "source_jacobians": source_jacobian_ranks(
+                params, ctx, free_names, m_obs or {}, provenance, seed=seed, step=step
+            ),
             "prediction_mode": mode,
         }
     )
     return report
+
+
+# --------------------------------------------------------------------------- #
+# Snapshot karşılaştırması — identification-KATKI raporu (yeni batch etkisi)
+# --------------------------------------------------------------------------- #
+def snapshot_metrics(report: dict) -> dict:
+    """Bir identification raporundan snapshot metriklerini çıkarır (önceki/sonraki kıyas)."""
+    return {
+        "n_structural_parameters": report.get("n_structural_parameters"),
+        "n_observed_moments": report.get("n_observed_moments"),
+        "available_moments": sorted((report.get("moment_provenance") or {}).keys()),
+        "sample_sizes": report.get("sample_sizes", {}),
+        "rank": report.get("rank"),
+        "smallest_nonzero_singular_value": report.get("smallest_nonzero_singular_value"),
+        "condition_number": report.get("condition_number"),
+        "weak_directions": [
+            wd.get("direction") for wd in report.get("weakly_identified_directions", [])
+        ],
+        "status": report.get("status"),
+    }
+
+
+def save_snapshot(report: dict, path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(snapshot_metrics(report), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return path
+
+
+def load_snapshot(path) -> dict | None:
+    path = Path(path)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def compare_snapshots(before: dict, after: dict) -> dict:
+    """Önceki genuine snapshot ile mevcut arasındaki identification-KATKI değişimi.
+
+    'Kaç satır eklendi?' değil, 'hangi moment açıldı / hangi yön güçlendi?' sorusuna yanıt.
+    """
+    b_moms = set(before.get("available_moments", []))
+    a_moms = set(after.get("available_moments", []))
+    ss_b = before.get("sample_sizes", {}) or {}
+    ss_a = after.get("sample_sizes", {}) or {}
+    increased = [
+        {"moment": k, "before": int(ss_b.get(k, 0)), "after": int(ss_a.get(k, 0))}
+        for k in sorted(set(ss_a) | set(ss_b))
+        if int(ss_a.get(k, 0)) > int(ss_b.get(k, 0))
+    ]
+    return {
+        "moments_newly_unlocked": sorted(a_moms - b_moms),
+        "moments_sample_increased": increased,
+        "rank": {"before": before.get("rank"), "after": after.get("rank")},
+        "smallest_nonzero_singular_value": {
+            "before": before.get("smallest_nonzero_singular_value"),
+            "after": after.get("smallest_nonzero_singular_value"),
+        },
+        "condition_number": {
+            "before": before.get("condition_number"),
+            "after": after.get("condition_number"),
+        },
+        "weak_directions": {
+            "before": before.get("weak_directions"),
+            "after": after.get("weak_directions"),
+        },
+        "status": {"before": before.get("status"), "after": after.get("status")},
+    }

@@ -39,10 +39,15 @@ from .datasets import (
 )
 from .hedonic import HedonicPremium, roll_unit_price, tcmb_fair_value
 from .identify import (
+    compare_snapshots,
     dataset_summary,
     identification_report,
+    load_snapshot,
     moment_jacobian,
     profile_objective,
+    save_snapshot,
+    snapshot_metrics,
+    source_jacobian_ranks,
 )
 from .kap import (
     KAP_FIELDS,
@@ -114,8 +119,13 @@ __all__ = [
     # kimliklendirme (identification)
     "moment_jacobian",
     "identification_report",
+    "source_jacobian_ranks",
     "dataset_summary",
     "profile_objective",
+    "snapshot_metrics",
+    "save_snapshot",
+    "load_snapshot",
+    "compare_snapshots",
     # tahmin
     "StructuralClosingPredictor",
 ]

@@ -1529,6 +1529,7 @@ def structural_identify_cmd(
     kap_file: Optional[Path] = typer.Option(None, "--kap", help="KAP kayıtları (JSON)"),
     toki_file: Optional[Path] = typer.Option(None, "--toki", help="TOKİ açıklamaları (JSON)"),
     demo: bool = typer.Option(False, "--demo", help="Sentetik veriyle diagnostiği göster (gerçek değil)"),
+    save_snapshot_flag: bool = typer.Option(False, "--save-snapshot", help="Mevcut sonucu genuine snapshot olarak kaydet (karşılaştırma tabanı)"),
 ) -> None:
     """Yapısal KİMLİKLENDİRME raporu — VARSAYILAN olarak GERÇEK denetlenmiş veri kümesinden.
 
@@ -1543,17 +1544,22 @@ def structural_identify_cmd(
 
     from .structural import (
         DEFAULT_FREE,
+        GENUINE_DIR,
         MomentContext,
         StructuralParams,
         build_observed_moments,
+        compare_snapshots,
         context_from_datasets,
         difference_disclosures,
         identification_report,
         load_auctions,
         load_genuine_datasets,
         load_kap_disposals,
+        load_snapshot,
         observed_moments,
+        save_snapshot,
         simulate_negotiations,
+        snapshot_metrics,
     )
 
     auctions_df = kap_df = None
@@ -1561,6 +1567,7 @@ def structural_identify_cmd(
     m_obs: dict = {}
     provenance: dict = {}
     unavailable: list = []
+    sample_sizes: dict = {}
 
     if demo:
         theta0 = StructuralParams(eta=0.6)
@@ -1587,12 +1594,13 @@ def structural_identify_cmd(
             auctions_df, kap_df, toki_res = genuine["uyap"], genuine["kap"], genuine["toki_result"]
         built = build_observed_moments(auctions_df, kap_df, toki_res)
         m_obs, provenance, unavailable = built["moments"], built["provenance"], built["unavailable"]
+        sample_sizes = built["sample_sizes"]
         ctx = context_from_datasets(auctions_df, kap_df)
 
     rep = identification_report(
         ctx, StructuralParams(), DEFAULT_FREE, m_obs=m_obs,
         auctions=auctions_df, kap=kap_df, toki_result=toki_res,
-        provenance=provenance, unavailable=unavailable,
+        provenance=provenance, unavailable=unavailable, sample_sizes=sample_sizes,
     )
     ds = rep["dataset"]
     typer.secho("Yapısal kimliklendirme raporu", fg=typer.colors.CYAN, bold=True)
@@ -1631,6 +1639,35 @@ def structural_identify_cmd(
         flag = "ZAYIF" if pr.get("weakly_identified") else "belirgin"
         rr_txt = f"{rr:.2e}" if isinstance(rr, (int, float)) else "—"
         typer.echo(f"  Profil {pname}: göreli hedef aralığı {rr_txt} → {flag}")
+    # Kaynağa özgü Jacobian rank (hangi kaynak BAĞIMSIZ bir parametre yönü ekliyor?)
+    sj = rep.get("source_jacobians") or {}
+    if sj:
+        typer.secho(
+            "  Kaynak-özgü Jacobian rank (yerel moment-duyarlılığı; NEDENSEL/tek-başına değil):",
+            fg=typer.colors.CYAN,
+        )
+        for fam in ("J_UYAP", "J_KAP", "J_TOKI", "J_combined"):
+            blk = sj.get(fam, {})
+            typer.echo(f"    {fam}: rank {blk.get('rank', 0)} / moment {blk.get('n_moments', 0)}")
+    # Snapshot: kaydet ya da önceki genuine snapshot ile karşılaştır
+    snap_path = Path(GENUINE_DIR) / "identify_snapshot.json"
+    if save_snapshot_flag:
+        save_snapshot(rep, snap_path)
+        typer.secho(f"  Snapshot kaydedildi: {snap_path}", fg=typer.colors.GREEN)
+    elif not demo:
+        prev = load_snapshot(snap_path)
+        if prev:
+            cmp = compare_snapshots(prev, snapshot_metrics(rep))
+            typer.secho("  Önceki genuine snapshot → mevcut (identification-katkı):", fg=typer.colors.CYAN)
+            typer.echo(f"    Yeni açılan moment: {cmp['moments_newly_unlocked'] or '—'}")
+            inc = [c['moment'] for c in cmp['moments_sample_increased']]
+            typer.echo(f"    Örneklem artan: {inc or '—'}")
+            typer.echo(f"    rank: {cmp['rank']['before']} → {cmp['rank']['after']}")
+            typer.echo(
+                f"    en küçük ≠0 tekil değer: {cmp['smallest_nonzero_singular_value']['before']} → "
+                f"{cmp['smallest_nonzero_singular_value']['after']}"
+            )
+            typer.echo(f"    durum: {cmp['status']['before']} → {cmp['status']['after']}")
     if rep["status"] != "IDENTIFIED":
         typer.secho(
             "  Not: rank < dim veya zayıf kimliklendirme → optimizer sonucu NOKTA TAHMİNİ olarak "

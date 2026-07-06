@@ -178,12 +178,16 @@ def build_observed_moments(
     moments: dict = {}
     provenance: dict = {}
     unavailable: list = []
+    sample_sizes: dict = {}
 
     # --- UYAP ---
     if uyap is not None and len(uyap):
         um = uyap_observed_moments(uyap)
         n = int(len(uyap))
         n_sold = int(uyap["sold"].astype(bool).sum())
+        sample_sizes["uyap_sale_prob"] = n
+        sample_sizes["uyap_win_over_appraisal_mean"] = n_sold
+        sample_sizes["uyap_win_over_appraisal_sd"] = n_sold
         _add_moment(moments, provenance, unavailable, "uyap_sale_prob",
                     um.get("uyap_sale_prob"), "uyap", f"needs>=1 auction, have {n}")
         _add_moment(moments, provenance, unavailable, "uyap_win_over_appraisal_mean",
@@ -194,33 +198,45 @@ def build_observed_moments(
                     sd, "uyap", f"needs>=2 sold, have {n_sold}")
     else:
         for k in ("uyap_sale_prob", "uyap_win_over_appraisal_mean", "uyap_win_over_appraisal_sd"):
+            sample_sizes[k] = 0
             unavailable.append({"moment": k, "source": "uyap", "reason": "no_uyap_observations"})
 
     # --- KAP (negotiated-calibration subset) ---
     if kap is not None and len(kap):
         km = kap_observed_moments(kap, negotiated_only=True)
         kn = int(km.get("kap_n", 0))
+        sample_sizes["kap_log_ratio_mean"] = kn
+        sample_sizes["kap_log_ratio_sd"] = kn
         _add_moment(moments, provenance, unavailable, "kap_log_ratio_mean",
                     km.get("kap_log_ratio_mean"), "kap", f"needs>=1 negotiated, have {kn}")
         _add_moment(moments, provenance, unavailable, "kap_log_ratio_sd",
                     km.get("kap_log_ratio_sd"), "kap", f"needs>=2 negotiated, have {kn}")
     else:
         for k in ("kap_log_ratio_mean", "kap_log_ratio_sd"):
+            sample_sizes[k] = 0
             unavailable.append({"moment": k, "source": "kap", "reason": "no_kap_observations"})
 
     # --- TOKİ agregat kohortlar ---
+    n_cohorts = int(len(toki_result.get("cohorts", []))) if toki_result else 0
+    sample_sizes["toki_cohort_moments"] = n_cohorts
     if toki_result and toki_result.get("cohorts"):
         for k, v in toki_composition_moments(toki_result["cohorts"]).items():
             if isinstance(v, (int, float)) and np.isfinite(v):
                 moments[k] = float(v)
                 provenance[k] = "toki"
+                sample_sizes[k] = n_cohorts
     else:
         unavailable.append({
             "moment": "toki_cohort_moments", "source": "toki",
             "reason": "no_derivable_period_cohorts (needs >=2 consecutive consistent disclosures)",
         })
 
-    return {"moments": moments, "provenance": provenance, "unavailable": unavailable}
+    return {
+        "moments": moments,
+        "provenance": provenance,
+        "unavailable": unavailable,
+        "sample_sizes": sample_sizes,
+    }
 
 
 def align(m_obs: dict, m_sim: dict) -> tuple[np.ndarray, np.ndarray, list[str]]:

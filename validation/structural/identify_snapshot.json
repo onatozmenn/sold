@@ -1,0 +1,28 @@
+{
+  "n_structural_parameters": 6,
+  "n_observed_moments": 3,
+  "available_moments": [
+    "kap_log_ratio_mean",
+    "uyap_sale_prob",
+    "uyap_win_over_appraisal_mean"
+  ],
+  "sample_sizes": {
+    "uyap_sale_prob": 1,
+    "uyap_win_over_appraisal_mean": 1,
+    "uyap_win_over_appraisal_sd": 1,
+    "kap_log_ratio_mean": 1,
+    "kap_log_ratio_sd": 1,
+    "toki_cohort_moments": 0
+  },
+  "rank": 2,
+  "smallest_nonzero_singular_value": 0.5793385803552313,
+  "condition_number": Infinity,
+  "weak_directions": [
+    {
+      "sigma_b": -0.9894,
+      "mu_b": 0.1268,
+      "auction_shift": 0.0705
+    }
+  ],
+  "status": "NOT_IDENTIFIED"
+}
