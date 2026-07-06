@@ -146,15 +146,15 @@ Every label lands in a single **provenance-aware registry** with mandatory `doma
 ### Three levels of validation, kept distinct
 
 1. **Parser / adapter validation** — unit tests confirm each adapter maps fields to the schema correctly, on **illustrative fixtures**. ✅ done.
-2. **Real-record validation** — running the adapters against *actual downloaded* official records and verifying the parsed values. ⬜ not yet done.
+2. **Real-record validation** — the operator downloads one real official record per source, feeds its non-personal fields through the parser, and commits the **manually-audited expected output** (never the raw artifact) under [`validation/real_records/`](validation/real_records/). [`tests/test_real_records.py`](tests/test_real_records.py) then enforces `parser output == audited expectation` and pins `parser_version`. **Status: harness in place; the KAP / UYAP / TOKİ slots are `PENDING` operator retrieval** (tests skip until `is_real_official_record` and `manually_audited` are both set).
 3. **Live source ingestion** — continuously fetching new records per source. ⬜ not built (a ToS-reviewed operator step, deliberately out of scope).
 
-> The demo figures `5,000,000 → 5,400,000` (UYAP) and `5,200,000 → 5,508,475` (KAP) are **illustrative fixtures authored to exercise the parser** — see [samples/labels/illustrative_kap.json](samples/labels/illustrative_kap.json). The KAP figure mirrors a publicly reported disclosure, but the values are **not** proof that the system downloaded or verified real records (that would be level 2 above).
+> The demo figures `5,000,000 → 5,400,000` (UYAP) and `5,200,000 → 5,508,475` (KAP) are **illustrative fixtures authored to exercise the parser** — see [samples/labels/illustrative_kap.json](samples/labels/illustrative_kap.json). The KAP figure mirrors a publicly reported disclosure, but the values are **not** proof that the system downloaded or verified real records (that would be level 2 above). Level-1 illustrative fixtures live in `samples/labels/`; level-2 real-record slots live in `validation/real_records/` — the two are kept strictly separate.
 
 ### Domains are never pooled
 
 - `asking_to_closing_labels()` feeds the **asking → closing** ML head **only** with direct-closing observations (broker / seller, `reference = asking`, arm's-length). UYAP / KAP / TOKİ are **excluded**.
-- `fair_value_labels()` is a **registry query, not a training set**. The four public relationships — appraisal→corporate-sale, appraisal→auction, reserve→auction, offered_avg→primary-market — are **distinct** and must not be pooled into one target. Use `fair_value_strata()` (splits by `sale_mechanism` × `reference_price_type`) and calibrate each stratum with its own model.
+- `fair_value_labels()` is a **registry query, not a training set**. The four public relationships — appraisal→corporate-sale, appraisal→auction, reserve→auction, offered_avg→primary-market — are **distinct** and must not be pooled into one target. Use `fair_value_strata()` (splits by `domain` × `sale_mechanism` × `reference_price_type`, so source-domain bias stays measurable) and calibrate each stratum with its own model.
 
 ```bash
 sold labels mine kap --file samples/labels/illustrative_kap.json --to-db

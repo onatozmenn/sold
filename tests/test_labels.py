@@ -204,9 +204,9 @@ def test_fair_value_strata_not_pooled():
     )
     strata = fair_value_strata(df)
     assert set(strata.keys()) == {
-        ("auction", "appraisal"),
-        ("corporate_arm_length", "appraisal"),
-        ("public_auction", "reserve"),
-        ("primary_market", "offered_avg"),
+        ("public_auction", "auction", "appraisal"),
+        ("corporate", "corporate_arm_length", "appraisal"),
+        ("public_auction", "public_auction", "reserve"),
+        ("primary_market", "primary_market", "offered_avg"),
     }
     assert all(len(group) == 1 for group in strata.values())  # hiçbir strata havuzlanmadı

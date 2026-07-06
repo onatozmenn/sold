@@ -32,6 +32,10 @@ SALE_MECHANISMS = (
 )
 REFERENCE_PRICE_TYPES = ("appraisal", "reserve", "asking", "offered_avg", "none")
 
+# Parser sürümü — gerçek-kayıt doğrulama manifestleri buna referans verir; parser
+# davranışı değişince beklenen çıktılar yeniden denetlenmelidir.
+PARSER_VERSION = "1.0.0"
+
 # Doğrudan closing gözleyen kaynaklar (asking→closing head'ine YALNIZCA bunlar girer)
 DIRECT_CLOSING_SOURCES = frozenset(
     {"broker_closing", "seller_self_reported", "bank_transfer_observed", "manual"}
@@ -218,17 +222,20 @@ def fair_value_labels(df: pd.DataFrame) -> pd.DataFrame:
     ].reset_index(drop=True)
 
 
-def fair_value_strata(df: pd.DataFrame) -> dict[tuple[str, str], pd.DataFrame]:
-    """FairValue etiketlerini AYRI stratalara böler: (sale_mechanism, reference_price_type).
+def fair_value_strata(df: pd.DataFrame) -> dict[tuple[str, str, str], pd.DataFrame]:
+    """FairValue etiketlerini AYRI stratalara böler: (domain, sale_mechanism, reference_price_type).
 
     KRİTİK: farklı referans→realized ilişkileri (appraisal→kurumsal, appraisal→ihale,
     reserve→ihale, offered_avg→birincil) tek bir hedefe HAVUZLANMAZ; her stratum kendi
-    kalibratörüyle modellenmelidir. Boşsa {} döner.
+    kalibratörüyle modellenmelidir. ``domain`` anahtarda KORUNUR ki kaynak-domain
+    yanlılığı ileride ölçülebilsin. Boşsa {} döner.
     """
     fv = fair_value_labels(df)
     if fv.empty:
         return {}
-    out: dict[tuple[str, str], pd.DataFrame] = {}
-    for (mech, ref), group in fv.groupby(["sale_mechanism", "reference_price_type"]):
-        out[(str(mech), str(ref))] = group.reset_index(drop=True)
+    out: dict[tuple[str, str, str], pd.DataFrame] = {}
+    for (dom, mech, ref), group in fv.groupby(
+        ["domain", "sale_mechanism", "reference_price_type"]
+    ):
+        out[(str(dom), str(mech), str(ref))] = group.reset_index(drop=True)
     return out

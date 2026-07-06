@@ -1,0 +1,17 @@
+{
+  "_instructions": "REAL-RECORD VALIDATION SLOT (level-2). Operator: (1) download a real KAP real-estate disposal disclosure, (2) fill parser_input with the non-personal structured fields the KAPAdapter reads, (3) fill expected_output with the manually-audited normalized label, (4) set manifest.record_id + retrieval_date, (5) flip is_real_official_record and manually_audited to true. Do NOT commit the raw disclosure artifact. Until both flags are true, tests/test_real_records.py SKIPS this slot (PENDING).",
+  "manifest": {
+    "source": "kap",
+    "domain": "corporate",
+    "record_id": "PENDING",
+    "record_type": "real_estate_disposal_disclosure",
+    "retrieval_date": null,
+    "parser_version": "1.0.0",
+    "is_real_official_record": false,
+    "manually_audited": false,
+    "redistribution_ok": false,
+    "notes": "Awaiting operator retrieval of a genuine KAP real-estate disposal disclosure. Not validated."
+  },
+  "parser_input": {},
+  "expected_output": {}
+}
