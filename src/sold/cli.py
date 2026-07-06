@@ -1214,6 +1214,129 @@ def labels_stats_cmd() -> None:
     typer.echo(f"    FairValue→realized kalibrasyonu (appraisal/reserve): {len(fv)}")
 
 
+# --------------------------------------------------------------------------- #
+# Tüketici (öz-beyan) satış toplayıcı — sıradan konutta DOĞRUDAN asking→closing
+# --------------------------------------------------------------------------- #
+consumer_app = typer.Typer(
+    help="Tüketici satış toplayıcı: ev satmış kişiden DOĞRUDAN asking→closing etiketi",
+    no_args_is_help=True,
+)
+app.add_typer(consumer_app, name="consumer")
+
+
+@consumer_app.command("record")
+def consumer_record_cmd(
+    final_asking: float = typer.Option(..., "--final-asking", help="SON ilan fiyatı, TL (zorunlu)"),
+    closing: float = typer.Option(..., "--closing", help="Gerçekleşen satış fiyatı, TL (zorunlu)"),
+    initial_asking: float = typer.Option(0.0, "--initial-asking", help="İLK ilan fiyatı, TL"),
+    province: str = typer.Option("İstanbul", help="İl"),
+    district: str = typer.Option("", help="İlçe"),
+    property_type: str = typer.Option("konut", help="Taşınmaz türü"),
+    gross_m2: float = typer.Option(0.0, help="Brüt m² (biliniyorsa)"),
+    room_count: str = typer.Option("", help="Oda sayısı (örn. 2+1)"),
+    price_cuts: int = typer.Option(0, help="Fiyat düşürme sayısı"),
+    listing_date: str = typer.Option("", help="İlan tarihi (YYYY-MM-DD)"),
+    closing_date: str = typer.Option("", help="Kapanış tarihi (YYYY-MM-DD)"),
+) -> None:
+    """Ev satmış bir kişinin satışını kaydeder; anında analitik + segment benchmark döner.
+
+    KVKK: yalnızca nesnel taşınmaz + fiyat/tarih toplanır (ad/adres/tapu/dekont YOK).
+    Kayıt provenance-aware DOĞRUDAN etikete çevrilir ve asking→closing head'ine girer.
+    """
+    from .consumer import (
+        ConsumerSaleError,
+        record_consumer_sale,
+        sale_analytics,
+        sale_as_dict,
+        segment_benchmark,
+    )
+    from .db import get_engine, get_sessionmaker, init_db
+
+    raw = {
+        "final_asking_price": final_asking,
+        "closing_price": closing,
+        "initial_asking_price": initial_asking or None,
+        "province": province,
+        "district": district or None,
+        "property_type": property_type,
+        "gross_m2": gross_m2 or None,
+        "room_count": room_count or None,
+        "price_cut_count": price_cuts,
+        "listing_date": listing_date or None,
+        "closing_date": closing_date or None,
+    }
+    engine = get_engine()
+    init_db(engine)
+    try:
+        with get_sessionmaker(engine)() as session:
+            row = record_consumer_sale(session, raw)
+            session.commit()
+            sale = sale_as_dict(row)
+            analytics = sale_analytics(sale)
+            bench = segment_benchmark(session, sale)
+    except ConsumerSaleError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    typer.secho(
+        "Kaydedildi — DOĞRUDAN asking→closing etiketi üretildi "
+        "(domain=consumer · seller_self_reported · ordinary_resale · güven B).",
+        fg=typer.colors.GREEN,
+    )
+    typer.secho("Anlık analitik (NON-ML):", fg=typer.colors.CYAN, bold=True)
+
+    def _pct(v: object) -> str:
+        return f"%{v:.1f}" if isinstance(v, (int, float)) else "—"
+
+    typer.echo(f"  İlk ilan → kapanış farkı: {_pct(analytics['initial_ask_to_close_gap_pct'])}")
+    typer.echo(f"  Son ilan → kapanış farkı: {_pct(analytics['final_ask_to_close_gap_pct'])}")
+    dtc = analytics["days_to_close"]
+    typer.echo(f"  Kapanış süresi: {dtc if dtc is not None else '—'} gün")
+    typer.echo(f"  Fiyat düşürme: {analytics['price_cut_count']}")
+
+    seg = bench["segment"]
+    if bench["enough_observations"]:
+        typer.secho(
+            f"Segment benchmark ({seg['province']} · {seg['property_type']}, "
+            f"n={bench['observations']}):",
+            fg=typer.colors.CYAN,
+            bold=True,
+        )
+        typer.echo(
+            f"  Son ilan → kapanış: medyan {_pct(bench['median_final_ask_to_close_gap_pct'])} · "
+            f"ortalama {_pct(bench['mean_final_ask_to_close_gap_pct'])}"
+        )
+        typer.echo(f"  Kapanış süresi: medyan {bench['median_days_to_close']} gün")
+    else:
+        typer.secho(bench["message"], fg=typer.colors.YELLOW)
+
+
+@consumer_app.command("stats")
+def consumer_stats_cmd() -> None:
+    """Tüketici doğrudan etiketlerinin durumu (asking→closing head'e girenler)."""
+    from .consumer import load_consumer_sales
+    from .db import get_engine, get_sessionmaker, init_db
+    from .labels import asking_to_closing_labels, load_labels
+
+    engine = get_engine()
+    init_db(engine)
+    with get_sessionmaker(engine)() as session:
+        sales = load_consumer_sales(session)
+        labels = load_labels(session)
+
+    a2c = asking_to_closing_labels(labels)
+    consumer_a2c = a2c[a2c["domain"] == "consumer"] if not a2c.empty else a2c
+    typer.secho("Tüketici (öz-beyan) doğrudan etiket durumu", fg=typer.colors.CYAN, bold=True)
+    typer.echo(f"  Kayıtlı tüketici satışı: {len(sales)}")
+    typer.echo(f"  asking→closing head'e giren DOĞRUDAN etiket (toplam): {len(a2c)}")
+    typer.echo(f"    bunlardan tüketici (seller_self_reported): {len(consumer_a2c)}")
+    if len(a2c) == 0:
+        typer.secho(
+            "  Henüz doğrudan etiket yok. `sold consumer record --final-asking ... --closing ...`",
+            fg=typer.colors.YELLOW,
+        )
+
+
 @app.command("serve")
 def serve_cmd(
     host: str = typer.Option("127.0.0.1", help="Dinlenecek adres"),

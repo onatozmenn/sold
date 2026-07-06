@@ -31,6 +31,7 @@ from .miner import (
 )
 from .registry import (
     DIRECT_CLOSING_SOURCES,
+    DIRECT_RESALE_MECHANISMS,
     DOMAINS,
     OBSERVED_PUBLIC_SOURCES,
     PARSER_VERSION,
@@ -52,6 +53,7 @@ __all__ = [
     "REFERENCE_PRICE_TYPES",
     "PARSER_VERSION",
     "DIRECT_CLOSING_SOURCES",
+    "DIRECT_RESALE_MECHANISMS",
     "OBSERVED_PUBLIC_SOURCES",
     "LabelError",
     "confidence_for",

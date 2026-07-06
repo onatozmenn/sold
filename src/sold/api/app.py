@@ -19,7 +19,7 @@ from pathlib import Path
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..features.build import parse_room_count
 from ..model.estimator import RealizedValuator
@@ -263,6 +263,85 @@ def analytics_endpoint(source: str | None = None) -> dict:
     with get_sessionmaker(engine)() as session:
         df = load_outcomes(session, source)
     return negotiation_analytics(df)
+
+
+class ConsumerSaleIn(BaseModel):
+    """Ev satmış tüketicinin öz-beyan satışı — KVKK: yalnızca nesnel alanlar.
+
+    ``extra='forbid'``: tanımsız (ör. kişisel) alanlar API sınırında REDDEDİLİR.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    final_asking_price: float = Field(..., gt=0, description="SON ilan fiyatı, TL")
+    closing_price: float = Field(..., gt=0, description="Gerçekleşen satış fiyatı, TL")
+    initial_asking_price: float | None = Field(None, description="İLK ilan fiyatı, TL")
+    province: str | None = "İstanbul"
+    district: str | None = None
+    property_type: str | None = "konut"
+    gross_m2: float | None = None
+    room_count: str | None = None
+    price_cut_count: int | None = 0
+    listing_date: str | None = None
+    closing_date: str | None = None
+
+
+@app.post("/consumer/sale")
+def add_consumer_sale(rec: ConsumerSaleIn) -> dict:
+    """Tüketici satışını kaydeder → DOĞRUDAN asking→closing etiketi üretir.
+
+    Anında NON-ML analitik + (yeterliyse) anonim segment benchmark döner. Kamu
+    (UYAP/KAP/TOKİ) gözlemleri asking→closing head'inden HARİÇ kalır.
+    """
+    from ..consumer import (
+        ConsumerSaleError,
+        record_consumer_sale,
+        sale_analytics,
+        sale_as_dict,
+        segment_benchmark,
+    )
+    from ..db import get_engine, get_sessionmaker, init_db
+
+    engine = get_engine()
+    init_db(engine)
+    try:
+        with get_sessionmaker(engine)() as session:
+            row = record_consumer_sale(session, rec.model_dump())
+            session.commit()
+            sale = sale_as_dict(row)
+            return {
+                "recorded": True,
+                "domain": "consumer",
+                "label_source": "seller_self_reported",
+                "sale_mechanism": "ordinary_resale",
+                "reference_price_type": "asking",
+                "label_confidence": "B",
+                "analytics": sale_analytics(sale),
+                "segment_benchmark": segment_benchmark(session, sale),
+            }
+    except ConsumerSaleError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/consumer/stats")
+def consumer_stats_endpoint() -> dict:
+    """Tüketici doğrudan etiketlerinin asking→closing head'e giriş durumu."""
+    from ..consumer import load_consumer_sales
+    from ..db import get_engine, get_sessionmaker, init_db
+    from ..labels import asking_to_closing_labels, load_labels
+
+    engine = get_engine()
+    init_db(engine)
+    with get_sessionmaker(engine)() as session:
+        sales = load_consumer_sales(session)
+        labels = load_labels(session)
+    a2c = asking_to_closing_labels(labels)
+    consumer_a2c = a2c[a2c["domain"] == "consumer"] if not a2c.empty else a2c
+    return {
+        "consumer_sales": int(len(sales)),
+        "asking_to_closing_labels": int(len(a2c)),
+        "consumer_direct_labels": int(len(consumer_a2c)),
+    }
 
 
 @app.get("/", response_class=HTMLResponse)

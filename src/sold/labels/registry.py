@@ -31,7 +31,8 @@ SALE_MECHANISMS = (
     "corporate_related_party",  # KAP: ilişkili taraf
     "public_auction",  # TOKİ / GYO açık artırma
     "primary_market",  # TOKİ / GYO birincil satış
-    "arm_length",  # sıradan ikinci el (broker/seller)
+    "arm_length",  # sıradan ikinci el (broker/seller aracılı)
+    "ordinary_resale",  # tüketicinin kendi beyanı (seller_self_reported): sıradan konut yeniden satışı
 )
 # appraisal = O İŞLEM İÇİN hazırlanmış GÜNCEL yapısal değerleme; prior_appraisal =
 # açıklama metninde atıf yapılan ÖNCEKİ/emsal ekspertiz (yapısal alan boş).
@@ -52,6 +53,9 @@ PARSER_VERSION = "1.1.0"
 DIRECT_CLOSING_SOURCES = frozenset(
     {"broker_closing", "seller_self_reported", "bank_transfer_observed", "manual"}
 )
+# Sıradan konut yeniden-satış mekanizmaları (doğrudan asking→closing). Kamu mekanizmaları
+# (auction/corporate_*/public_auction/primary_market) BURADA DEĞİL → asla head'e girmez.
+DIRECT_RESALE_MECHANISMS = frozenset({"arm_length", "ordinary_resale"})
 # Gözlenmiş kamu işlem kaynakları (gerçek bedel gözlendi → güven A)
 OBSERVED_PUBLIC_SOURCES = frozenset({"uyap", "kap", "toki"})
 
@@ -206,15 +210,17 @@ def load_labels(session: Session, domain: str | None = None) -> pd.DataFrame:
 def asking_to_closing_labels(df: pd.DataFrame) -> pd.DataFrame:
     """asking→closing ML head'i için UYGUN etiketler.
 
-    YALNIZCA: reference='asking' + mekanizma=arm_length + ilişkili taraf değil +
-    doğrudan closing gözleyen kaynak. UYAP/KAP/TOKİ buraya ASLA girmez.
+    YALNIZCA: reference='asking' + sıradan resale mekanizması (arm_length broker/seller
+    aracılı VEYA ordinary_resale tüketici öz-beyanı) + ilişkili taraf değil + doğrudan
+    closing gözleyen kaynak. UYAP/KAP/TOKİ (auction/corporate_*/public_auction/
+    primary_market) buraya ASLA girmez.
     """
     if df.empty:
         return df
     src = df["label_source"].fillna("").astype(str)
     mask = (
         (df["reference_price_type"] == "asking")
-        & (df["sale_mechanism"] == "arm_length")
+        & (df["sale_mechanism"].isin(DIRECT_RESALE_MECHANISMS))
         & (~df["related_party"].fillna(False).astype(bool))
         & (src.isin(DIRECT_CLOSING_SOURCES))
     )

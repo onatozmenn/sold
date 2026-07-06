@@ -4,7 +4,7 @@
 [![Data refresh](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml/badge.svg)](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-102%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-116%20passing-brightgreen.svg)](tests/)
 [![Data](https://img.shields.io/badge/data-TCMB%20%C2%B7%20T%C3%9C%C4%B0K-informational.svg)](#data-sources)
 
 > Infer the **realized transaction price** of a Turkish home from its **asking** price — a provenance-aware valuation engine.
@@ -282,7 +282,7 @@ tests/               # offline unit / end-to-end tests
 ## Testing
 
 ```bash
-pytest -q             # 102 tests, fully offline (no network or API key required)
+pytest -q             # 116 tests, fully offline (no network or API key required)
 ```
 
 ## Methodology & References
@@ -302,6 +302,7 @@ Negotiation-margin figures from Turkish market reporting: İstanbul ≈ 10%, Ank
 - [x] **Broker Data Flywheel** — listing-outcome collection + non-ML negotiation analytics
 - [x] **Public Label Bootstrap** — provenance-aware registry + UYAP/KAP/TOKİ adapters with strict domain separation, plus an unpaired **aggregate observation** abstraction for cohort disclosures (TOKİ project averages)
 - [x] **Real-record (Level-2) validation** — three independent official records validated against the parsers with manually-audited expected output (KAP `963554`, TOKİ Park Mavera III, UYAP `16766356960`); zero skips, `parser_version`-pinned, raw artifacts never committed
+- [x] **Consumer direct-label acquisition** — self-serve seller outcome collector that turns a completed ordinary home sale into a provenance-aware **direct** label (`domain=consumer` · `seller_self_reported` · `ordinary_resale` · `reference=asking` · confidence `B`) which **enters `asking_to_closing_labels()`** while public UYAP/KAP/TOKİ observations stay excluded; returns immediate non-ML seller analytics (initial/final ask-to-close gap, days to close, price cuts) and an **honest** segment benchmark (no fabricated benchmark when observations are insufficient)
 - [ ] **SaleProbability** model (`P(sold ≤ N days)`) trained on collected outcomes
 - [ ] Live, ToS-reviewed fetchers for the public label sources
 - [ ] Broker-vs-benchmark analytics over an aggregate anonymized dataset

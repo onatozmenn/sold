@@ -310,3 +310,48 @@ class AggregateObservation(Base):
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class ConsumerSale(Base):
+    """Tüketici (ev satmış kişi) ÖZ-BEYAN satış kaydı — doğrudan asking→closing kaynağı.
+
+    Projenin çözülmemiş çekirdek sorunu: sıradan ikinci-el konutta GERÇEK
+    asking→closing etiketi edinmek. Bu tablo, ürünün KENDİ edinim yolundan
+    (tüketici formu) gelen satışları toplar ve her başarılı satıştan
+    provenance-aware DOĞRUDAN etiket türetilir (domain=consumer,
+    label_source=seller_self_reported, sale_mechanism=ordinary_resale,
+    reference_price_type=asking, güven=B). Bu etiketler ``asking_to_closing_labels()``'e
+    GİREBİLİR; kamu (UYAP/KAP/TOKİ) gözlemleri HARİÇ kalır.
+
+    KVKK: KİŞİSEL VERİ TOPLANMAZ — ad, TCKN, tam adres, tapu, banka dekontu,
+    alıcı/satıcı kimliği YOK. Yalnızca nesnel taşınmaz nitelikleri + fiyat/tarih.
+    Konum en fazla ilçe düzeyinde (mahalle/adres YOK).
+    """
+
+    __tablename__ = "consumer_sales"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Fiyat yaşam döngüsü (analitik için ham; etiket final_asking→closing kullanır)
+    initial_asking_price: Mapped[float | None] = mapped_column(Numeric(16, 2))
+    final_asking_price: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False)
+    closing_price: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False)
+    price_cut_count: Mapped[int | None] = mapped_column(Integer)
+    # Zaman
+    listing_date: Mapped[dt.date | None] = mapped_column()
+    closing_date: Mapped[dt.date | None] = mapped_column()
+    days_to_close: Mapped[int | None] = mapped_column(Integer)
+    # Nesnel taşınmaz nitelikleri (kişisel veri YOK; mahalle/adres YOK)
+    province: Mapped[str | None] = mapped_column(String(64))
+    district: Mapped[str | None] = mapped_column(String(64))
+    property_type: Mapped[str | None] = mapped_column(String(32))
+    gross_m2: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    room_count: Mapped[str | None] = mapped_column(String(16))
+    # Provenance (SABİT tüketici öz-beyan zinciri) — kayıt kendini tanımlasın
+    domain: Mapped[str] = mapped_column(String(24), default="consumer")
+    label_source: Mapped[str | None] = mapped_column(String(32), default="seller_self_reported")
+    sale_mechanism: Mapped[str | None] = mapped_column(String(40), default="ordinary_resale")
+    reference_price_type: Mapped[str | None] = mapped_column(String(16), default="asking")
+    label_confidence: Mapped[str | None] = mapped_column(String(1), default="B")
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

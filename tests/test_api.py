@@ -123,3 +123,56 @@ def test_outcome_invalid_rejected(tmp_path, monkeypatch):
         raising=False,
     )
     assert client.post("/outcome", json={"outcome": "banana"}).status_code == 422
+
+
+def test_consumer_sale_creates_direct_label_and_analytics(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "sold.config.settings.database_url",
+        f"sqlite:///{(tmp_path / 'consumer.db').as_posix()}",
+        raising=False,
+    )
+    r = client.post(
+        "/consumer/sale",
+        json={
+            "initial_asking_price": 4_000_000,
+            "final_asking_price": 3_800_000,
+            "closing_price": 3_500_000,
+            "province": "İstanbul",
+            "district": "Kadıköy",
+            "property_type": "konut",
+            "listing_date": "2024-01-01",
+            "closing_date": "2024-02-20",
+            "price_cut_count": 1,
+        },
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["recorded"] is True
+    assert data["sale_mechanism"] == "ordinary_resale"
+    assert data["label_confidence"] == "B"
+    assert data["analytics"]["days_to_close"] == 50
+    assert data["segment_benchmark"]["enough_observations"] is False  # tek gözlem
+
+    # MİLESTONE: asking→closing head 0 → 1 (ürünün kendi edinim yolundan)
+    s = client.get("/consumer/stats")
+    assert s.status_code == 200
+    assert s.json()["consumer_direct_labels"] == 1
+
+
+def test_consumer_sale_rejects_extra_personal_field(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "sold.config.settings.database_url",
+        f"sqlite:///{(tmp_path / 'consumer2.db').as_posix()}",
+        raising=False,
+    )
+    # extra='forbid': tanımsız (kişisel) alan API sınırında reddedilir
+    r = client.post(
+        "/consumer/sale",
+        json={
+            "final_asking_price": 3_800_000,
+            "closing_price": 3_500_000,
+            "seller_name": "Ahmet",
+        },
+    )
+    assert r.status_code == 422
+
