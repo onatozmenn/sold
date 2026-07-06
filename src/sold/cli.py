@@ -1237,6 +1237,11 @@ def consumer_record_cmd(
     price_cuts: int = typer.Option(0, help="Fiyat düşürme sayısı"),
     listing_date: str = typer.Option("", help="İlan tarihi (YYYY-MM-DD)"),
     closing_date: str = typer.Option("", help="Kapanış tarihi (YYYY-MM-DD)"),
+    origin: str = typer.Option(
+        "consumer_submission",
+        "--origin",
+        help="Köken: consumer_submission (GERÇEK) / test_fixture / demo_seed / manual_import",
+    ),
 ) -> None:
     """Ev satmış bir kişinin satışını kaydeder; anında analitik + segment benchmark döner.
 
@@ -1269,20 +1274,41 @@ def consumer_record_cmd(
     init_db(engine)
     try:
         with get_sessionmaker(engine)() as session:
-            row = record_consumer_sale(session, raw)
+            row = record_consumer_sale(session, raw, origin=origin)
             session.commit()
             sale = sale_as_dict(row)
             analytics = sale_analytics(sale)
             bench = segment_benchmark(session, sale)
+            status = row.quality_status
+            flags = list(row.quality_flags or [])
     except ConsumerSaleError as exc:
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
+    is_genuine = origin == "consumer_submission"
+    enters_head = is_genuine and status == "accepted"
     typer.secho(
-        "Kaydedildi — DOĞRUDAN asking→closing etiketi üretildi "
+        "Kaydedildi — DOĞRUDAN etiket üretildi "
         "(domain=consumer · seller_self_reported · ordinary_resale · güven B).",
         fg=typer.colors.GREEN,
     )
+    typer.echo(f"  Köken: {origin}  ·  Kalite: {status}")
+    if flags:
+        typer.secho(f"  İnceleme bayrakları: {', '.join(flags)}", fg=typer.colors.YELLOW)
+    if enters_head:
+        typer.secho(
+            "  → asking→closing head'ine GİRDİ (GERÇEK, accepted).", fg=typer.colors.GREEN
+        )
+    elif not is_genuine:
+        typer.secho(
+            "  → test/demo/manuel köken: varsayılan a2c'ye GİRMEZ (genuine sayısını şişirmez).",
+            fg=typer.colors.YELLOW,
+        )
+    else:
+        typer.secho(
+            "  → flagged: incelemeye kadar model eğitimine GİRMEZ (saklanır).",
+            fg=typer.colors.YELLOW,
+        )
     typer.secho("Anlık analitik (NON-ML):", fg=typer.colors.CYAN, bold=True)
 
     def _pct(v: object) -> str:
@@ -1313,26 +1339,35 @@ def consumer_record_cmd(
 
 @consumer_app.command("stats")
 def consumer_stats_cmd() -> None:
-    """Tüketici doğrudan etiketlerinin durumu (asking→closing head'e girenler)."""
-    from .consumer import load_consumer_sales
+    """Doğrudan etiket durumu — GERÇEK (genuine) vs test/demo AYRI raporlanır."""
+    from .consumer import direct_label_counts, load_consumer_sales
     from .db import get_engine, get_sessionmaker, init_db
-    from .labels import asking_to_closing_labels, load_labels
 
     engine = get_engine()
     init_db(engine)
     with get_sessionmaker(engine)() as session:
         sales = load_consumer_sales(session)
-        labels = load_labels(session)
+        counts = direct_label_counts(session)
 
-    a2c = asking_to_closing_labels(labels)
-    consumer_a2c = a2c[a2c["domain"] == "consumer"] if not a2c.empty else a2c
-    typer.secho("Tüketici (öz-beyan) doğrudan etiket durumu", fg=typer.colors.CYAN, bold=True)
-    typer.echo(f"  Kayıtlı tüketici satışı: {len(sales)}")
-    typer.echo(f"  asking→closing head'e giren DOĞRUDAN etiket (toplam): {len(a2c)}")
-    typer.echo(f"    bunlardan tüketici (seller_self_reported): {len(consumer_a2c)}")
-    if len(a2c) == 0:
+    typer.secho("Tüketici doğrudan-etiket durumu", fg=typer.colors.CYAN, bold=True)
+    typer.echo(f"  Kayıtlı tüketici satışı (tüm kökenler): {len(sales)}")
+    typer.secho(
+        f"  GERÇEK (genuine) doğrudan etiket [consumer_submission + accepted]: "
+        f"{counts['genuine_accepted']}",
+        fg=typer.colors.GREEN,
+        bold=True,
+    )
+    typer.echo(f"    GERÇEK ama flagged (incelemede, eğitime girmez): {counts['genuine_flagged']}")
+    typer.echo(f"    Test/demo etiketi (a2c'ye GİRMEZ): {counts['test_demo']}")
+    typer.echo(f"    Manuel import: {counts['manual_import']}")
+    typer.echo(
+        f"  asking→closing head (varsayılan — üretim + accepted): "
+        f"{counts['asking_to_closing_default']}"
+    )
+    if counts["genuine_accepted"] == 0:
         typer.secho(
-            "  Henüz doğrudan etiket yok. `sold consumer record --final-asking ... --closing ...`",
+            "  Not: Henüz GERÇEK bir satıcı gönderimi YOK → genuine = 0. "
+            "E2E testi edinim YOLUNU kanıtlar, gerçek dünya etiketini DEĞİL.",
             fg=typer.colors.YELLOW,
         )
 

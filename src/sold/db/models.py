@@ -273,6 +273,11 @@ class RealizedLabel(Base):
     transaction_date: Mapped[dt.date | None] = mapped_column()
     # Provenance
     label_confidence: Mapped[str | None] = mapped_column(String(1))  # A/B/C
+    # Kayıt kökeni + kalite kapısı (doğrudan-etiket kalite geçidi):
+    # origin GERÇEK tüketici gönderimini test/demo/manuel-import'tan AYIRIR; asking→closing
+    # head'i test/demo'yu VARSAYILAN dışlar. quality_status yalnızca 'accepted' iken eğitime girer.
+    origin: Mapped[str] = mapped_column(String(24), nullable=False, default="manual_import")  # consumer_submission/test_fixture/demo_seed/manual_import
+    quality_status: Mapped[str] = mapped_column(String(16), nullable=False, default="accepted")  # accepted/flagged/rejected
     external_ref: Mapped[str | None] = mapped_column(String(256))  # kaynak id/URL
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -352,6 +357,13 @@ class ConsumerSale(Base):
     sale_mechanism: Mapped[str | None] = mapped_column(String(40), default="ordinary_resale")
     reference_price_type: Mapped[str | None] = mapped_column(String(16), default="asking")
     label_confidence: Mapped[str | None] = mapped_column(String(1), default="B")
+    # Kayıt kökeni + kalite kapısı (fixture GERÇEK sayısını şişirmesin diye)
+    origin: Mapped[str] = mapped_column(String(24), nullable=False, default="consumer_submission")  # consumer_submission/test_fixture/demo_seed/manual_import
+    quality_status: Mapped[str] = mapped_column(String(16), nullable=False, default="accepted")  # accepted/flagged (rejected sınırda reddedilir)
+    quality_flags: Mapped[list | None] = mapped_column(JSON)  # inceleme bayrakları (orijinal değerler KORUNUR)
+    # Gizlilik-korumalı duplicate-aday parmak izi (kanonik NON-personal alanlardan SHA-256).
+    # MÜLKİ veya KİŞİYİ TANIMLAMAZ; yalnızca birebir/yakın-tekrar gönderimleri incelemeye işaretler.
+    fingerprint: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

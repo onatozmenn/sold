@@ -56,6 +56,33 @@ DIRECT_CLOSING_SOURCES = frozenset(
 # Sıradan konut yeniden-satış mekanizmaları (doğrudan asking→closing). Kamu mekanizmaları
 # (auction/corporate_*/public_auction/primary_market) BURADA DEĞİL → asla head'e girmez.
 DIRECT_RESALE_MECHANISMS = frozenset({"arm_length", "ordinary_resale"})
+
+# Kayıt kökeni (origin) — GERÇEK tüketici gönderimini test/demo/manuel-import'tan AYIRIR.
+# asking→closing head'i test/demo kayıtlarını VARSAYILAN olarak DIŞLAR; fixture verisi
+# 'genuine' (gerçek) doğrudan-etiket sayısını ASLA şişirmemelidir. Köken belirtilmeyen ham
+# etiket 'manual_import' sayılır (ne gerçek tüketici gönderimi ne test/demo).
+ORIGIN_CONSUMER_SUBMISSION = "consumer_submission"  # TEK gerçek üretim kökeni (genuine)
+ORIGIN_TEST_FIXTURE = "test_fixture"
+ORIGIN_DEMO_SEED = "demo_seed"
+ORIGIN_MANUAL_IMPORT = "manual_import"
+ORIGINS = (
+    ORIGIN_CONSUMER_SUBMISSION,
+    ORIGIN_TEST_FIXTURE,
+    ORIGIN_DEMO_SEED,
+    ORIGIN_MANUAL_IMPORT,
+)
+DEFAULT_ORIGIN = ORIGIN_MANUAL_IMPORT
+GENUINE_ORIGIN = ORIGIN_CONSUMER_SUBMISSION
+NON_PRODUCTION_ORIGINS = frozenset({ORIGIN_TEST_FIXTURE, ORIGIN_DEMO_SEED})
+
+# Kalite durumu — tüketici gönderimlerinde kalite kapısı. Yalnızca 'accepted' model
+# eğitimine girer; 'flagged' provenance'ıyla SAKLANIR ama a2c'den varsayılan dışlanır;
+# 'rejected' yalnızca YAPISAL olarak imkânsız kayıtlar içindir (sınırda reddedilir).
+QUALITY_ACCEPTED = "accepted"
+QUALITY_FLAGGED = "flagged"
+QUALITY_REJECTED = "rejected"
+QUALITY_STATUSES = (QUALITY_ACCEPTED, QUALITY_FLAGGED, QUALITY_REJECTED)
+DEFAULT_QUALITY_STATUS = QUALITY_ACCEPTED
 # Gözlenmiş kamu işlem kaynakları (gerçek bedel gözlendi → güven A)
 OBSERVED_PUBLIC_SOURCES = frozenset({"uyap", "kap", "toki"})
 
@@ -108,6 +135,14 @@ def normalize_label(raw: dict) -> dict:
         raise LabelError(f"Geçersiz sale_mechanism: {mechanism!r}.")
     if ref_type not in REFERENCE_PRICE_TYPES:
         raise LabelError(f"Geçersiz reference_price_type: {ref_type!r}.")
+    origin = str(raw.get("origin") or DEFAULT_ORIGIN).strip()
+    if origin not in ORIGINS:
+        raise LabelError(f"Geçersiz origin: {origin!r}. Geçerli: {', '.join(ORIGINS)}")
+    quality_status = str(raw.get("quality_status") or DEFAULT_QUALITY_STATUS).strip()
+    if quality_status not in QUALITY_STATUSES:
+        raise LabelError(
+            f"Geçersiz quality_status: {quality_status!r}. Geçerli: {', '.join(QUALITY_STATUSES)}"
+        )
     realized = _f(raw.get("realized_price"))
     if realized is None or realized <= 0:
         raise LabelError("realized_price (gerçekleşen bedel) zorunlu ve > 0 olmalı.")
@@ -129,6 +164,8 @@ def normalize_label(raw: dict) -> dict:
         "transaction_date": _date(raw.get("transaction_date")),
         "label_confidence": _s(raw.get("label_confidence"))
         or confidence_for(source, related),
+        "origin": origin,
+        "quality_status": quality_status,
         "external_ref": _s(raw.get("external_ref")),
     }
 
@@ -168,6 +205,8 @@ _COLUMNS = [
     "gross_m2",
     "transaction_date",
     "label_confidence",
+    "origin",
+    "quality_status",
     "external_ref",
 ]
 
@@ -197,6 +236,8 @@ def load_labels(session: Session, domain: str | None = None) -> pd.DataFrame:
                 "gross_m2": _f(r.gross_m2),
                 "transaction_date": r.transaction_date,
                 "label_confidence": r.label_confidence,
+                "origin": r.origin,
+                "quality_status": r.quality_status,
                 "external_ref": r.external_ref,
             }
             for r in rows
@@ -207,13 +248,22 @@ def load_labels(session: Session, domain: str | None = None) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # DOMAIN AYRIMI — projenin metodolojik çekirdeği
 # --------------------------------------------------------------------------- #
-def asking_to_closing_labels(df: pd.DataFrame) -> pd.DataFrame:
+def asking_to_closing_labels(
+    df: pd.DataFrame, include_non_production: bool = False
+) -> pd.DataFrame:
     """asking→closing ML head'i için UYGUN etiketler.
 
     YALNIZCA: reference='asking' + sıradan resale mekanizması (arm_length broker/seller
     aracılı VEYA ordinary_resale tüketici öz-beyanı) + ilişkili taraf değil + doğrudan
     closing gözleyen kaynak. UYAP/KAP/TOKİ (auction/corporate_*/public_auction/
     primary_market) buraya ASLA girmez.
+
+    KALİTE KAPISI: yalnızca ``quality_status='accepted'`` kayıtlar girer; 'flagged'/
+    'rejected' model eğitiminden dışlanır (flagged, provenance'ıyla saklanır — inceleme
+    sonrası accepted olursa girer).
+    KÖKEN KAPISI: ``test_fixture``/``demo_seed`` kökenli kayıtlar VARSAYILAN olarak
+    DIŞLANIR (``include_non_production=True`` ile test amaçlı dahil edilebilir). Böylece
+    fixture verisi gerçek doğrudan-etiket sayısını ASLA şişirmez.
     """
     if df.empty:
         return df
@@ -224,6 +274,15 @@ def asking_to_closing_labels(df: pd.DataFrame) -> pd.DataFrame:
         & (~df["related_party"].fillna(False).astype(bool))
         & (src.isin(DIRECT_CLOSING_SOURCES))
     )
+    if "quality_status" in df.columns:
+        mask &= (
+            df["quality_status"].fillna(DEFAULT_QUALITY_STATUS).astype(str)
+            == QUALITY_ACCEPTED
+        )
+    if not include_non_production and "origin" in df.columns:
+        mask &= ~df["origin"].fillna(DEFAULT_ORIGIN).astype(str).isin(
+            NON_PRODUCTION_ORIGINS
+        )
     return df[mask].reset_index(drop=True)
 
 

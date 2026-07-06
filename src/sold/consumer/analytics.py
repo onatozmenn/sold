@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy.orm import Session
 
+from ..labels.registry import NON_PRODUCTION_ORIGINS
 from .collector import DEFAULT_PROPERTY_TYPE, load_consumer_sales
 
 # Bir segmentin benchmark gösterebilmesi için gereken en az gerçek gözlem sayısı
@@ -95,10 +96,14 @@ def segment_benchmark(
 
     Yeterli gözlem YOKSA ``enough_observations=False`` ve açık bir mesaj döner
     (uydurma benchmark ASLA üretilmez). Yeterliyse yalnızca AGREGAT istatistik
-    (medyan/ortalama gap, kapanış süresi, fiyat-kesinti) döner.
+    (medyan/ortalama gap, kapanış süresi, fiyat-kesinti) döner. Test/demo kökenli
+    kayıtlar benchmark'a DAHİL EDİLMEZ (benchmark yalnızca üretim gözlemlerinden).
     """
     province, property_type = segment_key(sale)
-    seg = _segment_frame(load_consumer_sales(session), province, property_type)
+    df = load_consumer_sales(session)
+    if not df.empty and "origin" in df.columns:
+        df = df[~df["origin"].astype(str).isin(NON_PRODUCTION_ORIGINS)]
+    seg = _segment_frame(df, province, property_type)
     n = int(len(seg))
     segment_info = {"province": province, "property_type": property_type}
 

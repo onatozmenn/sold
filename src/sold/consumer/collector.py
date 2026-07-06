@@ -24,11 +24,25 @@ from __future__ import annotations
 import datetime as dt
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..db.models import ConsumerSale, RealizedLabel
-from ..labels.registry import normalize_label
+from ..labels.registry import (
+    DEFAULT_ORIGIN,
+    DIRECT_CLOSING_SOURCES,
+    DIRECT_RESALE_MECHANISMS,
+    GENUINE_ORIGIN,
+    NON_PRODUCTION_ORIGINS,
+    ORIGIN_CONSUMER_SUBMISSION,
+    ORIGINS,
+    QUALITY_ACCEPTED,
+    QUALITY_FLAGGED,
+    asking_to_closing_labels,
+    load_labels,
+    normalize_label,
+)
+from .quality import assess_quality, fingerprint, structural_rejection_reason
 
 # SABİT tüketici öz-beyan provenance zinciri
 CONSUMER_DOMAIN = "consumer"
@@ -124,7 +138,10 @@ def _reject_personal_data(raw: dict) -> None:
 def validate_consumer_sale(raw: dict) -> dict:
     """Ham tüketici satışını doğrular/normalize eder.
 
-    Zorunlu: ``final_asking_price`` > 0 ve ``closing_price`` > 0. ``days_to_close``
+    Zorunlu: ``final_asking_price`` > 0 ve ``closing_price`` > 0. YAPISAL RED
+    (hard-reject) yalnızca yapısal olarak İMKÂNSIZ değerler içindir: fiyat ≤ 0 veya
+    kapanış tarihi ilan tarihinden ÖNCE. Olağandışı oranlar (closing>asking,
+    final>initial) RED DEĞİL — sonra kalite kapısında BAYRAKLANIR. ``days_to_close``
     verilmemişse ilan→kapanış tarihinden türetilir. ``property_type`` boşsa 'konut'.
     Kişisel veri anahtarı varsa ``ConsumerSaleError`` yükseltir.
     """
@@ -132,20 +149,28 @@ def validate_consumer_sale(raw: dict) -> dict:
 
     final_ask = _f(raw.get("final_asking_price"))
     closing = _f(raw.get("closing_price"))
-    if final_ask is None or final_ask <= 0:
-        raise ConsumerSaleError("final_asking_price (son ilan fiyatı) zorunlu ve > 0 olmalı.")
-    if closing is None or closing <= 0:
-        raise ConsumerSaleError("closing_price (gerçekleşen satış fiyatı) zorunlu ve > 0 olmalı.")
-
+    initial = _f(raw.get("initial_asking_price"))
     listing_date = _date(raw.get("listing_date"))
     closing_date = _date(raw.get("closing_date"))
+
+    reason = structural_rejection_reason(
+        {
+            "final_asking_price": final_ask,
+            "closing_price": closing,
+            "initial_asking_price": initial,
+            "listing_date": listing_date,
+            "closing_date": closing_date,
+        }
+    )
+    if reason:
+        raise ConsumerSaleError(reason)
+
     days_to_close = _i(raw.get("days_to_close"))
     if days_to_close is None and listing_date and closing_date:
-        delta = (closing_date - listing_date).days
-        days_to_close = delta if delta >= 0 else None
+        days_to_close = (closing_date - listing_date).days  # ≥ 0 (yapısal garantili)
 
     return {
-        "initial_asking_price": _f(raw.get("initial_asking_price")),
+        "initial_asking_price": initial,
         "final_asking_price": final_ask,
         "closing_price": closing,
         "price_cut_count": _i(raw.get("price_cut_count")) or 0,
@@ -168,11 +193,17 @@ def validate_consumer_sale(raw: dict) -> dict:
 # --------------------------------------------------------------------------- #
 # Etikete çevirme (SABİT provenance) + kalıcılık
 # --------------------------------------------------------------------------- #
-def sale_label_dict(sale: dict, external_ref: str | None = None) -> dict:
+def sale_label_dict(
+    sale: dict,
+    origin: str = ORIGIN_CONSUMER_SUBMISSION,
+    quality_status: str = QUALITY_ACCEPTED,
+    external_ref: str | None = None,
+) -> dict:
     """Doğrulanmış tüketici satışını registry etiket dict'ine çevirir.
 
     reference_price = SON ilan fiyatı (final_asking), realized_price = kapanış bedeli.
-    Bu dict ``normalize_label``'dan geçince ``asking_to_closing_labels()``'e UYGUN olur.
+    ``origin`` (varsayılan consumer_submission) ve ``quality_status`` provenance'ı taşır;
+    böylece ``asking_to_closing_labels()`` köken/kalite kapısını uygulayabilir.
     """
     return {
         "domain": CONSUMER_DOMAIN,
@@ -188,21 +219,40 @@ def sale_label_dict(sale: dict, external_ref: str | None = None) -> dict:
         "gross_m2": sale.get("gross_m2"),
         "transaction_date": sale.get("closing_date"),
         "label_confidence": CONSUMER_CONFIDENCE,
+        "origin": origin,
+        "quality_status": quality_status,
         "external_ref": external_ref,
     }
 
 
-def record_consumer_sale(session: Session, raw: dict) -> ConsumerSale:
-    """Tüketici satışını doğrular, ``consumer_sales``'e yazar VE aynı transaction'da
-    doğrudan bir ``RealizedLabel`` üretir.
+def record_consumer_sale(
+    session: Session, raw: dict, origin: str = ORIGIN_CONSUMER_SUBMISSION
+) -> ConsumerSale:
+    """Tüketici satışını doğrular, kalite kapısından geçirir, ``consumer_sales``'e yazar
+    VE aynı transaction'da doğrudan bir ``RealizedLabel`` üretir.
 
-    Böylece ``load_labels()`` → ``asking_to_closing_labels()`` bu etiketi otomatik
-    görür (milestone: asking→closing head'ini 0'dan ≥1 gerçek etikete taşımak).
-    ``ConsumerSale`` zengin ham alanları (ilk ilan, tarihler, fiyat-kesinti) analitik
-    için tutar; ``RealizedLabel`` normalize edilmiş registry kaydıdır. İkisi tek
-    transaction'da yazılır; ``external_ref`` ile ilişkilendirilir.
+    ``origin`` GERÇEK tüketici gönderimini (consumer_submission) test/demo/manuel-import'tan
+    AYIRIR — test/demo etiketleri asking→closing head'ine varsayılan GİRMEZ ve 'genuine'
+    sayısını şişirmez. Yapısal olarak imkânsız kayıt (fiyat≤0, closing<listing)
+    ``validate_consumer_sale`` tarafından SİNIRDA REDDEDİLİR (kayıt oluşmaz). Bayraklı
+    (flagged) kayıt SAKLANIR ama eğitime girmez. Duplicate adayı gizlilik-korumalı
+    parmak iziyle işaretlenir. Orijinal öz-beyan değerleri KORUNUR.
     """
-    v = validate_consumer_sale(raw)
+    if origin not in ORIGINS:
+        raise ConsumerSaleError(
+            f"Geçersiz origin: {origin!r}. Geçerli: {', '.join(ORIGINS)}"
+        )
+    v = validate_consumer_sale(raw)  # yapısal red → burada yükselir
+    fp = fingerprint(v)
+    dup = (
+        session.scalar(
+            select(func.count())
+            .select_from(ConsumerSale)
+            .where(ConsumerSale.fingerprint == fp)
+        )
+        or 0
+    ) > 0
+    status, flags = assess_quality(v, duplicate=dup)
     row = ConsumerSale(
         initial_asking_price=v["initial_asking_price"],
         final_asking_price=v["final_asking_price"],
@@ -221,10 +271,19 @@ def record_consumer_sale(session: Session, raw: dict) -> ConsumerSale:
         sale_mechanism=v["sale_mechanism"],
         reference_price_type=v["reference_price_type"],
         label_confidence=v["label_confidence"],
+        origin=origin,
+        quality_status=status,
+        quality_flags=flags,
+        fingerprint=fp,
     )
     session.add(row)
     session.flush()  # row.id erişimi için
-    label = normalize_label(sale_label_dict(v, external_ref=f"consumer_sale:{row.id}"))
+    label = normalize_label(
+        sale_label_dict(
+            v, origin=origin, quality_status=status,
+            external_ref=f"consumer_sale:{row.id}",
+        )
+    )
     session.add(RealizedLabel(**label))
     session.flush()
     return row
@@ -250,6 +309,10 @@ _CONSUMER_COLUMNS = [
     "label_source",
     "sale_mechanism",
     "label_confidence",
+    "origin",
+    "quality_status",
+    "quality_flags",
+    "fingerprint",
 ]
 
 
@@ -272,6 +335,10 @@ def sale_as_dict(row: ConsumerSale) -> dict:
         "label_source": row.label_source,
         "sale_mechanism": row.sale_mechanism,
         "label_confidence": row.label_confidence,
+        "origin": row.origin,
+        "quality_status": row.quality_status,
+        "quality_flags": row.quality_flags or [],
+        "fingerprint": row.fingerprint,
     }
 
 
@@ -281,3 +348,42 @@ def load_consumer_sales(session: Session) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=_CONSUMER_COLUMNS)
     return pd.DataFrame([sale_as_dict(r) for r in rows])
+
+
+def direct_label_counts(session: Session) -> dict:
+    """Doğrudan asking→closing etiketlerini KÖKEN ve KALİTEYE göre AYRI sayar.
+
+    'genuine' (GERÇEK) YALNIZCA ``origin=consumer_submission`` + ``quality=accepted``'tır
+    — yani gerçek bir satıcının ürün yolundan gönderdiği, kalite kapısından geçmiş satış.
+    test/demo kökenli fixture verisi bu sayıyı ASLA şişirmez (ayrı raporlanır).
+    ``asking_to_closing_default`` = varsayılan a2c (üretim + accepted).
+    """
+    empty = {
+        "genuine_accepted": 0,
+        "genuine_flagged": 0,
+        "test_demo": 0,
+        "manual_import": 0,
+        "asking_to_closing_default": 0,
+    }
+    df = load_labels(session)
+    if df.empty:
+        return empty
+    src = df["label_source"].fillna("").astype(str)
+    base = df[
+        (df["reference_price_type"] == "asking")
+        & (df["sale_mechanism"].isin(DIRECT_RESALE_MECHANISMS))
+        & (~df["related_party"].fillna(False).astype(bool))
+        & (src.isin(DIRECT_CLOSING_SOURCES))
+    ]
+    if base.empty:
+        return {**empty, "asking_to_closing_default": int(len(asking_to_closing_labels(df)))}
+    origin = base["origin"].fillna(DEFAULT_ORIGIN).astype(str)
+    status = base["quality_status"].fillna(QUALITY_ACCEPTED).astype(str)
+    genuine = origin == GENUINE_ORIGIN
+    return {
+        "genuine_accepted": int((genuine & (status == QUALITY_ACCEPTED)).sum()),
+        "genuine_flagged": int((genuine & (status == QUALITY_FLAGGED)).sum()),
+        "test_demo": int(origin.isin(NON_PRODUCTION_ORIGINS).sum()),
+        "manual_import": int((origin == DEFAULT_ORIGIN).sum()),
+        "asking_to_closing_default": int(len(asking_to_closing_labels(df))),
+    }

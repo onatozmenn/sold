@@ -306,9 +306,11 @@ def add_consumer_sale(rec: ConsumerSaleIn) -> dict:
     init_db(engine)
     try:
         with get_sessionmaker(engine)() as session:
+            # /consumer/sale GERÇEK ürün yoludur → origin varsayılan consumer_submission.
             row = record_consumer_sale(session, rec.model_dump())
             session.commit()
             sale = sale_as_dict(row)
+            genuine = row.origin == "consumer_submission" and row.quality_status == "accepted"
             return {
                 "recorded": True,
                 "domain": "consumer",
@@ -316,6 +318,10 @@ def add_consumer_sale(rec: ConsumerSaleIn) -> dict:
                 "sale_mechanism": "ordinary_resale",
                 "reference_price_type": "asking",
                 "label_confidence": "B",
+                "origin": row.origin,
+                "quality_status": row.quality_status,
+                "quality_flags": list(row.quality_flags or []),
+                "enters_asking_to_closing": bool(genuine),
                 "analytics": sale_analytics(sale),
                 "segment_benchmark": segment_benchmark(session, sale),
             }
@@ -325,23 +331,20 @@ def add_consumer_sale(rec: ConsumerSaleIn) -> dict:
 
 @app.get("/consumer/stats")
 def consumer_stats_endpoint() -> dict:
-    """Tüketici doğrudan etiketlerinin asking→closing head'e giriş durumu."""
-    from ..consumer import load_consumer_sales
+    """Doğrudan etiket durumu — GERÇEK (genuine) vs test/demo AYRI sayılır.
+
+    ``genuine_accepted`` yalnızca origin=consumer_submission + quality=accepted; gerçek
+    bir satıcı gönderimi gelene dek 0'dır. Fixture/demo bu sayıyı şişirmez.
+    """
+    from ..consumer import direct_label_counts, load_consumer_sales
     from ..db import get_engine, get_sessionmaker, init_db
-    from ..labels import asking_to_closing_labels, load_labels
 
     engine = get_engine()
     init_db(engine)
     with get_sessionmaker(engine)() as session:
         sales = load_consumer_sales(session)
-        labels = load_labels(session)
-    a2c = asking_to_closing_labels(labels)
-    consumer_a2c = a2c[a2c["domain"] == "consumer"] if not a2c.empty else a2c
-    return {
-        "consumer_sales": int(len(sales)),
-        "asking_to_closing_labels": int(len(a2c)),
-        "consumer_direct_labels": int(len(consumer_a2c)),
-    }
+        counts = direct_label_counts(session)
+    return {"consumer_sales": int(len(sales)), **counts}
 
 
 @app.get("/", response_class=HTMLResponse)

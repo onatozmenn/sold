@@ -150,13 +150,57 @@ def test_consumer_sale_creates_direct_label_and_analytics(tmp_path, monkeypatch)
     assert data["recorded"] is True
     assert data["sale_mechanism"] == "ordinary_resale"
     assert data["label_confidence"] == "B"
+    assert data["origin"] == "consumer_submission"  # API = GERÇEK ürün yolu
+    assert data["quality_status"] == "accepted"
+    assert data["enters_asking_to_closing"] is True
     assert data["analytics"]["days_to_close"] == 50
     assert data["segment_benchmark"]["enough_observations"] is False  # tek gözlem
 
-    # MİLESTONE: asking→closing head 0 → 1 (ürünün kendi edinim yolundan)
+    # Ürünün kendi edinim yolundan GERÇEK (genuine) bir doğrudan etiket sayıldı
     s = client.get("/consumer/stats")
     assert s.status_code == 200
-    assert s.json()["consumer_direct_labels"] == 1
+    body = s.json()
+    assert body["genuine_accepted"] == 1
+    assert body["test_demo"] == 0
+
+
+def test_consumer_sale_flagged_stays_out_of_head(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "sold.config.settings.database_url",
+        f"sqlite:///{(tmp_path / 'consumer_flag.db').as_posix()}",
+        raising=False,
+    )
+    # Aşırı closing/asking oranı → RED DEĞİL, flagged (kızgın piyasa gibi görünse de incele)
+    r = client.post(
+        "/consumer/sale",
+        json={"final_asking_price": 3_800_000, "closing_price": 5_400_000},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["quality_status"] == "flagged"
+    assert data["enters_asking_to_closing"] is False
+    s = client.get("/consumer/stats").json()
+    assert s["genuine_accepted"] == 0  # flagged genuine-accepted DEĞİL
+    assert s["genuine_flagged"] == 1
+
+
+def test_consumer_sale_rejects_structurally_impossible(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "sold.config.settings.database_url",
+        f"sqlite:///{(tmp_path / 'consumer_bad.db').as_posix()}",
+        raising=False,
+    )
+    # kapanış tarihi ilan tarihinden ÖNCE → yapısal red (422)
+    r = client.post(
+        "/consumer/sale",
+        json={
+            "final_asking_price": 3_800_000,
+            "closing_price": 3_500_000,
+            "listing_date": "2024-03-01",
+            "closing_date": "2024-01-01",
+        },
+    )
+    assert r.status_code == 422
 
 
 def test_consumer_sale_rejects_extra_personal_field(tmp_path, monkeypatch):
