@@ -28,6 +28,7 @@ from sold.structural import (
     classify_auction_outcome,
     compare_snapshots,
     context_from_datasets,
+    cumulative_near_fit_experiment,
     dataset_status,
     dataset_summary,
     difference_disclosures,
@@ -1070,6 +1071,61 @@ def test_frozen_smm_moments_and_rank_unchanged():
         "uyap_win_over_appraisal_mean", "uyap_win_over_appraisal_sd",
         "kap_log_ratio_mean", "kap_log_ratio_sd",
     }
+
+
+# --- Kümülatif (iç-içe, incumbent-koruyan) arama-bütçesi kararlılık denetimi --- #
+def _stability_ctx():
+    g = load_genuine_datasets()
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    ctx = context_from_datasets(g["uyap"], g["kap"])
+    return built["moments"], ctx
+
+
+def test_cumulative_experiment_retains_incumbent_and_monotone_best():
+    # (1)+(2) iç-içe havuz → global incumbent KORUNUR → cumulative best MONOTON AZALMAYAN
+    m_obs, ctx = _stability_ctx()
+    exp = cumulative_near_fit_experiment(m_obs, ctx, budgets=(150, 300, 600), seed=7)
+    cb = exp["cumulative_best_objective"]
+    assert all(cb[i + 1] <= cb[i] + 1e-9 for i in range(len(cb) - 1))  # monoton (incumbent korunur)
+    counts = [r["cumulative_candidate_count"] for r in exp["rows"]]
+    assert all(counts[i + 1] >= counts[i] for i in range(len(counts) - 1))  # iç-içe (büyüyen havuz)
+
+
+def test_deterministic_objective_reproducible_reeval():
+    # (3) aynı θ, aynı CRN/objektif → aynı Q (deterministik yeniden-değerlendirme)
+    m_obs, ctx = _stability_ctx()
+    exp = cumulative_near_fit_experiment(m_obs, ctx, budgets=(150, 300), seed=7)
+    assert exp["deterministic_objective_reproducible"] is True
+    assert exp["incumbent_reeval_delta"] <= 1e-9
+
+
+def test_stability_uses_single_common_q_ref_and_tol():
+    # (4) kararlılık kümesi ORTAK Q_ref/tol_ref kullanır (hareketli eşik YOK)
+    m_obs, ctx = _stability_ctx()
+    exp = cumulative_near_fit_experiment(m_obs, ctx, budgets=(150, 300, 600), seed=7)
+    # cumulative_best_objective 6 haneye yuvarlıdır; Q_ref tam hassas → gevşek abs tolerans
+    assert exp["Q_ref"] == pytest.approx(min(exp["cumulative_best_objective"]), abs=1e-5)
+    assert exp["tol_ref"] == pytest.approx(identification_tolerance(exp["Q_ref"]))
+
+
+def test_production_admissible_near_fit_set_semantics_unchanged():
+    # (5) üretim Theta_A semantiği DEĞİŞMEZ (kendi Q_min'i + aynı tolerans kuralı)
+    m_obs, ctx = _stability_ctx()
+    res = admissible_near_fit_set(m_obs, ctx, n_candidates=400, seed=7)
+    assert "max(0.0001" in res.tolerance_rule
+    assert res.tolerance == pytest.approx(identification_tolerance(res.best_objective))
+    assert set(res.param_ranges) == set(DEFAULT_FREE)
+
+
+def test_prediction_semantics_frozen_after_stability_audit():
+    # (10) donmuş conditional-on-trade tahmin semantiği DEĞİŞMEDEN kalır
+    pred = IdentificationAwarePredictor([_TR, _TR2, _TR3], best_params=_TR).predict(
+        3_000_000, 3_000_000, n=9000, seed=0
+    )
+    assert pred["price_estimate_condition"] == "conditional_on_trade"
+    c = pred["central_structural_estimate"]
+    lo, hi = pred["within_theta_negotiation_interval"]
+    assert lo <= c <= hi and pred["coverage_claim"] is None
 
 
 # --- Girdi-çelişki tanılaması (asking ↔ TCMB-çıpalı fair value) ------------- #

@@ -72,6 +72,7 @@ from .partial import (
     PARAM_BOUNDS,
     AdmissibleNearFitResult,
     admissible_near_fit_set,
+    cumulative_near_fit_experiment,
     identification_tolerance,
     objective_value,
     tolerance_sensitivity,
@@ -157,6 +158,7 @@ __all__ = [
     "PARAM_BOUNDS",
     "identification_tolerance",
     "tolerance_sensitivity",
+    "cumulative_near_fit_experiment",
     "objective_value",
     "FUTURE_METHODOLOGY_NOTE",
     # tahmin

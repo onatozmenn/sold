@@ -273,3 +273,135 @@ def tolerance_sensitivity(
             "wide_parameters": res.wide_parameters(),
         })
     return rows
+
+
+def cumulative_near_fit_experiment(
+    m_obs: dict,
+    ctx: MomentContext,
+    free_names: tuple[str, ...] = DEFAULT_FREE,
+    budgets=(750, 1500, 3000),
+    bounds: dict | None = None,
+    seed: int = 12345,
+    sim_seed: int = 12345,
+    start: StructuralParams | None = None,
+    rel: float = TOLERANCE_REL,
+    absolute: float = TOLERANCE_ABS,
+    descent_starts: int = 6,
+    descent_iters: int = 80,
+    local_scale: float = 0.12,
+    reeval_tol: float = 1e-9,
+) -> dict:
+    """KÜMÜLATİF (iç-içe, INCUMBENT-koruyan) yakın-uyum arama deneyi — SAYISAL diagnostik.
+
+    Üretim ``admissible_near_fit_set`` tanımını DEĞİŞTİRMEZ. Tek ``rng`` ile ARTIMLI aday
+    havuzu kurar: ``pool(b_k) ⊇ pool(b_{k-1})``; her aday ORTAK rastgele sayılarla
+    (``sim_seed``) BİR KEZ değerlendirilir ve havuza EKLENİR (asla çıkarılmaz), böylece
+    global incumbent her bütçede KORUNUR ve ``cumulative_best_objective`` MONOTON AZALMAYAN
+    olur (sayısal eşitlik toleransı dahilinde). Tüm bütçeler ORTAK bir ``Q_ref``/``tol_ref``
+    altında yeniden değerlendirilir (hareketli eşik YOK). Yalnızca sayısal arama-kalitesi
+    ölçer; ekonometrik metodolojiyi DEĞİŞTİRMEZ.
+    """
+    bounds = bounds or PARAM_BOUNDS
+    base = start or StructuralParams()
+    names = tuple(free_names)
+    d = len(names)
+    lo_b = np.array([bounds[p][0] for p in names], dtype=float)
+    hi_b = np.array([bounds[p][1] for p in names], dtype=float)
+    rng = np.random.default_rng(seed)
+    from .smm import nelder_mead
+
+    def _q(x) -> float:
+        xc = np.clip(np.asarray(x, dtype=float), lo_b, hi_b)
+        upd = {name: float(xc[j]) for j, name in enumerate(names)}
+        return objective_value(replace(base, **upd), m_obs, ctx, sim_seed)
+
+    pool_x = np.empty((0, d))
+    pool_q = np.empty((0,))
+    snapshots: list[tuple] = []  # (budget, X_copy, Q_copy, new_added)
+    prev_b = 0
+    for b in budgets:
+        n_new = max(int(b) - prev_b, 0)
+        parts = []
+        if n_new > 0:
+            n_glob = max(n_new // 2, 1)
+            parts.append(lo_b + (hi_b - lo_b) * rng.random((n_glob, d)))
+            n_loc = n_new - n_glob
+            if n_loc > 0:
+                if pool_x.shape[0]:
+                    q0 = float(pool_q.min())
+                    t0 = identification_tolerance(q0, rel, absolute)
+                    anc = pool_x[pool_q <= q0 + t0]
+                    if anc.shape[0] == 0:
+                        anc = pool_x[np.argsort(pool_q)[: min(descent_starts, pool_x.shape[0])]]
+                else:
+                    anc = parts[0][:1]
+                idx = rng.integers(0, anc.shape[0], n_loc)
+                loc = anc[idx] + rng.normal(0.0, 1.0, (n_loc, d)) * (local_scale * (hi_b - lo_b))
+                parts.append(np.clip(loc, lo_b, hi_b))
+        new_base = np.vstack(parts) if parts else np.empty((0, d))
+        new_base_q = np.array([_q(x) for x in new_base]) if new_base.shape[0] else np.empty((0,))
+        # NELDER-MEAD inişi: (havuz + yeni) en iyi noktalarından (pool_q önceden hesaplı → tekrar YOK)
+        cx = np.vstack([pool_x, new_base]) if pool_x.shape[0] else new_base
+        cq = np.concatenate([pool_q, new_base_q]) if pool_q.shape[0] else new_base_q
+        desc_x = np.empty((0, d))
+        desc_q = np.empty((0,))
+        if cx.shape[0]:
+            starts = cx[np.argsort(cq)[: min(descent_starts, cx.shape[0])]]
+            dl = [np.clip(nelder_mead(_q, s, max_iter=descent_iters)[0], lo_b, hi_b) for s in starts]
+            desc_x = np.array(dl)
+            desc_q = np.array([_q(x) for x in desc_x])
+        add_x = np.vstack([a for a in (new_base, desc_x) if a.shape[0]]) if (new_base.shape[0] or desc_x.shape[0]) else np.empty((0, d))
+        add_q = np.concatenate([a for a in (new_base_q, desc_q) if a.size]) if (new_base_q.size or desc_q.size) else np.empty((0,))
+        pool_x = np.vstack([pool_x, add_x]) if pool_x.shape[0] else add_x
+        pool_q = np.concatenate([pool_q, add_q]) if pool_q.shape[0] else add_q
+        snapshots.append((int(b), pool_x.copy(), pool_q.copy(), int(add_x.shape[0])))
+        prev_b = int(b)
+
+    cum_best = [float(q.min()) for (_b, _x, q, _n) in snapshots]
+    Q_ref = float(min(cum_best))               # tüm kümülatif deney boyunca keşfedilen minimum
+    tol_ref = identification_tolerance(Q_ref, rel, absolute)
+    # incumbent DETERMİNİSTİK-objektif yeniden-üretilebilirlik kontrolü (aynı θ, aynı CRN → aynı Q)
+    _bb, fX, fQ, _n = snapshots[-1]
+    bi = int(np.argmin(fQ))
+    best_x = fX[bi]
+    reeval_delta = float(abs(_q(best_x) - float(fQ[bi])))
+    best_theta = {name: float(best_x[j]) for j, name in enumerate(names)}
+
+    def _uniq(X: np.ndarray) -> int:
+        return int(np.unique(np.round(X, 4), axis=0).shape[0]) if X.shape[0] else 0
+
+    rows: list[dict] = []
+    for (bb, X, Q, nadd) in snapshots:
+        adm = X[Q <= Q_ref + tol_ref]                      # ORTAK eşik altında
+        params = [replace(base, **{name: float(adm[r, j]) for j, name in enumerate(names)})
+                  for r in range(adm.shape[0])]
+        ranges = {
+            name: ([round(float(adm[:, j].min()), 3), round(float(adm[:, j].max()), 3)]
+                   if adm.shape[0] else [None, None])
+            for j, name in enumerate(names)
+        }
+        q_own = float(Q.min())                              # bu bütçenin KÜMÜLATİF minimumu (monoton)
+        t_own = identification_tolerance(q_own, rel, absolute)
+        prod_count = int((Q <= q_own + t_own).sum())        # üretim-tarzı (kendi hareketli eşiği)
+        rows.append({
+            "budget": bb,
+            "new_candidates_added": nadd,
+            "cumulative_candidate_count": int(X.shape[0]),
+            "cumulative_unique_candidate_count": _uniq(X),
+            "cumulative_best_objective": round(q_own, 6),
+            "production_near_fit_count": prod_count,
+            "common_threshold_stability_near_fit_count": int(adm.shape[0]),
+            "common_threshold_param_ranges": ranges,
+            "eta_range": ranges["eta"],
+            "admissible_params": params,
+        })
+    return {
+        "budgets": [int(b) for b in budgets],
+        "Q_ref": Q_ref,
+        "tol_ref": tol_ref,
+        "cumulative_best_objective": [round(c, 6) for c in cum_best],
+        "best_theta": best_theta,
+        "incumbent_reeval_delta": reeval_delta,
+        "deterministic_objective_reproducible": bool(reeval_delta <= reeval_tol),
+        "rows": rows,
+    }

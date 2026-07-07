@@ -232,10 +232,13 @@ def method_overview() -> dict:
 
 
 # --- Θ_A arama-bütçesi sayısal kararlılık tanılaması (ekonometrik sınıflandırma DEĞİL) --- #
-STABILITY_RANGE_TOL = 0.15       # parametre bant-payı değişimi (bound-genişliğine göre)
-STABILITY_ENVELOPE_TOL = 0.25    # duyarlılık zarfı genişlik değişimi (göreli)
-STABILITY_CENTER_TOL = 0.10      # zarf merkezi kayması (göreli)
-STABILITY_COVERAGE_GROWTH = 1.5  # |Θ_A| bu katı büyürse yetersiz kapsama işareti
+# YAPILANDIRILABİLİR sayısal eşikler (ekonometrik anlamlılık düzeyi DEĞİL). Sınıflandırma
+# yalnızca yakın-uyum SAYISI büyümesine dayanmaz; çok-parçalı yakınsama kuralı kullanır.
+STABILITY_BEST_OBJ_TOL = 0.10    # kümülatif best-objektif göreli iyileşmesi (hâlâ düşüyorsa → yetersiz)
+STABILITY_SUPPORT_EXPAND = 0.10  # ortak-eşik parametre desteği DIŞA genişlemesi (bound-genişliğine göre)
+STABILITY_ENDPOINT_TOL = 0.12    # parametre bant-payı endpoint hareketi (bound-genişliğine göre)
+STABILITY_ENVELOPE_TOL = 0.15    # zarf/band endpoint göreli hareketi
+STABILITY_CENTRAL_TOL = 0.10     # merkezi tahmin göreli hareketi
 
 
 def _env_width_center(env):
@@ -244,100 +247,144 @@ def _env_width_center(env):
     return float(env[1] - env[0]), float((env[0] + env[1]) / 2.0)
 
 
-def _classify_stability(rows: list[dict]) -> tuple[str, str]:
-    """İki en büyük bütçeyi karşılaştıran BELGELİ sayısal kural (kapsama/aralık/zarf).
+def _rel_env_move(a, b) -> bool:
+    wa, ca = _env_width_center(a)
+    wb, cb = _env_width_center(b)
+    if wa is None or wb is None:
+        return (wa is None) != (wb is None)  # biri null diğeri değil → MATERYAL hareket
+    return (abs(wa - wb) / max(wb, 1.0) > STABILITY_ENVELOPE_TOL) or (
+        abs(ca - cb) / max(cb, 1.0) > STABILITY_ENVELOPE_TOL
+    )
 
-    - |Θ_A| büyümesi >= STABILITY_COVERAGE_GROWTH → INSUFFICIENT_COVERAGE (arama yakınsamadı),
-    - parametre bant-payları + zarf kararlıysa → STABLE,
-    - aksi halde → SEARCH_SENSITIVE.
+
+def _classify_stability(rows: list[dict], exp: dict) -> tuple[str, str]:
+    """ÇOK-PARÇALI sayısal yakınsama kuralı (yalnızca sayı büyümesine dayanMAZ).
+
+    Son iki kümülatif bütçeyi karşılaştırır:
+    - INSUFFICIENT_COVERAGE: kümülatif best-obj hâlâ materyal iyileşiyor VEYA ortak-eşik
+      parametre desteği DIŞA genişliyor (yeni bölge keşfi → yargı erken),
+    - SEARCH_SENSITIVE: kapsama büyüdü ama tahmin zarfı/destek endpoint'leri materyal hareket ediyor,
+    - STABLE: son bütçe genişlemesi zarf ve destek endpoint'lerinde yalnızca küçük değişim üretir.
     """
     from ..structural.partial import PARAM_BOUNDS
 
     if len(rows) < 2:
-        return "SEARCH_SENSITIVE", "en az iki bütçe gerekir"
+        return "INSUFFICIENT_COVERAGE", "kararlılık yargısı için en az iki kümülatif bütçe gerekir"
     prev, last = rows[-2], rows[-1]
-    n_prev = max(int(prev["near_fit_parameter_count"]), 1)
-    coverage_growth = last["near_fit_parameter_count"] / n_prev
-    # parametre bant-payı kararlılığı
-    range_ok = True
-    for p, (lo, hi) in {k: v for k, v in last["param_ranges"].items()}.items():
-        w_last = hi - lo
-        plo, phi = prev["param_ranges"][p]
-        w_prev = phi - plo
+    cb = exp["cumulative_best_objective"]
+    best_improve = (cb[-2] - cb[-1]) / max(abs(cb[-2]), 1e-9)
+    obj_still_improving = best_improve > STABILITY_BEST_OBJ_TOL
+    support_expands = False
+    endpoints_move = False
+    for p, (lo_l, hi_l) in last["common_threshold_param_ranges"].items():
+        lo_p, hi_p = prev["common_threshold_param_ranges"][p]
+        if None in (lo_l, hi_l, lo_p, hi_p):
+            continue
         bw = PARAM_BOUNDS[p][1] - PARAM_BOUNDS[p][0]
-        if bw > 0 and abs(w_last - w_prev) / bw > STABILITY_RANGE_TOL:
-            range_ok = False
-            break
-    # zarf kararlılığı
-    wl, cl = _env_width_center(last["structural_sensitivity_range"])
-    wp, cp = _env_width_center(prev["structural_sensitivity_range"])
-    if wl is None or wp is None:
-        env_ok = (wl is None) and (wp is None)  # ikisi de null ise "kararlı" say (ikisi de ~0 ticaret)
-    else:
-        env_ok = (abs(wl - wp) / max(wl, 1.0) <= STABILITY_ENVELOPE_TOL) and (
-            abs(cl - cp) / max(cl, 1.0) <= STABILITY_CENTER_TOL
-        )
-    if coverage_growth >= STABILITY_COVERAGE_GROWTH:
-        return "INSUFFICIENT_COVERAGE", (
-            f"|Θ_A| {prev['near_fit_parameter_count']}→{last['near_fit_parameter_count']} "
-            f"(×{coverage_growth:.2f} ≥ {STABILITY_COVERAGE_GROWTH}); arama daha büyük bütçede "
-            "belirgin biçimde daha çok yakın-uyum vektörü buluyor"
-        )
-    if range_ok and env_ok:
-        return "STABLE", "en büyük iki bütçede parametre bant-payları ve duyarlılık zarfı kararlı"
-    return "SEARCH_SENSITIVE", "parametre bant-payı ve/veya duyarlılık zarfı bütçeyle belirgin değişiyor"
+        if bw <= 0:
+            continue
+        if (lo_l < lo_p - STABILITY_SUPPORT_EXPAND * bw) or (hi_l > hi_p + STABILITY_SUPPORT_EXPAND * bw):
+            support_expands = True
+        if abs((hi_l - lo_l) - (hi_p - lo_p)) / bw > STABILITY_ENDPOINT_TOL:
+            endpoints_move = True
+    env_move = _rel_env_move(last["structural_sensitivity_range"], prev["structural_sensitivity_range"])
+    band_move = _rel_env_move(last["between_theta_near_fit_band"], prev["between_theta_near_fit_band"])
+    cl, cp = last["central_structural_estimate"], prev["central_structural_estimate"]
+    central_move = ((cl is None) != (cp is None)) or (
+        cl is not None and cp is not None and abs(cl - cp) / max(cp, 1.0) > STABILITY_CENTRAL_TOL
+    )
+    predictions_move = env_move or band_move or central_move or endpoints_move
+    if obj_still_improving or support_expands:
+        why = (f"cumulative best-objective still improving ({best_improve:.1%} > {STABILITY_BEST_OBJ_TOL:.0%})"
+               if obj_still_improving else
+               "common-threshold parameter support still expanding outward")
+        return "INSUFFICIENT_COVERAGE", why + " — stability judgment premature"
+    if predictions_move:
+        return "SEARCH_SENSITIVE", ("coverage grew adequately but the prediction envelope / support "
+                                   "endpoints still move materially between the final two budgets")
+    return "STABLE", ("final-budget expansion produced only small documented changes in prediction "
+                     "envelopes and parameter-support endpoints")
 
 
 def search_budget_stability(
-    budgets=(750, 1500, 3000),
+    budgets=(750, 1500, 3000, 6000),
     asking: float = 5_000_000.0,
     province: str = "İstanbul",
     gross_m2: float = 100.0,
     seed: int = NEAR_FIT_SEED,
 ) -> dict:
-    """Θ_A arama-bütçesi KARARLILIK çalışması (yeniden-üretilebilir; sayısal — ekonometrik DEĞİL).
+    """KÜMÜLATİF (iç-içe, INCUMBENT-koruyan) arama-bütçesi KARARLILIK çalışması.
 
-    Aynı hedef/bound/CRN/near-fit kriteriyle artan aday yoğunluklarında Θ_A + tahmin
-    ölçütlerini karşılaştırır. Tolerans kuralı, moment tanımı, bound DEĞİŞMEZ."""
+    Artan KÜMÜLATİF bütçeler kullanır; her bütçenin aday havuzu bir öncekini KAPSAR ve global
+    incumbent korunur → ``cumulative_best_objective`` MONOTON AZALMAYAN. Tüm bütçeler ORTAK bir
+    ``Q_ref``/``tol_ref`` altında karşılaştırılır (hareketli eşik YOK); tahmin özetleri bu
+    ORTAK-EŞİK diagnostik kümesinden hesaplanır. Üretim ``admissible_near_fit_set`` tanımı,
+    tolerans kuralı, SMM momentleri ve bound DEĞİŞMEZ."""
+    from ..structural import cumulative_near_fit_experiment
+
     g = load_genuine_datasets()
     built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
     ctx = context_from_datasets(g["uyap"], g["kap"])
     fv = fair_value_for(province, gross_m2)
+    exp = cumulative_near_fit_experiment(built["moments"], ctx, budgets=budgets, seed=seed)
+
     rows: list[dict] = []
-    for b in budgets:
-        res = admissible_near_fit_set(built["moments"], ctx, n_candidates=b, seed=seed)
-        pred = IdentificationAwarePredictor(res.admissible_params, res.best_params).predict(
-            asking, fv, n=12000, seed=0
-        )
+    for r in exp["rows"]:
+        params = r["admissible_params"]  # ORTAK-EŞİK diagnostik kümesi (Θ_A_stability(b))
+        if params:
+            pred = IdentificationAwarePredictor(params, best_params=params[0]).predict(
+                asking, fv, n=12000, seed=0
+            )
+            central = pred["central_structural_estimate"]
+            between = list(pred["between_theta_near_fit_band"])
+            env = list(pred["structural_sensitivity_range"])
+            n_tr = int(pred["trading_near_fit_parameter_count"])
+            n_nt = int(pred["nontrading_near_fit_parameter_count"])
+        else:
+            central, between, env, n_tr, n_nt = None, [None, None], [None, None], 0, 0
         rows.append({
-            "candidate_count": int(b),
-            "near_fit_parameter_count": int(res.n_admissible),
-            "best_objective": round(float(res.best_objective), 6),
-            "param_ranges": {p: [round(r["min"], 3), round(r["max"], 3)] for p, r in res.param_ranges.items()},
-            "eta_range": [round(res.param_ranges["eta"]["min"], 3), round(res.param_ranges["eta"]["max"], 3)],
-            "central_structural_estimate": pred["central_structural_estimate"],
-            "between_theta_near_fit_band": list(pred["between_theta_near_fit_band"]),
-            "structural_sensitivity_range": list(pred["structural_sensitivity_range"]),
-            "trading_near_fit_parameter_count": int(pred["trading_near_fit_parameter_count"]),
-            "nontrading_near_fit_parameter_count": int(pred["nontrading_near_fit_parameter_count"]),
+            "budget": r["budget"],
+            "new_candidates_added": r["new_candidates_added"],
+            "cumulative_unique_candidate_count": r["cumulative_unique_candidate_count"],
+            "cumulative_best_objective": r["cumulative_best_objective"],
+            "production_near_fit_count": r["production_near_fit_count"],
+            "common_threshold_stability_near_fit_count": r["common_threshold_stability_near_fit_count"],
+            "common_threshold_param_ranges": r["common_threshold_param_ranges"],
+            "eta_range": r["eta_range"],
+            "trading_theta_count": n_tr,
+            "nontrading_theta_count": n_nt,
+            "central_structural_estimate": central,
+            "between_theta_near_fit_band": between,
+            "structural_sensitivity_range": env,
         })
-    status, reason = _classify_stability(rows)
+
+    status, reason = _classify_stability(rows, exp)
     _CACHE["stability_status"] = status
+    cb = exp["cumulative_best_objective"]
+    monotone = all(cb[i + 1] <= cb[i] + 1e-9 for i in range(len(cb) - 1))
     return {
         "diagnostic": "near_fit_search_stability",
-        "note": "numerical approximation diagnostic of the reproducible search over the bounded "
-                "theta space — NOT an econometric identification classification. Tolerance rule, "
-                "moments and bounds are unchanged.",
-        "interpretation": "A non-STABLE result is the EXPECTED numerical signature of "
-                          "STRUCTURALLY_UNDERIDENTIFIED (Jacobian rank 4 < dim 6): the near-fit "
-                          "region is a large, near-flat manifold along ~2 weakly-constrained "
-                          "directions, so a finite reproducible search does not stably enumerate "
-                          "it. This is not a code defect; STABLE is not claimed for a genuinely "
-                          "underidentified near-fit region. Each fixed (seed, budget) run is "
-                          "itself deterministic and reproducible.",
+        "design": "cumulative incumbent-preserving (nested candidate pools; global incumbent retained; "
+                  "common Q_ref/tol_ref across budgets)",
+        "note": "numerical approximation diagnostic of the reproducible CUMULATIVE search over the "
+                "bounded theta space — NOT an econometric identification classification. Tolerance "
+                "rule, SMM moments and bounds are unchanged.",
+        "identification_separation": "The rank-deficient structural system may produce extended "
+                "near-fit directions, which can make numerical coverage more demanding. The "
+                "search-stability diagnostic measures computational approximation quality separately "
+                "and does NOT establish underidentification. identification_status "
+                "(STRUCTURALLY_UNDERIDENTIFIED, Jacobian rank 4 / dim 6) is a separate "
+                "econometric/local-identification diagnostic.",
         "reference_scenario": {"asking_price": asking, "province": province, "gross_m2": gross_m2,
                                "fair_value": round(float(fv), 0)},
-        "budgets": list(budgets),
+        "budgets": exp["budgets"],
+        "Q_ref": round(exp["Q_ref"], 6),
+        "tol_ref": round(exp["tol_ref"], 6),
+        "cumulative_best_objective": exp["cumulative_best_objective"],
+        "cumulative_best_objective_monotone_nonincreasing": bool(monotone),
+        "deterministic_objective_reproducible": exp["deterministic_objective_reproducible"],
+        "incumbent_reeval_delta": exp["incumbent_reeval_delta"],
+        "best_theta": exp["best_theta"],
         "table": rows,
         "near_fit_search_stability": status,
         "rule": reason,

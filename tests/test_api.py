@@ -312,8 +312,49 @@ def test_search_budget_stability_reproducible():
     a = search_budget_stability(budgets=(200, 400))
     b = search_budget_stability(budgets=(200, 400))
     assert a["near_fit_search_stability"] == b["near_fit_search_stability"]
-    assert [r["best_objective"] for r in a["table"]] == [r["best_objective"] for r in b["table"]]
+    assert a["cumulative_best_objective"] == b["cumulative_best_objective"]
+    assert [r["cumulative_best_objective"] for r in a["table"]] == [r["cumulative_best_objective"] for r in b["table"]]
     assert a["near_fit_search_stability"] in ("STABLE", "SEARCH_SENSITIVE", "INSUFFICIENT_COVERAGE")
     # sayısal tanı; ekonometrik sınıflandırma DEĞİL (rank/moment değişmez)
     assert "identification classification" in a["note"].lower()
+
+
+def test_cumulative_stability_monotone_and_incumbent_preserving():
+    # (1)+(2) kümülatif best MONOTON AZALMAYAN + deterministik yeniden-değerlendirme
+    from sold.api.structural_product import search_budget_stability
+
+    st = search_budget_stability(budgets=(200, 400, 800))
+    assert st["cumulative_best_objective_monotone_nonincreasing"] is True
+    cb = st["cumulative_best_objective"]
+    assert all(cb[i + 1] <= cb[i] + 1e-9 for i in range(len(cb) - 1))
+    assert st["deterministic_objective_reproducible"] is True
+    # ortak Q_ref/tol_ref alanları mevcut (hareketli eşik YOK)
+    assert "Q_ref" in st and "tol_ref" in st
+    # her satır production + common-threshold sayımlarını AYRI raporlar
+    for r in st["table"]:
+        assert "production_near_fit_count" in r and "common_threshold_stability_near_fit_count" in r
+
+
+def test_stability_classification_not_solely_count_growth():
+    # (6) sınıflandırma yalnızca yakın-uyum SAYISI büyümesine dayanmaz
+    from sold.api.structural_product import _classify_stability
+
+    ranges = {p: [0.0, 0.1] for p in ("mu_b", "sigma_b", "mu_s", "sigma_s", "eta", "auction_shift")}
+    prev = {"common_threshold_param_ranges": ranges, "structural_sensitivity_range": [100.0, 200.0],
+            "between_theta_near_fit_band": [120.0, 180.0], "central_structural_estimate": 150.0}
+    last = {"common_threshold_param_ranges": ranges, "structural_sensitivity_range": [101.0, 201.0],
+            "between_theta_near_fit_band": [121.0, 181.0], "central_structural_estimate": 151.0}  # ×4 sayı ama kararlı
+    exp = {"cumulative_best_objective": [0.100, 0.099]}  # yakınsamış (<%10 iyileşme)
+    status, _ = _classify_stability([prev, last], exp)
+    assert status == "STABLE"  # sayı ×4 büyüse de tahmin/destek kararlı → STABLE (yalnızca sayıya DAYANMAZ)
+
+
+def test_underidentification_separate_from_search_stability():
+    # (7) STRUCTURALLY_UNDERIDENTIFIED, near_fit_search_stability'den AYRI (biri diğerini kanıtlamaz)
+    from sold.api.structural_product import search_budget_stability
+
+    st = search_budget_stability(budgets=(200, 400))
+    assert "identification_separation" in st
+    assert "does not establish underidentification" in st["identification_separation"].lower()
+    assert st["near_fit_search_stability"] in ("STABLE", "SEARCH_SENSITIVE", "INSUFFICIENT_COVERAGE")
 
