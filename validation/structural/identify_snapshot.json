@@ -28,5 +28,5 @@
   "smallest_nonzero_singular_value": 0.02849650987474659,
   "condition_number": 61.77430080737121,
   "weak_directions": [],
-  "status": "NOT_IDENTIFIED"
+  "status": "STRUCTURALLY_UNDERIDENTIFIED"
 }

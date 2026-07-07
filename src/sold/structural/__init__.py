@@ -68,14 +68,20 @@ from .moments import (
 )
 from .params import DEFAULT_FREE, StructuralParams
 from .partial import (
+    FUTURE_METHODOLOGY_NOTE,
     PARAM_BOUNDS,
-    PartialIdentificationResult,
-    admissible_set,
+    AdmissibleNearFitResult,
+    admissible_near_fit_set,
     identification_tolerance,
     objective_value,
     tolerance_sensitivity,
 )
-from .predict import PartiallyIdentifiedPredictor, StructuralClosingPredictor
+from .predict import (
+    CONFLICT_EXPLANATION_CATEGORIES,
+    IdentificationAwarePredictor,
+    StructuralClosingPredictor,
+    input_conflict_diagnostic,
+)
 from .smm import SMMResult, estimate_smm, nelder_mead, smm_objective
 from .toki import difference_disclosures, toki_composition_moments
 
@@ -140,14 +146,17 @@ __all__ = [
     "save_snapshot",
     "load_snapshot",
     "compare_snapshots",
-    # kısmi kimliklendirme (partial identification)
-    "admissible_set",
-    "PartialIdentificationResult",
+    # kabul edilebilir yakın-uyum kümesi (Θ_A) — identified set/confidence DEĞİL
+    "admissible_near_fit_set",
+    "AdmissibleNearFitResult",
     "PARAM_BOUNDS",
     "identification_tolerance",
     "tolerance_sensitivity",
     "objective_value",
+    "FUTURE_METHODOLOGY_NOTE",
     # tahmin
     "StructuralClosingPredictor",
-    "PartiallyIdentifiedPredictor",
+    "IdentificationAwarePredictor",
+    "input_conflict_diagnostic",
+    "CONFLICT_EXPLANATION_CATEGORIES",
 ]

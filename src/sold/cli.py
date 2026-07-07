@@ -1386,6 +1386,16 @@ structural_app = typer.Typer(
 app.add_typer(structural_app, name="structural")
 
 
+def _emit_input_conflict(ic: dict) -> None:
+    """asking ↔ fair value girdi-çelişki UYARISINI yazdırır (tahmini REDDETMEZ/KIRPMAZ)."""
+    if ic and ic.get("input_conflict"):
+        typer.secho(f"  UYARI input_conflict: {ic['message']}", fg=typer.colors.YELLOW)
+        typer.echo(
+            "    olası açıklama ADAYLARI (kanıtsız ATANMAZ): "
+            + ", ".join(ic.get("candidate_explanations", []))
+        )
+
+
 @structural_app.command("value")
 def structural_value_cmd(
     asking: float = typer.Argument(..., help="İlan (asking) fiyatı, TL"),
@@ -1418,10 +1428,10 @@ def structural_value_cmd(
         raise typer.Exit(code=1)
 
     if partial:
-        # KİMLİKLENDİRME-FARKINDA: gerçek momentlerden Θ_I kur, her θ için simüle et.
+        # KİMLİKLENDİRME-FARKINDA DUYARLILIK: gerçek momentlerden Θ_A (yakın-uyum) kur, her θ simüle et.
         from .structural import (
-            PartiallyIdentifiedPredictor,
-            admissible_set,
+            IdentificationAwarePredictor,
+            admissible_near_fit_set,
             build_observed_moments,
             context_from_datasets,
             load_genuine_datasets,
@@ -1430,28 +1440,30 @@ def structural_value_cmd(
         g = load_genuine_datasets()
         built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
         ctx = context_from_datasets(g["uyap"], g["kap"])
-        res = admissible_set(built["moments"], ctx, n_candidates=2500)
-        pred = PartiallyIdentifiedPredictor(res.admissible_params, res.best_params).predict(
+        res = admissible_near_fit_set(built["moments"], ctx, n_candidates=2500)
+        pred = IdentificationAwarePredictor(res.admissible_params, res.best_params).predict(
             asking, fv, tightness=tightness
         )
         typer.secho(
-            "KİMLİKLENDİRME-FARKINDA YAPISAL ÇIKARIM (PARTIALLY_IDENTIFIED)",
+            "KİMLİKLENDİRME-FARKINDA YAPISAL DUYARLILIK (STRUCTURALLY_UNDERIDENTIFIED)",
             fg=typer.colors.CYAN, bold=True,
         )
         typer.echo(f"  İlan: {asking:,.0f} TL · Fair value (TCMB çağdaş çıpa): {fv:,.0f} TL")
-        typer.echo(f"  Kabul edilebilir parametre kümesi |Θ_I|: {pred['parameter_set_size']}")
+        typer.echo(f"  Kabul edilebilir yakın-uyum kümesi |Θ_A|: {pred['parameter_set_size']}")
+        _emit_input_conflict(pred["input_conflict"])
         ce = pred["central_structural_estimate"]
         if ce is None:
-            typer.secho("  Bu senaryoda ticaret olasılığı ~0 (Θ_I çoğunda no-trade).", fg=typer.colors.YELLOW)
+            typer.secho("  Bu senaryoda ticaret olasılığı ~0 (Θ_A çoğunda no-trade).", fg=typer.colors.YELLOW)
         else:
-            wlo, whi = pred["within_model_interval"]
-            blo, bhi = pred["between_theta_median_band"]
-            ilo, ihi = pred["identification_aware_lower"], pred["identification_aware_upper"]
+            wlo, whi = pred["within_theta_negotiation_interval"]
+            blo, bhi = pred["between_theta_near_fit_band"]
+            slo, shi = pred["structural_sensitivity_range"]
             typer.echo(f"  Merkezi yapısal tahmin: {ce:,.0f} TL")
             typer.echo(f"  within-θ (pazarlık belirsizliği) %80: {wlo:,.0f} – {whi:,.0f} TL")
-            typer.echo(f"  between-θ (kimliklendirme belirsizliği) medyan bandı: {blo:,.0f} – {bhi:,.0f} TL")
+            typer.echo(f"  between-θ (yakın-uyum parametre belirsizliği) bandı: {blo:,.0f} – {bhi:,.0f} TL")
             typer.secho(
-                f"  KİMLİKLENDİRME-FARKINDA ARALIK (iki belirsizlik birlikte): {ilo:,.0f} – {ihi:,.0f} TL",
+                f"  YAPISAL DUYARLILIK ARALIĞI (iki belirsizlik birlikte; güven aralığı DEĞİL): "
+                f"{slo:,.0f} – {shi:,.0f} TL",
                 fg=typer.colors.GREEN,
             )
             tlo, thi = pred["trade_probability_band"]
@@ -1480,6 +1492,7 @@ def structural_value_cmd(
     band = out["mechanism_transfer_sensitivity"].get("median_band")
     if band and band[0] is not None:
         typer.echo(f"  Mekanizma-transfer duyarlılığı (medyan bandı): {band[0]:,.0f} – {band[1]:,.0f} TL")
+    _emit_input_conflict(out.get("input_conflict"))
     typer.secho(f"  {out['note']}", fg=typer.colors.YELLOW)
 
 
@@ -1587,7 +1600,7 @@ def structural_identify_cmd(
 
     Dataset sayıları + kullanılabilir/eksik momentler (+ neden) + moment provenance +
     Jacobian rank/SVD/koşul + zayıf yönler + eta/kayma profilleri + 3'lü durum. Optimizer
-    yakınsaması KİMLİKLENDİRME DEĞİLDİR. rank(J)<dim → NOT_IDENTIFIED; tam rank ama ağır
+    yakınsaması KİMLİKLENDİRME DEĞİLDİR. rank(J)<dim → STRUCTURALLY_UNDERIDENTIFIED; tam rank ama ağır
     kondisyon bozukluğu/düz profil → WEAKLY_IDENTIFIED; ikisi de değilse IDENTIFIED.
     """
     import json
@@ -1693,7 +1706,7 @@ def structural_identify_cmd(
     color = {
         "IDENTIFIED": typer.colors.GREEN,
         "WEAKLY_IDENTIFIED": typer.colors.YELLOW,
-        "NOT_IDENTIFIED": typer.colors.RED,
+        "STRUCTURALLY_UNDERIDENTIFIED": typer.colors.RED,
     }.get(rep["status"], typer.colors.RED)
     typer.secho(
         f"  DURUM: {rep['status']}  (rank {rep['rank']} / dim {rep['n_structural_parameters']}) "
@@ -1744,8 +1757,9 @@ def structural_identify_cmd(
         typer.secho(
             "  Not: rank < dim → optimizer sonucu tek NOKTA TAHMİNİ olarak SUNULMAZ. Ama artık "
             "rank(J)=dim ZORUNLU değil: KISMİ KİMLİKLENDİRME (partial identification) kapısı "
-            "devrede — 'sold structural partial' ile kabul edilebilir yapısal parametre kümesi "
-            "Θ_I ve 'sold structural value --partial' ile kimliklendirme-farkında aralık üretilir.",
+            "devrede — 'sold structural partial' ile kabul edilebilir YAKIN-UYUM kümesi "
+            "Θ_A ve 'sold structural value --partial' ile kimliklendirme-farkında duyarlılık "
+            "zarfı üretilir. DURUM: STRUCTURALLY_UNDERIDENTIFIED (identified set/güven bölgesi DEĞİL).",
             fg=typer.colors.YELLOW,
         )
 
@@ -1757,14 +1771,16 @@ def structural_partial_cmd(
     seed: int = typer.Option(12345, "--seed", help="Yeniden-üretilebilir örnekleme tohumu"),
     sensitivity: bool = typer.Option(True, "--sensitivity/--no-sensitivity", help="Tolerans duyarlılık taraması"),
 ) -> None:
-    """KISMİ KİMLİKLENDİRME: kabul edilebilir yapısal parametre kümesi Θ_I ve tanılamaları.
+    """KABUL EDİLEBİLİR YAKIN-UYUM KÜMESİ (Θ_A) ve tanılamaları — identified set / güven bölgesi DEĞİL.
 
-    Θ_I = {θ : Q(θ) ≤ Q_min + tol}. Tolerans AÇIK (tol=max(1e-4, rel·|Q_min|)) ve duyarlılık
+    Θ_A = {θ : Q(θ) ≤ Q_min + tol}. Tolerans AÇIK (tol=max(1e-4, rel·|Q_min|)) ve duyarlılık
     testli — gizlice dar aralık için seçilmez. Ortak rastgele sayılar; yeniden-üretilebilir
-    örnekleme. Hangi parametrelerin NOKTA yerine KÜME-kimliklendirildiği raporlanır.
+    örnekleme. Hangi parametrelerin yakın-uyum içinde GENİŞ (zayıf kısıtlı) yoksa DAR aralıklı
+    olduğu raporlanır. Bu bir biçimsel identified set / confidence region / kapsama iddiası DEĞİL.
     """
     from .structural import (
-        admissible_set,
+        FUTURE_METHODOLOGY_NOTE,
+        admissible_near_fit_set,
         build_observed_moments,
         context_from_datasets,
         load_genuine_datasets,
@@ -1774,14 +1790,14 @@ def structural_partial_cmd(
     g = load_genuine_datasets()
     built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
     ctx = context_from_datasets(g["uyap"], g["kap"])
-    res = admissible_set(built["moments"], ctx, n_candidates=candidates, seed=seed, rel=rel)
+    res = admissible_near_fit_set(built["moments"], ctx, n_candidates=candidates, seed=seed, rel=rel)
 
-    typer.secho("Kısmi kimliklendirme (partial identification) — Θ_I", fg=typer.colors.CYAN, bold=True)
+    typer.secho("Kabul edilebilir yakın-uyum kümesi (admissible near-fit set) — Θ_A", fg=typer.colors.CYAN, bold=True)
     typer.echo(f"  En iyi SMM hedefi (Q_min): {res.best_objective:.4e}")
-    typer.echo(f"  Tolerans: {res.tolerance:.4e}  ({res.tolerance_rule})")
-    typer.echo(f"  Aday: {res.n_candidates} · kabul edilebilir |Θ_I|: {res.n_admissible}")
-    typer.echo(f"  KÜME-kimliklendirilmiş (set-identified): {res.set_identified() or '—'}")
-    typer.echo(f"  Nokta-benzeri (point-like): {res.point_like() or '—'}")
+    typer.echo(f"  Tolerans (SAYISAL/duyarlılık kuralı; kapsama DEĞİL): {res.tolerance:.4e}  ({res.tolerance_rule})")
+    typer.echo(f"  Aday: {res.n_candidates} · kabul edilebilir |Θ_A|: {res.n_admissible}")
+    typer.echo(f"  Yakın-uyum GENİŞ aralıklı (zayıf kısıtlı): {res.wide_parameters() or '—'}")
+    typer.echo(f"  Yakın-uyum DAR aralıklı (sıkı kısıtlı): {res.tight_parameters() or '—'}")
     for p, r in res.param_ranges.items():
         typer.echo(
             f"    {p}: [{r['min']:.3f}, {r['max']:.3f}] "
@@ -1796,14 +1812,16 @@ def structural_partial_cmd(
                                          n_candidates=max(candidates // 2, 800), seed=seed):
             typer.echo(
                 f"    rel={row['rel']:.2f} → tol={row['tolerance']:.3e} · "
-                f"|Θ_I|={row['n_admissible']} · set-id={row['set_identified'] or '—'}"
+                f"|Θ_A|={row['n_admissible']} · geniş-aralık={row['wide_parameters'] or '—'}"
             )
     typer.secho(
-        "  DURUM: PARTIALLY_IDENTIFIED — rank(J)<dim; θ nokta olarak tanımlanmaz. Bu kabul "
-        "edilebilir küme dürüst yapısal belirsizliği taşır (θ rank için KÜÇÜLTÜLMEDİ).",
+        "  DURUM: STRUCTURALLY_UNDERIDENTIFIED (rank(J)=4 < dim=6) — θ nokta olarak tanımlanmaz. "
+        "Θ_A bir identified set / güven bölgesi DEĞİL; dürüst yakın-uyum duyarlılığı taşır "
+        "(θ rank için KÜÇÜLTÜLMEDİ).",
         fg=typer.colors.YELLOW,
         bold=True,
     )
+    typer.secho(f"  Gelecek-metodoloji notu: {FUTURE_METHODOLOGY_NOTE}", fg=typer.colors.CYAN)
 
 
 @app.command("serve")

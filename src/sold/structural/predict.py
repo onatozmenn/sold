@@ -29,12 +29,61 @@ DISCLAIMER_IDENTIFIED = (
     "ÇIKARIMSAL yapısal closing-fiyat DAĞILIMI — gözlenen closing fiyatı veya ölçülen "
     "sıradan-yeniden-satış doğruluğu DEĞİL. Sonuç mekanizma-transfer varsayımlarına duyarlıdır."
 )
-DISCLAIMER_PARTIAL = (
-    "KISMİ-KİMLİKLENDİRİLMİŞ (PARTIALLY_IDENTIFIED) yapısal closing DAĞILIMI. Aralık İKİ "
-    "belirsizlik kaynağını birlikte yansıtır: (1) örtük pazarlık (within-θ negotiation) ve "
-    "(2) EKSİK kimliklendirmeden gelen yapısal parametre belirsizliği (between-θ). Bu bir "
-    "gözlenen closing fiyatı ya da ölçülen sıradan-yeniden-satış doğruluğu DEĞİLDİR."
+DISCLAIMER_SENSITIVITY = (
+    "KİMLİKLENDİRME-FARKINDA YAPISAL DUYARLILIK ZARFI (near-fit structural parameter "
+    "uncertainty envelope). Yapısal duyarlılık aralığı İKİ belirsizlik kaynağını birlikte "
+    "yansıtır: (1) örtük pazarlık (within-θ negotiation) ve (2) yakın-uyum parametre "
+    "belirsizliği (between-θ near-fit). Bu bir gözlenen closing fiyatı, ölçülen sıradan-"
+    "yeniden-satış doğruluğu, GÜVEN ARALIĞI ya da frekansçı KAPSAMA iddiası DEĞİLDİR "
+    "(admissible_near_fit_set bir identified set / confidence region DEĞİLdir)."
 )
+
+# Girdi-çelişki tanılaması: asking ile TCMB-çıpalı fair value CİDDİ biçimde uyuşmuyorsa
+# AÇIK uyarı verilir (tahmin REDDEDİLMEZ/KIRPILMAZ). Sınırlar belgeli ve yapılandırılabilir.
+INPUT_CONFLICT_LOW = 0.5
+INPUT_CONFLICT_HIGH = 2.0
+
+# Olası ekonomik açıklamalar — YALNIZCA tanı ADAYI kategorileri (kanıtsız ATANMAZ).
+CONFLICT_EXPLANATION_CATEGORIES = (
+    "possible_input_error",
+    "geographic_anchor_mismatch",
+    "property_characteristic_mismatch",
+    "distressed_or_nonstandard_sale",
+    "fractional_or_encumbered_interest",
+    "strategic_underpricing",
+)
+
+
+def input_conflict_diagnostic(
+    asking_price: float,
+    fair_value: float,
+    low: float = INPUT_CONFLICT_LOW,
+    high: float = INPUT_CONFLICT_HIGH,
+) -> dict:
+    """asking ile fair value arasındaki CİDDİ uyuşmazlık için AÇIK uyarı (REDDETMEZ/KIRPMAZ).
+
+    ``ask_to_fair_value_ratio = asking_price / fair_value`` belgeli sınırların DIŞINDAysa
+    ``input_conflict=True`` verilir ve yapısal çıkarımın bu senaryoda YÜKSEK DUYARLILIK
+    gösterebileceği açıklanır (asking sinyali ekspertiz-çıpalı fair value ile GÜÇLÜ ÇELİŞİR).
+    Olası açıklamalar YALNIZCA tanı ADAYI kategorileridir; kanıt olmadan hiçbiri ATANMAZ.
+    """
+    ratio = float(asking_price / fair_value) if fair_value else float("inf")
+    conflict = not (low <= ratio <= high)
+    msg = None
+    if conflict:
+        msg = (
+            f"asking/fair_value = {ratio:.2f}, belgeli [{low:g}, {high:g}] aralığının DIŞINDA. "
+            "Yapısal çıkarım YÜKSEK DUYARLI olabilir: gözlenen asking sinyali ekspertiz-çıpalı "
+            "fair value ile GÜÇLÜ ÇELİŞİYOR. Tahmin reddedilmedi/kırpılmadı."
+        )
+    return {
+        "ask_to_fair_value_ratio": ratio,
+        "input_conflict": bool(conflict),
+        "bounds": (float(low), float(high)),
+        "message": msg,
+        "candidate_explanations": list(CONFLICT_EXPLANATION_CATEGORIES) if conflict else [],
+        "note": "Kategoriler yalnızca TANI ADAYIDIR; kanıt olmadan hiçbiri ATANMAZ (çıkarılan gerçek DEĞİL).",
+    }
 
 
 class StructuralClosingPredictor:
@@ -72,6 +121,7 @@ class StructuralClosingPredictor:
         )
         mode = "identified" if self.identified else "sensitivity_mode"
         note = DISCLAIMER_IDENTIFIED if self.identified else DISCLAIMER_PROTOTYPE
+        conflict = input_conflict_diagnostic(asking_price, fair_value)
         if traded_prices.size == 0:
             return {
                 "inferred_closing_median": None,
@@ -81,6 +131,7 @@ class StructuralClosingPredictor:
                 "asking_price": float(asking_price),
                 "fair_value": float(fair_value),
                 "mechanism_transfer_sensitivity": {},
+                "input_conflict": conflict,
                 "identified": self.identified,
                 "mode": mode,
                 "note": note + " (bu senaryoda ticaret olasılığı ~0).",
@@ -98,6 +149,7 @@ class StructuralClosingPredictor:
             "mechanism_transfer_sensitivity": self._sensitivity(
                 asking_price, fair_value, tightness, n, seed, median
             ),
+            "input_conflict": conflict,
             "identified": self.identified,
             "mode": mode,
             "note": note,
@@ -135,17 +187,18 @@ class StructuralClosingPredictor:
         }
 
 
-class PartiallyIdentifiedPredictor:
-    """Kabul edilebilir yapısal parametre KÜMESİ (Θ_I) üzerinde kimliklendirme-farkında tahmin.
+class IdentificationAwarePredictor:
+    """Kabul edilebilir YAKIN-UYUM kümesi (Θ_A) üzerinde kimliklendirme-farkında DUYARLILIK.
 
-    Tek bir keyfi provizyonel θ'dan nihai aralık ÜRETİLMEZ. Her ``θ ∈ Θ_I`` için yapısal
+    Tek bir keyfi provizyonel θ'dan nihai aralık ÜRETİLMEZ. Her ``θ ∈ Θ_A`` için yapısal
     pazarlık simülasyonu (``trade iff B≥S``, ``P=η·B+(1−η)·S``) çalıştırılır ve KOŞULLU-
     TİCARET closing dağılımı toplanır. İKİ belirsizlik AYRILIR:
 
     - within-θ pazarlık belirsizliği: sabit θ'da örtük B,S çekimlerinin fiyat yayılımı,
-    - between-θ kimliklendirme belirsizliği: θ ∈ Θ_I arasında merkezi eğilimin yayılımı.
+    - between-θ yakın-uyum parametre belirsizliği: θ ∈ Θ_A arasında merkezi eğilimin yayılımı.
 
-    ORTAK rastgele sayılar: her θ AYNI tohumla değerlendirilir → medyan farkları θ'dan gelir.
+    Birleşik aralık bir ``structural sensitivity range``dır — GÜVEN ARALIĞI / kapsama iddiası
+    DEĞİL. ORTAK rastgele sayılar: her θ AYNI tohumla değerlendirilir → medyan farkları θ'dan.
     """
 
     def __init__(self, admissible_params, best_params=None) -> None:
@@ -182,39 +235,47 @@ class PartiallyIdentifiedPredictor:
                 lo, hi = np.percentile(prices, [10, 90])
                 per_theta_p10.append(float(lo))
                 per_theta_p90.append(float(hi))
-        # within-model (negotiation) aralığı: EN İYİ uyum θ'sının fiyat dağılımı
+        # within-θ (negotiation) aralığı: EN İYİ uyum θ'sının fiyat dağılımı
         best_prices, best_tp = self._draw(
             self.best, asking_price, fair_value, tightness, n, np.random.default_rng(seed)
         )
-        if best_prices.size == 0 or not per_theta_median:
-            return {
-                "identification_status": "PARTIALLY_IDENTIFIED",
-                "parameter_set_size": len(thetas),
-                "central_structural_estimate": None,
-                "within_model_interval": (None, None),
-                "identification_aware_lower": None,
-                "identification_aware_upper": None,
-                "between_theta_median_band": (None, None),
-                "trade_probability_band": (None, None),
-                "note": DISCLAIMER_PARTIAL + " (bu senaryoda ticaret olasılığı ~0).",
-            }
-        w_lo, w_hi = np.percentile(best_prices, [10, 90])
-        central = float(np.median(per_theta_median))  # Θ_I medyanlarının merkezi
-        return {
-            "identification_status": "PARTIALLY_IDENTIFIED",
+        conflict = input_conflict_diagnostic(asking_price, fair_value)
+        base = {
+            # STATÜ: biçimsel identified set/confidence DEĞİL — yapısal ALTKİMLİKLENDİRME.
+            "identification_status": "STRUCTURALLY_UNDERIDENTIFIED",
+            "coverage_claim": None,  # frekansçı KAPSAMA iddiası YOK
             "parameter_set_size": len(thetas),
             "asking_price": float(asking_price),
             "fair_value": float(fair_value),
-            # merkezi yapısal tahmin (en iyi uyum θ medyanı + Θ_I medyanlarının merkezi)
-            "central_structural_estimate": round(float(np.median(best_prices)), 0),
-            "central_across_theta": round(central, 0),
-            # within-model (yalnızca pazarlık belirsizliği; en iyi θ)
-            "within_model_interval": (round(float(w_lo), 0), round(float(w_hi), 0)),
-            # between-θ (yalnızca kimliklendirme belirsizliği; θ-medyanları bandı)
-            "between_theta_median_band": (round(min(per_theta_median), 0), round(max(per_theta_median), 0)),
-            # kimliklendirme-farkında zarf (İKİ belirsizlik birlikte)
-            "identification_aware_lower": round(min(per_theta_p10), 0),
-            "identification_aware_upper": round(max(per_theta_p90), 0),
-            "trade_probability_band": (round(min(per_theta_trade), 4), round(max(per_theta_trade), 4)),
-            "note": DISCLAIMER_PARTIAL,
+            "input_conflict": conflict,
         }
+        if best_prices.size == 0 or not per_theta_median:
+            base.update({
+                "central_structural_estimate": None,
+                "within_theta_negotiation_interval": (None, None),
+                "between_theta_near_fit_band": (None, None),
+                "sensitivity_envelope_lower": None,
+                "sensitivity_envelope_upper": None,
+                "structural_sensitivity_range": (None, None),
+                "trade_probability_band": (None, None),
+                "note": DISCLAIMER_SENSITIVITY + " (bu senaryoda ticaret olasılığı ~0).",
+            })
+            return base
+        w_lo, w_hi = np.percentile(best_prices, [10, 90])
+        env_lo, env_hi = round(min(per_theta_p10), 0), round(max(per_theta_p90), 0)
+        base.update({
+            # merkezi yapısal tahmin (en iyi uyum θ medyanı)
+            "central_structural_estimate": round(float(np.median(best_prices)), 0),
+            "central_across_theta": round(float(np.median(per_theta_median)), 0),
+            # within-θ (YALNIZCA pazarlık belirsizliği; en iyi θ)
+            "within_theta_negotiation_interval": (round(float(w_lo), 0), round(float(w_hi), 0)),
+            # between-θ (YALNIZCA yakın-uyum parametre belirsizliği; θ-medyanları bandı)
+            "between_theta_near_fit_band": (round(min(per_theta_median), 0), round(max(per_theta_median), 0)),
+            # yapısal duyarlılık zarfı (İKİ belirsizlik birlikte) = structural sensitivity range
+            "sensitivity_envelope_lower": env_lo,
+            "sensitivity_envelope_upper": env_hi,
+            "structural_sensitivity_range": (env_lo, env_hi),
+            "trade_probability_band": (round(min(per_theta_trade), 4), round(max(per_theta_trade), 4)),
+            "note": DISCLAIMER_SENSITIVITY,
+        })
+        return base

@@ -1,19 +1,24 @@
-"""Kısmi kimliklendirme (partial identification) — nokta-kimliklendirme ZORLANMAZ.
+"""Kabul edilebilir YAKIN-UYUM kümesi (admissible near-fit set, Θ_A) — bir tanım kümesi
+YA DA güven bölgesi DEĞİL.
 
-Gerçek kamu momentleri altı yapısal parametreyi NOKTA olarak tanımlamıyorsa,
-``rank(J)=dim(θ)`` TÜM projeyi bloklayan bir şart OLARAK alınmaz. Nokta-kimliklendirme
-tanılamaları KORUNUR (bkz. ``identify.py``), ama nihai çıkarım kapısı KABUL EDİLEBİLİR
-yapısal parametre KÜMESİNE geçer:
+Bu nesne, SMM ölçütü en iyi gözlenen-moment uyumunun BELGELİ yakın-uyum toleransı içinde
+kalan, ekonomik olarak KABUL EDİLEBİLİR yapısal parametre vektörlerinin kümesidir:
 
-    Θ_I = { θ ∈ Θ : Q(θ) ≤ Q_min + tolerans }
+    Θ_A = { θ ∈ Θ : Q(θ) ≤ Q_min + tolerans }
+
+ÖNEMLİ (terminoloji): Θ_A biçimsel olarak TAHMİN EDİLMİŞ bir ekonometrik ``identified
+set`` DEĞİLdİr ve kimliklendirilmiş küme için bir ``confidence region`` / ``%95 aralık`` /
+herhangi bir örnekleme-kapsama (coverage) iddiası DEĞİLdİr. Tolerans, örnekleme
+belirsizliğine ya da nominal güven kapsamına kalibre EDİLMEMİŞ; belgeli bir SAYISAL/
+DUYARLILIK kuralıdır.
 
 ``Q``, SMM hedefidir; adaylar arası ORTAK RASTGELE SAYILARLA (sabit ``sim_seed``)
 değerlendirilir; böylece Q(θ) farkları simülasyon gürültüsünden değil θ'dan gelir.
-Tolerans AÇIKÇA belgelenir (``identification_tolerance``) ve DUYARLILIK testinden
-geçirilir (``tolerance_sensitivity``) — gizlice dar bir tahmin aralığı elde etmek için
-seçilmez. Ekonomik olarak geçerli parametre SINIRLARI (``PARAM_BOUNDS``) ve tüm yapısal
-kısıtlar korunur. Kabul edilebilir bölge YENİDEN-ÜRETİLEBİLİR biçimde örneklenir
-(``seed``). Hangi parametrelerin nokta yerine KÜME-kimliklendirildiği raporlanır.
+Tolerans AÇIKÇA belgelenir (``identification_tolerance``) ve DUYARLILIK taramasından
+geçirilir (``tolerance_sensitivity``) — gizlice dar bir zarf elde etmek için seçilmez.
+Ekonomik olarak geçerli parametre SINIRLARI (``PARAM_BOUNDS``) ve tüm yapısal kısıtlar
+korunur. Bölge YENİDEN-ÜRETİLEBİLİR biçimde örneklenir (``seed``). Hangi parametrelerin
+yakın-uyum toleransı içinde GENİŞ (zayıf kısıtlı) yoksa DAR aralıklı olduğu raporlanır.
 """
 
 from __future__ import annotations
@@ -24,6 +29,14 @@ import numpy as np
 
 from .moments import MomentContext, align, simulated_moments
 from .params import DEFAULT_FREE, StructuralParams
+
+# Gelecek-metodoloji notu (bu iterasyonda biçimsel prosedür EKLENMEZ):
+FUTURE_METHODOLOGY_NOTE = (
+    "A formally calibrated confidence region for a partially identified parameter set "
+    "would require an inference procedure whose criterion cutoff accounts for sampling "
+    "uncertainty; the current near-fit tolerance is a computational sensitivity rule, "
+    "not such a cutoff."
+)
 
 # Ekonomik olarak geçerli parametre SINIRLARI (belgeli; log-primitifler makul aralıkta).
 # Doğal parametre uzayında; tüm yapısal kısıtları korur (sigma>0, eta∈(0,1) vb.).
@@ -40,10 +53,11 @@ PARAM_BOUNDS: dict[str, tuple[float, float]] = {
     "asking_signal": (0.0, 1.0),
 }
 
-# AÇIK tolerans kuralı bileşenleri (gizli seçim YOK; duyarlılık testli).
+# AÇIK tolerans kuralı bileşenleri (gizli seçim YOK; duyarlılık testli). Bu bir SAYISAL/
+# DUYARLILIK kuralıdır; örnekleme-kapsama (coverage) eşiği DEĞİLdİr.
 TOLERANCE_ABS = 1e-4   # mutlak taban (Q_min≈0 iken dejenere kümeyi önler)
 TOLERANCE_REL = 0.25   # Q_min'e göreli pay (%25)
-POINT_ID_FRACTION = 0.15  # aralık/bound-genişliği < bu ise "nokta-benzeri" (aksi "küme")
+WIDE_RANGE_FRACTION = 0.15  # aralık/bound-genişliği ≥ bu ise "near_fit_wide" (aksi "near_fit_tight")
 
 
 def objective_value(params: StructuralParams, m_obs: dict, ctx: MomentContext, seed: int) -> float:
@@ -80,27 +94,29 @@ def _local_candidates(free_names, bounds, anchors, n, rng, scale_frac) -> np.nda
 
 
 @dataclass
-class PartialIdentificationResult:
+class AdmissibleNearFitResult:
     free_names: tuple
     best_objective: float
     tolerance: float
     tolerance_rule: str
     n_candidates: int
     n_admissible: int
-    admissible_params: list          # list[StructuralParams]
+    admissible_params: list          # list[StructuralParams] (Θ_A üyeleri)
     best_params: StructuralParams
     param_ranges: dict               # param -> {min,max,width,bound_width,range_fraction,classification}
     correlations: dict               # "pi|pj" -> corr
     bounds: dict
 
-    def set_identified(self) -> list[str]:
-        return [p for p, r in self.param_ranges.items() if r["classification"] == "set_identified"]
+    def wide_parameters(self) -> list[str]:
+        """Yakın-uyum toleransı içinde GENİŞ aralıklı (zayıf kısıtlı) parametreler."""
+        return [p for p, r in self.param_ranges.items() if r["classification"] == "near_fit_wide"]
 
-    def point_like(self) -> list[str]:
-        return [p for p, r in self.param_ranges.items() if r["classification"] == "point_like"]
+    def tight_parameters(self) -> list[str]:
+        """Yakın-uyum toleransı içinde DAR aralıklı (sıkı kısıtlı) parametreler."""
+        return [p for p, r in self.param_ranges.items() if r["classification"] == "near_fit_tight"]
 
 
-def admissible_set(
+def admissible_near_fit_set(
     m_obs: dict,
     ctx: MomentContext,
     free_names: tuple[str, ...] = DEFAULT_FREE,
@@ -111,14 +127,16 @@ def admissible_set(
     start: StructuralParams | None = None,
     rel: float = TOLERANCE_REL,
     absolute: float = TOLERANCE_ABS,
-    point_id_fraction: float = POINT_ID_FRACTION,
-) -> PartialIdentificationResult:
-    """Θ_I = {θ : Q(θ) ≤ Q_min + tol} kabul edilebilir kümesini YENİDEN-ÜRETİLEBİLİR kurar.
+    wide_range_fraction: float = WIDE_RANGE_FRACTION,
+) -> AdmissibleNearFitResult:
+    """Θ_A = {θ : Q(θ) ≤ Q_min + tol} kabul edilebilir YAKIN-UYUM kümesini kurar.
 
-    Doğal parametre uzayında ``bounds`` içinden ``seed`` ile örnekler; her adayı ORTAK
-    rastgele sayılarla (``sim_seed``) değerlendirir; ``identification_tolerance`` ile
-    kabul eder. Parametre aralıklarını, korelasyon/ödünleşim tanılarını ve her
-    parametrenin nokta-benzeri mi yoksa KÜME-kimliklendirilmiş mi olduğunu raporlar.
+    Bu bir biçimsel ``identified set`` / ``confidence region`` DEĞİLdİr (bkz. modül
+    başlığı). Doğal parametre uzayında ``bounds`` içinden ``seed`` ile YENİDEN-ÜRETİLEBİLİR
+    örnekler; her adayı ORTAK rastgele sayılarla (``sim_seed``) değerlendirir;
+    ``identification_tolerance`` (SAYISAL/DUYARLILIK kuralı) ile kabul eder. Parametre
+    aralıklarını, korelasyon/ödünleşim tanılarını ve her parametrenin yakın-uyum içinde
+    GENİŞ (zayıf kısıtlı) mi yoksa DAR aralıklı mı olduğunu raporlar.
     """
     bounds = bounds or PARAM_BOUNDS
     base = start or StructuralParams()
@@ -171,7 +189,7 @@ def admissible_set(
             "width": width,
             "bound_width": bound_width,
             "range_fraction": frac,
-            "classification": "point_like" if frac < point_id_fraction else "set_identified",
+            "classification": "near_fit_tight" if frac < wide_range_fraction else "near_fit_wide",
         }
 
     correlations: dict = {}
@@ -182,7 +200,7 @@ def admissible_set(
                 correlations[f"{free_names[a]}|{free_names[b]}"] = float(C[a, b])
 
     rule = f"tol = max({absolute:g}, {rel:g}·|Q_min|)"
-    return PartialIdentificationResult(
+    return AdmissibleNearFitResult(
         free_names=tuple(free_names),
         best_objective=q_min,
         tolerance=tol,
@@ -209,12 +227,12 @@ def tolerance_sensitivity(
     gizlice dar aralık için SEÇİLMEDİĞİ açıkça görülür."""
     rows: list[dict] = []
     for rel in rel_grid:
-        res = admissible_set(m_obs, ctx, free_names=free_names, rel=rel, **kwargs)
+        res = admissible_near_fit_set(m_obs, ctx, free_names=free_names, rel=rel, **kwargs)
         rows.append({
             "rel": float(rel),
             "tolerance": res.tolerance,
             "n_admissible": res.n_admissible,
             "eta_width": res.param_ranges.get("eta", {}).get("width"),
-            "set_identified": res.set_identified(),
+            "wide_parameters": res.wide_parameters(),
         })
     return rows

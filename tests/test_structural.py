@@ -15,13 +15,14 @@ import pandas as pd
 import pytest
 
 from sold.structural import (
+    CONFLICT_EXPLANATION_CATEGORIES,
     DEFAULT_FREE,
     HedonicPremium,
+    IdentificationAwarePredictor,
     MomentContext,
-    PartiallyIdentifiedPredictor,
     StructuralClosingPredictor,
     StructuralParams,
-    admissible_set,
+    admissible_near_fit_set,
     auction_moments,
     build_observed_moments,
     classify_auction_outcome,
@@ -33,6 +34,7 @@ from sold.structural import (
     estimate_smm,
     identification_report,
     identification_tolerance,
+    input_conflict_diagnostic,
     kap_observed_moments,
     legal_floor,
     load_auctions,
@@ -398,7 +400,7 @@ def test_identification_not_identified_when_moments_lt_params():
     rep = identification_report(ctx, StructuralParams(), DEFAULT_FREE, m_obs=m_obs)
     assert rep["n_structural_parameters"] == len(DEFAULT_FREE)
     assert rep["n_observed_moments"] <= 2
-    assert rep["status"] == "NOT_IDENTIFIED"  # 2 moment < 6 param
+    assert rep["status"] == "STRUCTURALLY_UNDERIDENTIFIED"  # 2 moment < 6 param
     assert rep["prediction_mode"] == "sensitivity_mode"
     assert rep["rank"] < rep["n_structural_parameters"]
 
@@ -406,7 +408,7 @@ def test_identification_not_identified_when_moments_lt_params():
 def test_identification_empty_dataset_not_identified():
     ctx = context_from_datasets(None, None)
     rep = identification_report(ctx, StructuralParams(), DEFAULT_FREE, m_obs={})
-    assert rep["status"] == "NOT_IDENTIFIED"
+    assert rep["status"] == "STRUCTURALLY_UNDERIDENTIFIED"
     assert rep["n_observed_moments"] == 0
 
 
@@ -563,7 +565,7 @@ def test_identify_genuine_data_not_identified():
         provenance=built["provenance"], unavailable=built["unavailable"],
         ineligible=built["ineligible"],
     )
-    assert rep["status"] == "NOT_IDENTIFIED"
+    assert rep["status"] == "STRUCTURALLY_UNDERIDENTIFIED"
     assert rep["rank"] < rep["n_structural_parameters"]  # rank 4 < dim 6
     assert rep["n_observed_moments"] == 4  # uyap mean/sd + kap mean/sd (sale_prob KALDIRILDI)
     assert rep["prediction_mode"] == "sensitivity_mode"
@@ -731,7 +733,7 @@ def test_genuine_toki_moment_available_but_no_sim_counterpart():
     assert "toki_cohort_avg_price" in rep["observed_without_simulated_counterpart"]
     assert rep["source_jacobians"]["J_TOKI"]["rank"] == 0  # sim karşılığı yok (TOKİ hâlâ 0 katkı)
     assert rep["source_jacobians"]["J_combined"]["rank"] == 4  # UYAP+KAP sd'lerinden 4; TOKİ katkısı YOK
-    assert rep["status"] == "NOT_IDENTIFIED"
+    assert rep["status"] == "STRUCTURALLY_UNDERIDENTIFIED"
 
 
 # --- TOKİ external_cross_mechanism_benchmark reclassification ---------------- #
@@ -753,7 +755,7 @@ def test_toki_reclassified_as_external_benchmark_not_unavailable():
     # TOKİ momentleri "unavailable" DEĞİL (gözlenir + kullanılabilir, ama SMM DIŞI)
     un_moments = {u["moment"] for u in rep["unavailable_moments"]}
     assert not any(str(m).startswith("toki") for m in un_moments)
-    assert rep["status"] == "NOT_IDENTIFIED"  # SMM durumu değişmez
+    assert rep["status"] == "STRUCTURALLY_UNDERIDENTIFIED"  # SMM durumu değişmez
 
 
 # --- KAP 265789 -> 312317 ADMITTED (kaynak-denetimli genuine gözlem) --------- #
@@ -910,20 +912,20 @@ def test_genuine_uyap_records_completed_sale_class():
 
 
 # --- Kısmi kimliklendirme (partial identification) -------------------------- #
-def test_partial_identification_admissible_set():
+def test_admissible_near_fit_set():
     g = load_genuine_datasets()
     built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
     ctx = context_from_datasets(g["uyap"], g["kap"])
-    res = admissible_set(built["moments"], ctx, n_candidates=2000, seed=7, rel=0.5)
+    res = admissible_near_fit_set(built["moments"], ctx, n_candidates=2000, seed=7, rel=0.5)
     assert np.isfinite(res.best_objective) and res.n_admissible >= 2
-    # AÇIK tolerans kuralı (gizli seçim YOK): tol = max(1e-4, 0.5·|Q_min|)
+    # AÇIK tolerans kuralı (SAYISAL/duyarlılık; kapsama DEĞİL): tol = max(1e-4, 0.5·|Q_min|)
     assert res.tolerance == pytest.approx(identification_tolerance(res.best_objective, rel=0.5), rel=1e-9)
     assert "max(0.0001" in res.tolerance_rule
-    # rank(J)=4 < dim 6 → en az bazı parametreler KÜME-kimliklendirilmiş (nokta DEĞİL)
-    assert len(res.set_identified()) >= 1
+    # rank(J)=4 < dim 6 → en az bazı parametreler yakın-uyum içinde GENİŞ aralıklı (nokta DEĞİL)
+    assert len(res.wide_parameters()) >= 1
     assert set(res.param_ranges) == set(DEFAULT_FREE)
     # YENİDEN-ÜRETİLEBİLİR (aynı seed → aynı sonuç)
-    res2 = admissible_set(built["moments"], ctx, n_candidates=2000, seed=7, rel=0.5)
+    res2 = admissible_near_fit_set(built["moments"], ctx, n_candidates=2000, seed=7, rel=0.5)
     assert res2.n_admissible == res.n_admissible
     assert res2.best_objective == pytest.approx(res.best_objective)
     # θ rank için KÜÇÜLTÜLMEZ: tüm 6 serbest parametre korunur
@@ -946,15 +948,82 @@ def test_identification_aware_prediction_dual_uncertainty():
     g = load_genuine_datasets()
     built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
     ctx = context_from_datasets(g["uyap"], g["kap"])
-    res = admissible_set(built["moments"], ctx, n_candidates=1200, seed=7)
-    pred = PartiallyIdentifiedPredictor(res.admissible_params, res.best_params).predict(
+    res = admissible_near_fit_set(built["moments"], ctx, n_candidates=1200, seed=7)
+    pred = IdentificationAwarePredictor(res.admissible_params, res.best_params).predict(
         2_500_000, 5_000_000, n=6000, seed=0, max_thetas=120
     )
-    assert pred["identification_status"] == "PARTIALLY_IDENTIFIED"
+    assert pred["identification_status"] == "STRUCTURALLY_UNDERIDENTIFIED"
+    assert pred["coverage_claim"] is None  # frekansçı KAPSAMA iddiası YOK
     assert pred["parameter_set_size"] >= 1
-    # within-θ (pazarlık) ve between-θ (kimliklendirme) belirsizliği AYRI raporlanır
-    for key in ("within_model_interval", "between_theta_median_band",
-                "identification_aware_lower", "identification_aware_upper", "trade_probability_band"):
+    # within-θ (pazarlık) ve between-θ (yakın-uyum) belirsizliği AYRI raporlanır
+    for key in ("within_theta_negotiation_interval", "between_theta_near_fit_band",
+                "sensitivity_envelope_lower", "sensitivity_envelope_upper",
+                "structural_sensitivity_range", "trade_probability_band"):
         assert key in pred
-    # gözlenen fiyat / ölçülen sıradan-yeniden-satış doğruluğu İDDİA EDİLMEZ
+    # gözlenen fiyat / ölçülen doğruluk / güven aralığı İDDİA EDİLMEZ
     assert "DEĞİL" in pred["note"]
+
+
+# --- Girdi-çelişki tanılaması (asking ↔ TCMB-çıpalı fair value) ------------- #
+def test_input_conflict_asking_above_fair_value_allowed():
+    # (1) asking > fair value İZİN verilir (reddedilmez/kırpılmaz)
+    d = input_conflict_diagnostic(3_000_000, 2_500_000)  # oran 1.2, sınır içi
+    assert d["input_conflict"] is False and d["candidate_explanations"] == []
+    out = StructuralClosingPredictor(StructuralParams()).predict(3_000_000, 2_500_000, n=4000)
+    assert out["input_conflict"]["input_conflict"] is False
+
+
+def test_input_conflict_asking_below_fair_value_allowed():
+    # (2) asking < fair value İZİN verilir
+    d = input_conflict_diagnostic(2_000_000, 2_500_000)  # oran 0.8, sınır içi
+    assert d["input_conflict"] is False
+    out = StructuralClosingPredictor(StructuralParams()).predict(2_000_000, 2_500_000, n=4000)
+    assert out["input_conflict"]["input_conflict"] is False
+
+
+def test_extreme_ask_fair_conflict_warns_without_clamping():
+    # (3) aşırı uyuşmazlık UYARIR ama SESSİZCE KIRPMAZ; tahmin yine üretilir
+    out = StructuralClosingPredictor(StructuralParams()).predict(25_000_000, 2_500_000, n=6000)
+    ic = out["input_conflict"]
+    assert ic["input_conflict"] is True
+    assert ic["ask_to_fair_value_ratio"] == pytest.approx(10.0)
+    assert ic["message"]
+    # olası açıklamalar YALNIZCA tanı ADAYI kategorileri (kanıtsız ATANMAZ)
+    assert set(CONFLICT_EXPLANATION_CATEGORIES) == set(ic["candidate_explanations"])
+    assert "ATANMAZ" in ic["note"]
+    # KIRPILMADI: tahmin alanları yine mevcut (mekanik olarak reddedilmedi)
+    assert "inferred_closing_median" in out and out["mode"] == "sensitivity_mode"
+
+
+def test_identification_aware_output_separates_estimate_within_and_envelope():
+    # (4) çıktı merkezi tahmini, within-θ belirsizliğini ve yakın-uyum duyarlılık zarfını AYIRIR
+    g = load_genuine_datasets()
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    ctx = context_from_datasets(g["uyap"], g["kap"])
+    res = admissible_near_fit_set(built["moments"], ctx, n_candidates=1000, seed=7)
+    pred = IdentificationAwarePredictor(res.admissible_params, res.best_params).predict(
+        20_000_000, 2_500_000, n=5000, seed=0, max_thetas=80  # aşırı çelişki
+    )
+    assert "central_structural_estimate" in pred
+    assert "within_theta_negotiation_interval" in pred
+    assert "structural_sensitivity_range" in pred
+    # aşırı ask/fair çelişkisi uyarı verir ama tahmin üretimi durdurulmaz
+    assert pred["input_conflict"]["input_conflict"] is True
+
+
+def test_no_confidence_coverage_claim_emitted():
+    # (5) hiçbir frekansçı kapsama/güven iddiası verilmez
+    g = load_genuine_datasets()
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    ctx = context_from_datasets(g["uyap"], g["kap"])
+    res = admissible_near_fit_set(built["moments"], ctx, n_candidates=1000, seed=7)
+    pred = IdentificationAwarePredictor(res.admissible_params, res.best_params).predict(
+        2_500_000, 5_000_000, n=4000, seed=0, max_thetas=60
+    )
+    assert pred["coverage_claim"] is None
+    assert pred["identification_status"] == "STRUCTURALLY_UNDERIDENTIFIED"
+    # açık disclaimer: güven aralığı / kapsama iddiası DEĞİL (coverage terimleri NEGASYONDA)
+    note = pred["note"]
+    assert "DEĞİL" in note and "GÜVEN ARALIĞI" in note and "KAPSAMA" in note
+    # pozitif bir frekansçı kapsama iddiası (ör. "%95" / "95%") YOK
+    assert "%95" not in note and "95%" not in note

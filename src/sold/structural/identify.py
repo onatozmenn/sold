@@ -10,7 +10,7 @@ Bu modül θ etrafında sayısal moment Jacobian'ı hesaplar:
 MERKEZİ SONLU FARKLARLA ve ORTAK RASTGELE SAYILARLA (her simülasyon aynı tohum), böylece
 simülasyon gürültüsü türevi domine etmez. Raporlar: Jacobian rank, parametre boyutu,
 tekil değerler, koşul sayısı, zayıf-kimliklendirilmiş yönler. Eğer ``rank(J) < dim(θ)``
-ise durum ``NOT_IDENTIFIED`` döner ve tahmin arayüzü DUYARLILIK (sensitivity) moduna geçer.
+ise durum ``STRUCTURALLY_UNDERIDENTIFIED`` döner ve tahmin arayüzü DUYARLILIK (sensitivity) moduna geçer.
 
 Ayrıca en az ``eta`` ve mekanizma-kayma parametreleri için PROFİL tanılaması: parametre
 makul bir ızgarada gezdirilir (profil stratejisi: KALAN parametreler adayda SABİT tutulur);
@@ -216,7 +216,7 @@ def identification_report(
 ) -> dict:
     """Tam kimliklendirme raporu. 3'lü durum:
 
-    - ``rank(J) < dim(θ)`` → ``NOT_IDENTIFIED`` (sensitivity mode),
+    - ``rank(J) < dim(θ)`` → ``STRUCTURALLY_UNDERIDENTIFIED`` (sensitivity mode),
     - tam rank ama ağır kondisyon bozukluğu / düz profiller → ``WEAKLY_IDENTIFIED`` (sensitivity),
     - rank + tekil-değer yapısı + profiller destekliyorsa → ``IDENTIFIED``.
 
@@ -273,7 +273,7 @@ def identification_report(
     if n_moments == 0 or dim == 0:
         report.update(
             {
-                "status": "NOT_IDENTIFIED",
+                "status": "STRUCTURALLY_UNDERIDENTIFIED",
                 "rank": 0,
                 "singular_values": [],
                 "smallest_nonzero_singular_value": None,
@@ -325,7 +325,7 @@ def identification_report(
     )
 
     if rank < dim:
-        status, mode = "NOT_IDENTIFIED", "sensitivity_mode"
+        status, mode = "STRUCTURALLY_UNDERIDENTIFIED", "sensitivity_mode"
     elif cond > ILL_CONDITIONED or any_flat_profile:
         # Tam rank ama ağır kondisyon bozukluğu ya da düz profiller
         status, mode = "WEAKLY_IDENTIFIED", "sensitivity_mode"
