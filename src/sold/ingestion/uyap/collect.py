@@ -21,6 +21,7 @@ import hashlib
 import re
 import shutil
 from pathlib import Path
+from urllib.parse import urlparse
 
 from . import store
 from .models import (
@@ -259,20 +260,109 @@ def classify_view_access_pattern(container_kind: str, observed: dict) -> str:
 
 
 # --- Fix 3: sayfa-durumu farkında, HEDEF-KAYIT-kapsamlı belge girişi (iki gerçek yol) --- #
-def classify_page_state(html: str, url: str | None = None) -> str:
-    """UYAP sayfa durumunu sınıflandırır: search_listing / record_detail / udf_viewer / unknown.
+# --- Fix 4: SAĞLAM AKTİF-SAYFA durum sınıflandırması + yanlış-pozitif önleme (kanıt önceliği) --- #
+def _active_viewer_url(url: str | None) -> str | None:
+    """YALNIZCA AKTİF sayfa URL'sinin yol/sorgu bileşeninden görüntüleyici türünü çıkarır.
 
-    İçerik semantiği (yalnızca URL değil) kullanılır. Bilinen pilot değerleri GENEL varsayılan DEĞİL.
+    HTML içindeki gömülü/gezinti URL'leri DEĞİL — yalnızca canlı Playwright ``page.url``. Aktif yol
+    ``viewer.jsp`` (veya ``/viewer``) ise ve sorgu ``mimeType=Udf`` içeriyorsa ``udf_viewer``.
     """
-    u = _ascii_lower(url or "").replace(" ", "")
-    fold = _ascii_lower(html or "")
-    if "viewer.jsp" in u or "mimetype=udf" in u or "evrak goruntuleme" in fold:
+    try:
+        p = urlparse(url or "")
+    except Exception:
+        return None
+    path = _ascii_lower(p.path)
+    query = _ascii_lower(p.query).replace(" ", "")
+    is_viewer_path = path.endswith("viewer.jsp") or path.rstrip("/").endswith("/viewer")
+    if not is_viewer_path:
+        return None
+    if "mimetype=udf" in query:
         return "udf_viewer"
-    if "detayli inceleme" in fold or "ihaleye ait tekliflerim" in fold:
-        return "record_detail"
-    if re.search(r"\bincele\b", fold) and "evrak listesi" in fold:
-        return "search_listing"
-    return "unknown"
+    if "mimetype=pdf" in query:
+        return "pdf_viewer"
+    return "document_viewer"
+
+
+def _safe_url_kind(url: str | None) -> str:
+    """Gizlilik-güvenli KABA URL türü (sorgu/kişisel veri YOK) — tanı özetleri için."""
+    v = _active_viewer_url(url)
+    if v:
+        return v
+    try:
+        path = _ascii_lower(urlparse(url or "").path)
+    except Exception:
+        path = ""
+    if path.endswith("index.jsp"):
+        return "listing_or_search"
+    if "detay" in path:
+        return "detail"
+    if path.endswith(".jsp"):
+        return "uyap_jsp"
+    return "other" if path else "unknown"
+
+
+def _page_state_evidence(html: str, url: str | None) -> tuple[str, list[str]]:
+    """AKTİF sayfa durumunu deterministik KANIT ÖNCELİĞİYLE sınıflandırır (Fix 4).
+
+    Öncelik: (1) güçlü aktif-URL görüntüleyici kanıtı → udf_viewer; (2) güçlü görünür DETAY
+    semantiği → record_detail; (3) güçlü görünür LİSTELEME semantiği → search_listing; (4)
+    kalan detay semantiği → record_detail; (5) yalnızca listeleme/detay YOKKEN görüntüleyici
+    semantiği → udf_viewer; aksi halde unknown. HAM HTML içindeki zayıf ``viewer.jsp`` /
+    ``mimeType=Udf`` referansları AKTİF sayfa durumunu ASLA geçersiz kılmaz (kayda geçer, yok sayılır).
+    """
+    fold = _ascii_lower(html or "")
+    despaced = fold.replace(" ", "")
+    evidence: list[str] = []
+    weak_viewer_ref = ("viewer.jsp" in fold) or ("mimetype=udf" in despaced)
+    url_kind = _active_viewer_url(url)
+    # 1) GÜÇLÜ aktif-URL görüntüleyici kanıtı (yalnız aktif URL)
+    if url_kind == "udf_viewer":
+        evidence.append("active_url_udf_viewer")
+        return "udf_viewer", evidence
+    detail_unique = "ihaleye ait tekliflerim" in fold
+    detail_semantics = detail_unique or ("detayli inceleme" in fold)
+    listing_semantics = bool(re.search(r"\bincele\b", fold)) and ("evrak listesi" in fold)
+    # 2) DETAY önceliği yalnızca benzersiz teklif-sekmesi ifadesiyle
+    if detail_unique and not listing_semantics:
+        evidence.append("visible_detail_semantics")
+        if weak_viewer_ref:
+            evidence.append("weak_embedded_viewer_reference_ignored")
+        return "record_detail", evidence
+    # 3) GÜÇLÜ listeleme semantiği (zayıf görüntüleyici referansını geçersiz kılmaz)
+    if listing_semantics:
+        evidence.append("visible_listing_semantics")
+        if weak_viewer_ref:
+            evidence.append("weak_embedded_viewer_reference_ignored")
+        return "search_listing", evidence
+    # 4) kalan detay semantiği
+    if detail_semantics:
+        evidence.append("visible_detail_semantics")
+        if weak_viewer_ref:
+            evidence.append("weak_embedded_viewer_reference_ignored")
+        return "record_detail", evidence
+    # 5) görüntüleyici semantiği YALNIZCA listeleme/detay yokken
+    if "evrak goruntuleme" in fold:
+        evidence.append("visible_viewer_semantics")
+        return "udf_viewer", evidence
+    if url_kind in ("document_viewer", "pdf_viewer"):
+        evidence.append("active_url_viewer")
+        return "udf_viewer", evidence
+    return "unknown", evidence
+
+
+def classify_page_state(html: str, url: str | None = None) -> str:
+    """UYAP AKTİF sayfa durumu: search_listing / record_detail / udf_viewer / unknown.
+
+    Fix 4: AKTİF sayfa URL/state kanıtı önce; görünür sayfa semantiği sonra; HAM HTML'deki zayıf
+    görüntüleyici referansları AKTİF durumu geçersiz KILMAZ (üçüncü/dördüncü canlı hata önlenir).
+    """
+    return _page_state_evidence(html, url)[0]
+
+
+def page_state_evidence(html: str, url: str | None = None) -> dict:
+    """Sınıflandırma + gizlilik-güvenli kanıt etiketleri (tanı için; ham HTML DÖNDÜRMEZ)."""
+    state, evidence = _page_state_evidence(html, url)
+    return {"page_state": state, "evidence": evidence}
 
 
 def normalize_file_identity(file_id: str) -> str:
@@ -371,6 +461,47 @@ def card_document_list_control(card_html: str) -> dict:
     if "evrak listesi" in _ascii_lower(soup.get_text(" ", strip=True)):
         return {"found": False, "actionable": False, "kind": "non_actionable_text_only"}
     return {"found": False, "actionable": False, "kind": None}
+
+
+def select_target_page_index(candidates: list[dict], target_file_id: str | None = None) -> dict:
+    """Birden çok açık sekme arasından HEDEF sayfayı deterministik/güvenli seçer (Fix 4).
+
+    ``candidates``: her biri ``{"url":..., "html":...}``. Sıralama önceliği: desteklenen belge-giriş
+    durumu (search_listing/record_detail) + hedef-kimlik eşleşmesi > desteklenen durum > kimlik
+    eşleşmesi > search_listing > düşük indeks (operatör-aktif). Bir UDF görüntüleyici sekmesi
+    YALNIZCA UYAP olduğu için TERCİH EDİLMEZ. Gizlilik-güvenli özetler döner (ham URL/DOM YOK).
+    """
+    seen: list[dict] = []
+    for c in candidates:
+        url = c.get("url", "") or ""
+        html = c.get("html", "") or ""
+        state = classify_page_state(html, url)
+        seen.append({
+            "url_kind": _safe_url_kind(url),
+            "state": state,
+            "target_identity_match": bool(target_file_id and file_identity_matches(html, target_file_id)),
+        })
+
+    def _rank(i: int):
+        s = seen[i]
+        supported = s["state"] in ("search_listing", "record_detail")
+        return (
+            supported and s["target_identity_match"],
+            supported,
+            s["target_identity_match"],
+            s["state"] == "search_listing",
+            -i,
+        )
+
+    idx = max(range(len(seen)), key=_rank) if seen else -1
+    chosen = seen[idx] if idx >= 0 else {"url_kind": "unknown", "state": "unknown", "target_identity_match": False}
+    return {
+        "index": idx,
+        "page_candidates_seen": seen,
+        "selected_page_url_kind": chosen["url_kind"],
+        "selected_page_state": chosen["state"],
+        "selected_page_target_identity_match": chosen["target_identity_match"],
+    }
 
 
 def discover_document_links(html: str) -> list[dict]:
@@ -528,6 +659,7 @@ class BrowserCollector:
         """
         sync_playwright = self._sync_playwright()
         with sync_playwright() as pw:
+            page_selection: dict | None = None
             if self.cdp_endpoint:
                 browser = pw.chromium.connect_over_cdp(self.cdp_endpoint)
                 if not browser.contexts:
@@ -541,7 +673,9 @@ class BrowserCollector:
                         raise RuntimeError(
                             "no_matching_uyap_page: açık sekme yok. Önce 2026/263 UYAP sayfasını açın."
                         )
-                    page = context.pages[0]
+                    # Fix 4: birden çok sekme varsa bayat UDF görüntüleyici DEĞİL, desteklenen HEDEF
+                    # sayfa (search_listing/record_detail + kimlik) deterministik seçilir.
+                    page, page_selection = self._select_target_page(context, target_file_id)
             elif self.user_data_dir:
                 context = pw.chromium.launch_persistent_context(str(self.user_data_dir), headless=self.headless)
                 page = context.new_page()
@@ -553,11 +687,21 @@ class BrowserCollector:
             html = page.content()
             title = page.title()
             page_url = page.url
+            pse = page_state_evidence(html, page_url)
+            sel = page_selection or {}
             links = discover_document_links(html)
             documents: list[dict] = []
             access_patterns: list[dict] = []
             collection_diagnostics: dict = {
-                "page_state": classify_page_state(html, page_url),
+                "page_state": pse["page_state"],
+                "page_state_evidence": pse["evidence"],
+                "page_candidates_seen": sel.get("page_candidates_seen", []),
+                "selected_page_url_kind": sel.get("selected_page_url_kind", _safe_url_kind(page_url)),
+                "selected_page_state": sel.get("selected_page_state", pse["page_state"]),
+                "selected_page_target_identity_match": sel.get(
+                    "selected_page_target_identity_match",
+                    bool(target_file_id and file_identity_matches(html, target_file_id)),
+                ),
                 "document_entry_path": "unsupported",
                 "target_record_card_found": False,
                 "target_record_card_match_fields": [],
@@ -594,7 +738,8 @@ class BrowserCollector:
                 m_docs, m_patterns, m_diag = self._collect_documents(page, context, target_file_id, target_institution)
                 documents += m_docs
                 access_patterns += m_patterns
-                collection_diagnostics = m_diag
+                # Fix 4: sayfa-seçim/kanıt tanılarını KORU (belge-giriş tanılarıyla birleştir).
+                collection_diagnostics.update(m_diag)
             return {
                 "html": html,
                 "title": title,
@@ -604,6 +749,29 @@ class BrowserCollector:
                 "document_access_patterns": access_patterns,
                 "collection_diagnostics": collection_diagnostics,
             }
+
+    def _select_target_page(self, context, target_file_id=None):  # pragma: no cover - canlı çoklu-sekme
+        """Fix 4: açık sekmeler arasından desteklenen HEDEF sayfayı güvenle seçer.
+
+        Bayat bir UDF görüntüleyici / ilgisiz UYAP sekmesi YALNIZCA UYAP olduğu için seçilmez;
+        ``select_target_page_index`` desteklenen belge-giriş durumunu + hedef kimliğini önceler.
+        Seçim başarısızsa operatör-aktif ilk sekmeye düşer (dürüst tanı ile).
+        """
+        candidates: list[dict] = []
+        for p in context.pages:
+            try:
+                u = p.url or ""
+            except Exception:
+                u = ""
+            try:
+                h = p.content()
+            except Exception:
+                h = ""
+            candidates.append({"url": u, "html": h})
+        sel = select_target_page_index(candidates, target_file_id)
+        idx = sel.get("index", -1)
+        page = context.pages[idx] if 0 <= idx < len(context.pages) else context.pages[0]
+        return page, sel
 
     def _collect_documents(self, page, context, target_file_id=None, target_institution=None) -> tuple:  # pragma: no cover - canlı DOM/olay gerektirir
         """SAYFA-DURUMU FARKINDA, HEDEF-KAYIT-KAPSAMLI belge girişi (iki gerçek gözlenen yol).

@@ -31,8 +31,10 @@ from .collect import (
     has_document_list_control,
     import_artifact,
     normalize_file_identity,
+    page_state_evidence,
     panel_has_documents,
     select_row_document_actions,
+    select_target_page_index,
     viewer_mime_hint,
 )
 from .discovery import discover
@@ -109,6 +111,8 @@ __all__ = [
     "classify_viewer_representation",
     "classify_view_access_pattern",
     "classify_page_state",
+    "page_state_evidence",
+    "select_target_page_index",
     "normalize_file_identity",
     "file_identity_matches",
     "find_target_record_card",
