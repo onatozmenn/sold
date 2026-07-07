@@ -192,6 +192,8 @@ Each source has a distinct, non-pooled structural role:
 
 The **SMM moment vector uses exactly four moments** (two UYAP, two KAP). TOKİ and the consumer channel are deliberately **excluded** from identification.
 
+> **Evidence expansion batches.** Genuine audited records are admitted in explicit batches under a predeclared selection rule (e.g. *UYAP Evidence Expansion Batch 1* added five audited completed-sale auctions, bringing the genuine UYAP total to 7). Each admitted UYAP record uses the official **İhale Bedeli** over the audited appraisal `Q` — never a deposit-adjusted, ownership-share, creditor-setoff, or KDV-adjusted amount. Audited-but-non-terminal records are preserved as excluded candidates in [`validation/structural/uyap_candidates.json`](validation/structural/uyap_candidates.json) (mirroring the KAP-candidate manifest); they never enter the genuine set, the SMM moments, or any negative-class construction (`uyap_sale_prob` is never created). Current genuine counts are reported by `sold structural dataset` (separate from fixtures), not hardcoded here.
+
 ### Three levels of validation, kept distinct
 
 1. **Parser / adapter validation** — unit tests confirm each parser maps fields to the schema on **illustrative fixtures**. ✅ done.

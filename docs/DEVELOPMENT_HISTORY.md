@@ -124,3 +124,40 @@ milestones:
   `Q_ref` / `tol_ref`; a documented **multi-part** rule →
   `near_fit_search_stability = INSUFFICIENT_COVERAGE`, reported **separately** from
   `identification_status`.
+
+- **UYAP Evidence Expansion Batch 1 (genuine audited, +5 completed-sale auctions → 7)** —
+  admitted five manually-audited UYAP completed-sale auctions (Ankara; files `2026/43`,
+  `2026/89`, `2026/45` Satış and `2026/23`, `2026/263` Esas) as one batch under a
+  **predeclared first-five-admissible** selection rule (auditable appraisal + auditable
+  official İhale Bedeli + terminal completed-sale evidence; *not* selected on P/Q magnitude
+  or direction). For every record the moment numerator is the official **İhale Bedeli**
+  (never the *Ödenmesi Gereken Bedel* / deposit-adjusted / ownership-share / creditor-setoff
+  / KDV-adjusted amount) over the audited appraisal `Q`. One encountered non-terminal record
+  (`2026/316 Talimat`, *Birinci Alıcıya Süre Verildi*) was **excluded** to
+  [`validation/structural/uyap_candidates.json`](../validation/structural/uyap_candidates.json)
+  (`EXCLUDED_NON_TERMINAL`, mirroring the KAP-candidate manifest) — not admitted, not used
+  in `uyap_win_over_appraisal`, not turned into a negative sale-probability observation;
+  `uyap_sale_prob` is still not created. Frozen semantics preserved: still exactly four SMM
+  moments, `dim(θ) = 6`, TOKİ external (0 SMM moments). Measured recompute (BEFORE → AFTER):
+
+  | Diagnostic | Before (2) | After (7) |
+  |---|---|---|
+  | genuine UYAP completed-sale auctions | 2 | 7 |
+  | `uyap_win_over_appraisal_mean` | 0.756923 | 0.854758 |
+  | `uyap_win_over_appraisal_sd` (ddof=0) | 0.253077 | 0.163152 |
+  | `kap_log_ratio_mean` / `_sd` | 0.024084 / 0.033545 | unchanged |
+  | 4-moment SMM vector | 4 | 4 |
+  | Jacobian rank / dim | 4 / 6 | 4 / 6 |
+  | singular values | [1.760, 0.975, 0.214, 0.0285] | [1.723, 0.579, 0.207, 0.0410] |
+  | condition number | 61.774 | 42.06 |
+  | `identification_status` | STRUCTURALLY_UNDERIDENTIFIED | STRUCTURALLY_UNDERIDENTIFIED |
+  | `J_UYAP` / `J_KAP` / `J_TOKİ` / `J_combined` rank | 2 / 2 / 0 / 4 | 2 / 2 / 0 / 4 |
+  | Θ_A best objective / tolerance | 0.0763 / 0.0191 | ≈0.0 / 1e-4 |
+  | Θ_A admissible count | 15 | 7 |
+  | wide (weakly-constrained) params | mu_s, sigma_s, eta | mu_b, eta, auction_shift |
+  | `near_fit_search_stability` | INSUFFICIENT_COVERAGE | STABLE |
+
+  Rank stayed **4 / 6** (no forced identification; `θ` not shrunk, no moment added);
+  conditioning improved; the numerical near-fit search — a diagnostic **separate from and
+  not establishing** identification — re-measured to `STABLE` at the audited budgets on the
+  better-fitting 7-record evidence. Full suite: **217 passed** (215 baseline + 2 Batch-1 tests).
