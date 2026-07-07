@@ -18,5 +18,24 @@
     "source_audited": true,
     "_validation_ref": "validation/real_records/uyap.json",
     "_note": "GENUINE audited structural observation derived from validated Level-2 UYAP record 16766356960. appraised_value=Q (court muhammen bedel), NOT the reserve/floor. Area semantics: parcel 509 m2 and unit net 32.5 m2 are DISTINCT; unit gross is NOT reported -> null (509 not injected). priority_claims/realization_costs not reported -> legal_floor is partial (legal_floor_exact=false). offer/bidder counts not reported -> null (not fabricated)."
+  },
+  {
+    "public_record_id": "16662608597",
+    "auction_date": "2026-06-03",
+    "province": "Ankara",
+    "district": "Altındağ",
+    "property_type": "dükkan",
+    "appraised_value": 13000000.00,
+    "sold": true,
+    "winning_bid": 6550000.00,
+    "offer_count": null,
+    "bidder_count": null,
+    "priority_claims": null,
+    "realization_costs": null,
+    "parcel_area_m2": 1864.72,
+    "unit_net_m2": 325.00,
+    "unit_gross_m2": 350.00,
+    "source_audited": true,
+    "_note": "GENUINE audited structural observation from the public e-Satış record 16662608597 (Ankara/Altındağ dükkan). appraised_value=Q=13,000,000 TRY (Takdir Olunan Değer/Kıymeti — court-appraised value, NOT the structural reserve/floor). Official result: İhalenin Tamamlandığı Gün 03/06/2026 14:50, İhale Bedeli 6,550,000 TRY, Yayınlanma Sebebi 'En Yüksek Teklif Verene Malın İhale Edilmesi' -> sold=true, winning_bid=6,550,000. winning_bid/appraised_value=0.5038461538461538, log=-0.6854843078143762 (auction mechanism ratio, NOT an ordinary-resale asking-to-closing discount). Area semantics preserved and NOT interchanged: parcel_area_m2=1864.72 (cadastral parcel surface), unit_net_m2=325.00, unit_gross_m2=350.00 (independent commercial unit). priority_claims/realization_costs not sufficiently observed -> legal_floor partial (legal_floor_exact=false; 50% of Q is a lower bound, NOT an exact observed floor). offer/bidder counts not reported -> null (not fabricated). PRIVACY: no party/representative names, companies, counsel, payment/account or case-party data transcribed — only non-personal economic/property/public-record fields. domain=uyap, sale_mechanism=auction, reference_price_type=appraisal -> excluded from asking_to_closing_labels()."
   }
 ]

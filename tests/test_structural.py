@@ -448,15 +448,22 @@ def test_predictor_identified_mode_labeling():
 # --- GERÇEK denetlenmiş yapısal veri kümesi (Level-2 türevi) ---------------- #
 def test_genuine_datasets_load_and_reconcile_with_level2():
     g = load_genuine_datasets()
-    # UYAP: 1 denetlenmiş açık artırma; appraised_value = doğrulanmış Q (rezerv DEĞİL)
-    assert len(g["uyap"]) == 1
-    a = g["uyap"].iloc[0]
-    assert a["appraised_value"] == 4_500_000  # doğrulanmış reference_price (Q)
-    assert a["winning_bid"] == 4_545_000       # doğrulanmış realized_price
-    assert bool(a["sold"]) is True
-    assert a["parcel_area_m2"] == 509.0 and a["unit_net_m2"] == 32.5
-    assert pd.isna(a["unit_gross_m2"])         # gross null (509 ENJEKTE EDİLMEZ)
-    assert bool(a["legal_floor_exact"]) is False  # kısmî (claims/costs yok)
+    # UYAP: 2 denetlenmiş açık artırma (2 satılan); appraised_value = doğrulanmış Q (rezerv DEĞİL)
+    assert len(g["uyap"]) == 2
+    a = g["uyap"].set_index("public_record_id")
+    a0 = a.loc["16766356960"]
+    assert a0["appraised_value"] == 4_500_000  # doğrulanmış reference_price (Q)
+    assert a0["winning_bid"] == 4_545_000       # doğrulanmış realized_price
+    assert bool(a0["sold"]) is True
+    assert a0["parcel_area_m2"] == 509.0 and a0["unit_net_m2"] == 32.5
+    assert pd.isna(a0["unit_gross_m2"])         # gross null (509 ENJEKTE EDİLMEZ)
+    assert bool(a0["legal_floor_exact"]) is False  # kısmî (claims/costs yok)
+    # 2. genuine satılan açık artırma: Ankara/Altındağ dükkan (e-Satış 16662608597)
+    a1 = a.loc["16662608597"]
+    assert a1["appraised_value"] == 13_000_000 and a1["winning_bid"] == 6_550_000
+    assert bool(a1["sold"]) is True and bool(a1["legal_floor_exact"]) is False
+    # alan semantiği KORUNUR ve birbirinin yerine GEÇİRİLMEZ
+    assert a1["parcel_area_m2"] == 1864.72 and a1["unit_net_m2"] == 325.0 and a1["unit_gross_m2"] == 350.0
     # KAP: 2 müzakereli disposal (963554 prior_appraisal + admitte bağlı zincir 265789->312317 appraisal)
     assert len(g["kap"]) == 2
     k = g["kap"].set_index("official_record_id")
@@ -478,8 +485,8 @@ def test_genuine_datasets_load_and_reconcile_with_level2():
 def test_dataset_status_genuine_counts():
     st = dataset_status()
     g = st["genuine"]
-    assert g["uyap"]["total_audited_auctions"] == 1 and g["uyap"]["sold"] == 1 and g["uyap"]["unsold"] == 0
-    assert g["uyap"]["exact_legal_floors_observed"] == 0  # kısmî taban
+    assert g["uyap"]["total_audited_auctions"] == 2 and g["uyap"]["sold"] == 2 and g["uyap"]["unsold"] == 0
+    assert g["uyap"]["exact_legal_floors_observed"] == 0  # her iki taban kısmî
     assert g["kap"]["audited_eligible_disposals"] == 2
     assert g["kap"]["negotiated_calibration_observations"] == 2
     assert g["kap"]["prior_appraisal_observations"] == 1 and g["kap"]["appraisal_observations"] == 1
@@ -508,7 +515,9 @@ def test_build_observed_moments_reports_provenance_and_unavailable():
     assert "uyap_sale_prob" in m and "uyap_win_over_appraisal_mean" in m and "kap_log_ratio_mean" in m
     assert prov["kap_log_ratio_mean"] == "kap" and prov["uyap_sale_prob"] == "uyap"
     un_moments = {u["moment"] for u in un}
-    assert "uyap_win_over_appraisal_sd" in un_moments  # n=1 sold
+    # UYAP artık 2 satılan açık artırma → uyap_win_over_appraisal_sd AÇILDI
+    assert "uyap_win_over_appraisal_sd" in m and "uyap_win_over_appraisal_sd" not in un_moments
+    assert prov["uyap_win_over_appraisal_sd"] == "uyap"
     # KAP artık 2 müzakereli gözlem (963554 + admitte bağlı zincir) → kap_log_ratio_sd AÇILDI
     assert "kap_log_ratio_sd" in m and "kap_log_ratio_sd" not in un_moments
     assert prov["kap_log_ratio_sd"] == "kap"
@@ -543,10 +552,14 @@ def test_identify_genuine_data_not_identified():
         provenance=built["provenance"], unavailable=built["unavailable"],
     )
     assert rep["status"] == "NOT_IDENTIFIED"
-    assert rep["rank"] < rep["n_structural_parameters"]  # rank 3 < dim 6
-    assert rep["n_observed_moments"] == 4  # uyap sale_prob + win/appraisal mean + kap mean + kap sd
+    assert rep["rank"] < rep["n_structural_parameters"]  # rank 4 < dim 6
+    assert rep["n_observed_moments"] == 5  # uyap sale_prob/mean/sd + kap mean/sd
     assert rep["prediction_mode"] == "sensitivity_mode"
-    assert rep["moment_provenance"] and rep["unavailable_moments"]
+    assert rep["moment_provenance"]
+    # 2 UYAP + 2 KAP → modellenen tüm momentler artık GÖZLENİR; unavailable listesi BOŞ olabilir.
+    # Kalan açık (rank 4 < dim 6) eksik momentten DEĞİL, dejenere sale_prob (iki satış) + sınırlı
+    # varyasyondan; bu operatör-bloklu (satılmayan açık artırma) — uydurulmaz.
+    assert isinstance(rep["unavailable_moments"], list)
 
 
 def test_identify_single_param_can_be_identified():
@@ -587,8 +600,8 @@ def test_source_jacobian_ranks_on_genuine_data():
     )
     assert sj["J_TOKI"]["rank"] == 0 and sj["J_TOKI"]["n_moments"] == 0  # kohort external benchmark
     assert sj["J_KAP"]["rank"] == 2 and sj["J_KAP"]["n_moments"] == 2  # mean + sd (2 müzakereli gözlem)
-    assert sj["J_UYAP"]["rank"] == 1  # sale_prob=1.0 dejenere → 1 bağımsız yön
-    assert sj["J_combined"]["rank"] == 3  # birleşik = ölçülen rank (2→3, gerçek KAP admisyonu)
+    assert sj["J_UYAP"]["rank"] == 2 and sj["J_UYAP"]["n_moments"] == 3  # mean+sd bağımsız yön ekler (sale_prob=1.0 dejenere)
+    assert sj["J_combined"]["rank"] == 4  # birleşik = ölçülen rank (3→4, gerçek 2. UYAP satışı)
 
 
 # --- Snapshot karşılaştırması (identification-katkı) ------------------------ #
@@ -701,7 +714,7 @@ def test_genuine_toki_moment_available_but_no_sim_counterpart():
     )
     assert "toki_cohort_avg_price" in rep["observed_without_simulated_counterpart"]
     assert rep["source_jacobians"]["J_TOKI"]["rank"] == 0  # sim karşılığı yok (TOKİ hâlâ 0 katkı)
-    assert rep["source_jacobians"]["J_combined"]["rank"] == 3  # KAP sd'den 3; TOKİ katkısı YOK
+    assert rep["source_jacobians"]["J_combined"]["rank"] == 4  # UYAP+KAP sd'lerinden 4; TOKİ katkısı YOK
     assert rep["status"] == "NOT_IDENTIFIED"
 
 
@@ -780,3 +793,69 @@ def test_kap_candidate_recorded_as_admitted_not_pending():
     st = dataset_status()
     assert st["kap_pending_candidates"] == []  # bekleyen aday yok
     assert st["genuine"]["kap"]["audited_eligible_disposals"] == 2  # admitte edildi
+
+
+# --- UYAP 16662608597 ADMITTED (kaynak-denetimli 2. genuine SATILAN açık artırma) --- #
+def test_uyap_16662608597_admitted_genuine_audited():
+    """Ankara/Altındağ dükkan (e-Satış 16662608597) 2. genuine SATILAN açık artırma
+    olarak admitte edildi. 15 admisyon iddiası (direktif)."""
+    g = load_genuine_datasets()
+    a = g["uyap"].set_index("public_record_id")
+    assert "16662608597" in a.index  # admitte edildi (genuine sete girdi)
+    rec = a.loc["16662608597"]
+    # (1) public_record_id e-Satış kaydıdır (dosya/esas no DEĞİL)
+    assert "16662608597" in set(g["uyap"]["public_record_id"].astype(str))
+    # (2) appraised_value = Q (court muhammen bedel; rezerv/taban DEĞİL)
+    assert rec["appraised_value"] == 13_000_000.00
+    # (3) sold
+    assert bool(rec["sold"]) is True
+    # (4) winning_bid
+    assert rec["winning_bid"] == 6_550_000.00
+    # (5) auction_date
+    assert rec["auction_date"] == "2026-06-03"
+    # (6)(7)(8) yer / tür
+    assert rec["province"] == "Ankara" and rec["district"] == "Altındağ"
+    assert rec["property_type"] == "dükkan"
+    # (9)(10)(11) alan semantiği
+    assert rec["parcel_area_m2"] == 1864.72
+    assert rec["unit_net_m2"] == 325.00
+    assert rec["unit_gross_m2"] == 350.00
+    # (12) hiçbir alan diğerinin yerine GEÇİRİLMEZ (parsel ≠ net ≠ brüt)
+    assert rec["parcel_area_m2"] != rec["unit_net_m2"] != rec["unit_gross_m2"]
+    assert rec["parcel_area_m2"] != rec["unit_gross_m2"]
+    # (13) legal_floor_exact false (bileşenler yok; %50·Q TAM taban DEĞİL)
+    assert bool(rec["legal_floor_exact"]) is False
+    assert rec["priority_claims"] is None or pd.isna(rec["priority_claims"])
+    assert rec["realization_costs"] is None or pd.isna(rec["realization_costs"])
+    # (14) gözlenen kazanan/ekspertiz oranı
+    assert (rec["winning_bid"] / rec["appraised_value"]) == pytest.approx(0.5038461538461538, abs=1e-12)
+    # (15) asking_to_closing_labels()'tan DIŞLANIR (auction mekanizması, appraisal referansı)
+    from sold.labels.registry import asking_to_closing_labels
+    uyap_row = pd.DataFrame([{
+        "reference_price_type": "appraisal",
+        "sale_mechanism": "auction",
+        "related_party": False,
+        "label_source": "uyap",
+        "quality_status": "accepted",
+        "origin": "manual_import",
+    }])
+    assert asking_to_closing_labels(uyap_row).empty
+    # PRIVACY sınırı: yalnızca kişisel-OLMAYAN alanlar (isim/taraf/vekil/ödeme/hesap alanı YOK)
+    for col in g["uyap"].columns:
+        assert not any(
+            tok in str(col).lower()
+            for tok in ("name", "isim", "counsel", "vekil", "iban", "account", "payment", "party", "taraf")
+        )
+
+
+def test_uyap_second_sold_unlocks_win_sd_genuine():
+    # 2 gerçek SATILAN açık artırma → uyap_win_over_appraisal_sd unavailable → observable
+    g = load_genuine_datasets()
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    assert "uyap_win_over_appraisal_sd" in built["moments"]
+    # 2 satılan gözlemin sd'si (nüfus, ddof=0)
+    _ratios = [4_545_000 / 4_500_000, 6_550_000 / 13_000_000]
+    assert built["moments"]["uyap_win_over_appraisal_sd"] == pytest.approx(float(np.std(_ratios)), abs=1e-12)
+    assert built["moments"]["uyap_win_over_appraisal_mean"] == pytest.approx(float(np.mean(_ratios)), abs=1e-12)
+    # sale_prob HÂLÂ 1.0 (iki açık artırma da satıldı — satılmayan gözlem hâlâ operatör bekliyor)
+    assert built["moments"]["uyap_sale_prob"] == 1.0

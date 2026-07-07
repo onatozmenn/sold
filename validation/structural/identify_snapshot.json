@@ -1,6 +1,6 @@
 {
   "n_structural_parameters": 6,
-  "n_observed_moments": 4,
+  "n_observed_moments": 5,
   "available_moments": [
     "kap_log_ratio_mean",
     "kap_log_ratio_sd",
@@ -10,12 +10,13 @@
     "toki_share_3+1",
     "toki_share_4+1",
     "uyap_sale_prob",
-    "uyap_win_over_appraisal_mean"
+    "uyap_win_over_appraisal_mean",
+    "uyap_win_over_appraisal_sd"
   ],
   "sample_sizes": {
-    "uyap_sale_prob": 1,
-    "uyap_win_over_appraisal_mean": 1,
-    "uyap_win_over_appraisal_sd": 1,
+    "uyap_sale_prob": 2,
+    "uyap_win_over_appraisal_mean": 2,
+    "uyap_win_over_appraisal_sd": 2,
     "kap_log_ratio_mean": 2,
     "kap_log_ratio_sd": 2,
     "toki_cohort_moments": 4,
@@ -25,14 +26,14 @@
     "toki_share_3+1": 4,
     "toki_share_4+1": 4
   },
-  "rank": 3,
-  "smallest_nonzero_singular_value": 0.11806910872685365,
-  "condition_number": 1.3592933569668142e+18,
+  "rank": 4,
+  "smallest_nonzero_singular_value": 0.02849650987474659,
+  "condition_number": 1.7111377641076813e+17,
   "weak_directions": [
     {
-      "sigma_s": -0.7818,
-      "mu_b": -0.3856,
-      "auction_shift": 0.3802
+      "sigma_s": 0.8034,
+      "mu_s": 0.5901,
+      "eta": -0.0727
     }
   ],
   "status": "NOT_IDENTIFIED"
