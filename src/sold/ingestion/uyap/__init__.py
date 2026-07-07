@@ -17,10 +17,17 @@ from .collect import (
     BrowserCollector,
     classify_access_pattern,
     classify_document_label,
+    classify_document_list_container,
+    classify_view_access_pattern,
+    classify_viewer_representation,
+    classify_viewer_url,
     discover_document_links,
+    extract_panel_document_rows,
     has_document_list_control,
     import_artifact,
+    panel_has_documents,
     select_row_document_actions,
+    viewer_mime_hint,
 )
 from .discovery import discover
 from .extract import asset_descriptors, extract_evidence
@@ -88,6 +95,13 @@ __all__ = [
     "has_document_list_control",
     "select_row_document_actions",
     "classify_access_pattern",
+    "panel_has_documents",
+    "extract_panel_document_rows",
+    "classify_document_list_container",
+    "classify_viewer_url",
+    "viewer_mime_hint",
+    "classify_viewer_representation",
+    "classify_view_access_pattern",
     "asset_descriptors",
     "INGESTION_BATCH",
     # pilot (live browser verification)
