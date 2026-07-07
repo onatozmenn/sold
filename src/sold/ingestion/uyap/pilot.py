@@ -137,6 +137,7 @@ def verify_pilot(
     browser_status: str = "offline",
     source_refs: list | None = None,
     document_access_patterns: list | None = None,
+    collection_diagnostics: dict | None = None,
     institution: str | None = None,
 ) -> dict:
     """SAF doğrulama katmanı: çıkarım → mutabakat → denetim → gerçek-karşılaştırma → sınıflandırma.
@@ -163,6 +164,7 @@ def verify_pilot(
         "source_refs": source_refs or [],
         "artifact_types_collected": sorted({a.get("artifact_type") for a in artifacts}),
         "document_access_patterns": document_access_patterns or [],
+        "collection_diagnostics": collection_diagnostics or {},
         "extraction_status": ev.extraction_status,
         "extracted_appraisal": ev.appraisal_value,
         "extracted_auction_price": audit.auction_price,
@@ -219,6 +221,7 @@ def run_pilot(
     artifacts: list[dict] = []
     source_refs: list = []
     doc_patterns: list = []
+    coll_diag: dict | None = None
     if offline_artifacts is not None:
         artifacts = offline_artifacts
         mode, live_reached, browser_status = MODE_OFFLINE, False, "offline_fixture"
@@ -231,6 +234,7 @@ def run_pilot(
             live_reached, browser_status = True, "connected"
             source_refs = [coll.get("url")]
             doc_patterns = coll.get("document_access_patterns", [])
+            coll_diag = coll.get("collection_diagnostics")
             artifacts = [{"artifact_type": "status_card", "text": coll.get("html", ""), "source_ref": coll.get("url")}]
             artifacts += coll.get("documents", [])
         except Exception as exc:  # pragma: no cover - canlı ortam-bağımlı
@@ -239,6 +243,7 @@ def run_pilot(
     report = verify_pilot(
         artifacts, file_id=file_id, mode=mode, live_page_reached=live_reached,
         browser_status=browser_status, source_refs=source_refs, document_access_patterns=doc_patterns,
+        collection_diagnostics=coll_diag,
     )
     after = genuine_fingerprint(genuine_path)
     report["mutation_guard"] = {

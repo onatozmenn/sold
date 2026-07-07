@@ -42,15 +42,73 @@ BROWSER_PREREQUISITES = (
     "authenticated manually. If you cannot use a live browser, import saved HTML/PDF artifacts."
 )
 
-# Bilinen UYAP belge etiketi → artifact türü eşlemesi (GERÇEK DOM metnine karşı; uydurma selector YOK).
-DOCUMENT_LABEL_MAP = {
-    "satis ilani": ARTIFACT_SALE_NOTICE,
-    "bilirkisi raporu": ARTIFACT_APPRAISAL_REPORT,
-    "kiymet takdir": ARTIFACT_APPRAISAL_REPORT,
-    "ihale artirma sonuc tutanagi": ARTIFACT_AUCTION_RESULT,
-    "artirma sonuc tutanagi": ARTIFACT_AUCTION_RESULT,
-    "satis sartnamesi": ARTIFACT_SALE_SPEC,
-}
+# Gerçek UYAP belge-listesi kontrolü metinleri ("İhale Evrak Listesi") — normalize eşleşme.
+DOCUMENT_LIST_CONTROL_TEXTS = ("ihale evrak listesi", "evrak listesi")
+
+# Satır-yerel görüntüle/eye eylemini tanıyan jetonlar (global Nth-eye KULLANILMAZ).
+_VIEW_ACTION_TOKENS = ("goruntule", "goster", "incele", "evrak", "eye", "view", "gor", "ac")
+
+
+def classify_document_label(text: str) -> str | None:
+    """Bir belge etiketini artifact türüne eşler (jeton-tabanlı; GERÇEK DOM metnine karşı).
+
+    ``BLR_BILIRKISI_RAPORU`` → appraisal_report; ``Artırma Sonuç / Uzatma Tutanağı`` →
+    auction_result; ``Satış Şartnamesi Ve Tutanağı`` → sale_spec. Uydurma selector YOK.
+    """
+    fold = re.sub(r"\s+", " ", _ascii_lower(text or "").replace("_", " ")).strip()
+    if not fold:
+        return None
+    if "satis sartnamesi" in fold:
+        return ARTIFACT_SALE_SPEC
+    if "satis ilani" in fold:
+        return ARTIFACT_SALE_NOTICE
+    if "bilirkisi" in fold or "kiymet takdir" in fold:
+        return ARTIFACT_APPRAISAL_REPORT
+    if "artirma sonuc" in fold or "uzatma tutanagi" in fold or "ihale artirma" in fold:
+        return ARTIFACT_AUCTION_RESULT
+    return None
+
+
+def has_document_list_control(html: str) -> bool:
+    """HTML metninde "İhale Evrak Listesi" benzeri bir kontrolün metni var mı (testable, offline)."""
+    fold = _ascii_lower(html or "")
+    return any(t in fold for t in DOCUMENT_LIST_CONTROL_TEXTS)
+
+
+def select_row_document_actions(rows: list[dict]) -> list[dict]:
+    """Modal satırlarından belge etiketini sınıflandırıp O SATIRA AİT görüntüle/eye eylemini seçer.
+
+    ``rows``: ``[{"label": str, "actions": [{"kind", "text", "href", ...}]}]``. GLOBAL Nth-eye
+    KULLANILMAZ; belge sırası SABİT VARSAYILMAZ; ilgisiz eylemler seçilmez. OFFLINE test edilebilir.
+    """
+    selected: list[dict] = []
+    for i, row in enumerate(rows):
+        atype = classify_document_label(row.get("label", ""))
+        if not atype:
+            continue
+        actions = row.get("actions") or []
+        view = None
+        for a in actions:
+            t = _ascii_lower(a.get("text", "") or "")
+            if a.get("kind") == "eye" or any(k in t for k in _VIEW_ACTION_TOKENS):
+                view = a
+                break
+        if view is None and actions:
+            view = actions[0]  # satır-yerel tek eylem
+        if view is not None:
+            selected.append({"row_index": i, "label": row.get("label"), "artifact_type": atype, "action": view})
+    return selected
+
+
+def classify_access_pattern(observed: dict) -> str:
+    """GÖZLENEN (runtime) tarayıcı olayından belge-erişim desenini sınıflandırır (uydurma YOK)."""
+    if observed.get("download"):
+        return "button_modal_download"
+    if observed.get("opened_popup") or observed.get("opened_new_tab"):
+        return "button_modal_new_tab_pdf" if observed.get("is_pdf") else "button_modal_popup_html"
+    if observed.get("same_page_nav") or observed.get("viewer_visible"):
+        return "button_modal_same_page_viewer"
+    return "button_modal_unsupported"
 
 
 def discover_document_links(html: str) -> list[dict]:
@@ -78,12 +136,10 @@ def discover_document_links(html: str) -> list[dict]:
 
 
 def _match_doc_link(text: str, href: str | None, out: list[dict]) -> None:
-    fold = _ascii_lower(text or "")
-    for label, atype in DOCUMENT_LABEL_MAP.items():
-        if label in fold:
-            usable = bool(href) and not str(href).strip().lower().startswith("javascript:")
-            out.append({"text": text, "href": href, "artifact_type": atype, "usable_href": usable})
-            return
+    atype = classify_document_label(text)
+    if atype:
+        usable = bool(href) and not str(href).strip().lower().startswith("javascript:")
+        out.append({"text": text, "href": href, "artifact_type": atype, "usable_href": usable})
 
 
 
@@ -239,6 +295,15 @@ class BrowserCollector:
             links = discover_document_links(html)
             documents: list[dict] = []
             access_patterns: list[dict] = []
+            collection_diagnostics: dict = {
+                "document_list_control_found": False,
+                "document_list_control_kind": None,
+                "document_modal_opened": False,
+                "document_labels_observed": [],
+                "document_actions_observed": 0,
+                "document_collection_attempts": [],
+                "document_collection_failures": 0,
+            }
             if follow_documents:
                 for lk in links:
                     if not lk.get("usable_href"):
@@ -255,6 +320,12 @@ class BrowserCollector:
                         dp.close()
                     except Exception as exc:
                         access_patterns.append({"label": lk["text"], "pattern": "navigation_failed", "detail": str(exc)[:120]})
+                # Gerçek UYAP belge UI'si anchor DEĞİL: "İhale Evrak Listesi" button → modal → eye-action.
+                if has_document_list_control(html):
+                    m_docs, m_patterns, m_diag = self._collect_via_modal(page, context)
+                    documents += m_docs
+                    access_patterns += m_patterns
+                    collection_diagnostics = m_diag
             return {
                 "html": html,
                 "title": title,
@@ -262,5 +333,138 @@ class BrowserCollector:
                 "document_links": links,
                 "documents": documents,
                 "document_access_patterns": access_patterns,
+                "collection_diagnostics": collection_diagnostics,
             }
+
+    def _collect_via_modal(self, page, context) -> tuple:  # pragma: no cover - canlı modal/DOM gerektirir
+        """Gerçek "İhale Evrak Listesi" button→modal→satır-yerel eye-action belge toplama.
+
+        Spekülatif tek bir CSS selector'a bağlanmaz; önce görünür METİN/ROLE tabanlı sağlam
+        Playwright locator hiyerarşisi denenir. Satır-yerel eşleme (``select_row_document_actions``)
+        global Nth-eye kullanmaz. Açılma modu (popup/yeni sekme/aynı-sayfa/PDF/indirme) sınırlı
+        zaman aşımıyla GÖZLENİR ve ``classify_access_pattern`` ile sınıflandırılır (uydurma YOK).
+        """
+        import re as _re
+
+        diag = {
+            "document_list_control_found": False,
+            "document_list_control_kind": None,
+            "document_modal_opened": False,
+            "document_labels_observed": [],
+            "document_actions_observed": 0,
+            "document_collection_attempts": [],
+            "document_collection_failures": 0,
+        }
+        documents: list[dict] = []
+        patterns: list[dict] = []
+
+        control = None
+        for kind, loc in (
+            ("button", page.get_by_role("button", name=_re.compile("evrak listesi", _re.I))),
+            ("link", page.get_by_role("link", name=_re.compile("evrak listesi", _re.I))),
+            ("text", page.get_by_text(_re.compile("evrak listesi", _re.I))),
+        ):
+            try:
+                if loc.count() > 0:
+                    control = loc.first
+                    diag["document_list_control_found"] = True
+                    diag["document_list_control_kind"] = kind
+                    break
+            except Exception:
+                continue
+        if control is None:
+            return documents, patterns, diag
+
+        try:
+            control.click(timeout=5000)
+        except Exception as exc:
+            diag["document_collection_attempts"].append({"stage": "control_click", "blocking_reason": str(exc)[:120]})
+            diag["document_collection_failures"] += 1
+            return documents, patterns, diag
+
+        scope = page
+        for loc in (page.get_by_role("dialog"), page.locator("[role=dialog], .modal")):
+            try:
+                loc.first.wait_for(state="visible", timeout=5000)
+                scope = loc.first
+                diag["document_modal_opened"] = True
+                break
+            except Exception:
+                continue
+
+        rows: list[dict] = []
+        try:
+            row_loc = scope.locator("tr, li, .row, [class*=row]")
+            n = min(row_loc.count(), 50)
+            for i in range(n):
+                r = row_loc.nth(i)
+                try:
+                    label_text = (r.inner_text(timeout=1000) or "").strip()
+                except Exception:
+                    continue
+                if classify_document_label(label_text) is None:
+                    continue
+                diag["document_labels_observed"].append(_ascii_lower(label_text)[:60])
+                actions = []
+                act_loc = r.locator("a, button, [role=button], [onclick], i[class*=icon], span[class*=icon]")
+                m = min(act_loc.count(), 8)
+                for j in range(m):
+                    a = act_loc.nth(j)
+                    try:
+                        actions.append({
+                            "kind": "eye",
+                            "text": (a.get_attribute("title") or a.inner_text(timeout=500) or ""),
+                            "href": a.get_attribute("href"),
+                            "_loc": a,
+                        })
+                    except Exception:
+                        continue
+                rows.append({"label": label_text, "actions": actions})
+        except Exception as exc:
+            diag["document_collection_attempts"].append({"stage": "row_enumeration", "blocking_reason": str(exc)[:120]})
+
+        diag["document_actions_observed"] = sum(len(r["actions"]) for r in rows)
+        for sel in select_row_document_actions(rows):
+            action = sel["action"]
+            loc = action.get("_loc")
+            attempt = {"label": _ascii_lower(sel["label"] or "")[:60], "artifact_type": sel["artifact_type"],
+                       "collected": False, "access_pattern": None, "blocking_reason": None}
+            if loc is None:
+                attempt["blocking_reason"] = "no_locator"
+                diag["document_collection_failures"] += 1
+                diag["document_collection_attempts"].append(attempt)
+                continue
+            observed: dict = {}
+            content = None
+            try:
+                try:
+                    with context.expect_page(timeout=4000) as pinfo:
+                        loc.click(timeout=3000)
+                    newp = pinfo.value
+                    newp.wait_for_load_state("domcontentloaded", timeout=5000)
+                    observed = {"opened_new_tab": True, "is_pdf": ".pdf" in (newp.url or "").lower()}
+                    content = newp.content()
+                    newp.close()
+                except Exception:
+                    observed = {"same_page_nav": True, "viewer_visible": True}
+                    try:
+                        content = scope.inner_text(timeout=2000)
+                    except Exception:
+                        content = page.content()
+                pattern = classify_access_pattern(observed)
+                attempt["access_pattern"] = pattern
+                if pattern != "button_modal_unsupported" and content:
+                    documents.append({"artifact_type": sel["artifact_type"], "text": content,
+                                      "source_ref": f"modal:{_ascii_lower(sel['label'] or '')[:40]}"})
+                    attempt["collected"] = True
+                else:
+                    diag["document_collection_failures"] += 1
+                patterns.append({"label": attempt["label"], "pattern": pattern})
+            except Exception as exc:
+                attempt["blocking_reason"] = str(exc)[:120]
+                diag["document_collection_failures"] += 1
+                patterns.append({"label": attempt["label"], "pattern": "button_modal_unsupported"})
+            diag["document_collection_attempts"].append(attempt)
+        return documents, patterns, diag
+
 

@@ -12,9 +12,18 @@ from __future__ import annotations
 from . import admit, audit, collect, discovery, extract, models, pilot, pipeline, reconcile, review, store
 from .admit import INGESTION_BATCH, admit as admit_candidate, build_genuine_record, record_exclusion
 from .audit import audit_candidate
-from .collect import BROWSER_PREREQUISITES, BrowserCollector, discover_document_links, import_artifact
+from .collect import (
+    BROWSER_PREREQUISITES,
+    BrowserCollector,
+    classify_access_pattern,
+    classify_document_label,
+    discover_document_links,
+    has_document_list_control,
+    import_artifact,
+    select_row_document_actions,
+)
 from .discovery import discover
-from .extract import extract_evidence
+from .extract import asset_descriptors, extract_evidence
 from .models import (
     ADMISSIBLE_COMPLETED_SALE,
     AUDIT_DECISIONS,
@@ -75,6 +84,11 @@ __all__ = [
     "BrowserCollector",
     "BROWSER_PREREQUISITES",
     "discover_document_links",
+    "classify_document_label",
+    "has_document_list_control",
+    "select_row_document_actions",
+    "classify_access_pattern",
+    "asset_descriptors",
     "INGESTION_BATCH",
     # pilot (live browser verification)
     "pilot",

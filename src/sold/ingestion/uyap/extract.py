@@ -70,6 +70,31 @@ def _all_amounts_after(text: str, folded: str, label: str, window: int = 60) -> 
     return out
 
 
+def asset_descriptors(fold: str) -> dict:
+    """Taşınmaz tanımlayıcılarını (ada/parsel/blok/bağımsız-bölüm/kat) GERÇEK UYAP yazımından
+    çıkarır. İki sıra desteklenir: ``50984 Ada, 1 Parsel`` ve ``Ada 50984, Parsel 1``; ayrıca
+    ``60 Nolu B.B.`` / ``60 No.lu Bağımsız Bölüm`` / ``12. Kat``. ``fold`` ASCII-fold+küçük harf
+    beklenir. Bilinen pilot değerleri FALLBACK olarak KULLANILMAZ.
+    """
+
+    def _cap(pat: str) -> str | None:
+        m = re.search(pat, fold)
+        if not m:
+            return None
+        for g in m.groups():
+            if g:
+                return g
+        return None
+
+    return {
+        "ada": _cap(r"(?:(\d{2,7})\s*ada\b|\bada[\s:.]+(\d{2,7}))"),
+        "parsel": _cap(r"(?:(\d{1,6})\s*parsel\b|\bparsel[\s:.]+(\d{1,6}))"),
+        "block": _cap(r"\b([a-z])\s*blok\b"),
+        "section_no": _cap(r"(\d{1,5})\s*no\.?\s*lu\b"),
+        "floor": _cap(r"(\d{1,3})\.\s*kat\b"),
+    }
+
+
 def extract_evidence(
     artifacts: list[dict],
     institution: str | None = None,
@@ -149,22 +174,21 @@ def extract_evidence(
     dep_val, _ = _amount_after(all_text, all_fold, "teminat", window=40)
     ev.deposit_amount = dep_val
     ev.share_settlement = ("hisse orani" in all_fold) or ("satilan hisse" in all_fold) or ("hisse" in all_fold and "orani" in all_fold)
-    m_kdv = re.search(r"kdv[^%\d]{0,8}%?\s*(\d{1,2})", all_fold)
+    # KDV: gerçek detay sayfası "KDV Oranı : %20" (etiket/değer AYRI düğümlerde; araya ':' ve
+    # boşluk/nbsp girebilir). Önce 'oranı' desenli, sonra %-çıpalı yedek (nbsp \s ile toplanır).
+    m_kdv = re.search(r"kdv\s*orani?\s*:?\s*%?\s*(\d{1,3})", all_fold) or re.search(r"kdv[^0-9%]{0,12}%\s*(\d{1,3})", all_fold)
     ev.kdv_rate = float(m_kdv.group(1)) if m_kdv else None
     ev.result_document_type = ARTIFACT_AUCTION_RESULT if ARTIFACT_AUCTION_RESULT in per_type else None
     m_dt = re.search(r"(\d{2}[./]\d{2}[./]\d{4})", all_text)
     ev.completion_datetime = m_dt.group(1) if m_dt else None
 
-    # --- Taşınmaz tanımlayıcıları (aynı-varlık mutabakatı) ---
-    def _first(pat: str) -> str | None:
-        m = re.search(pat, all_fold)
-        return m.group(1) if m else None
-
-    ev.ada = _first(r"(\d+)\s*ada")
-    ev.parsel = _first(r"(\d+)\s*parsel")
-    ev.block = _first(r"([a-z])\s*blok")
-    ev.section_no = _first(r"(\d+)\s*no\.?\s*lu")
-    ev.floor = _first(r"(\d+)\.\s*kat") or ("zemin" if "zemin kat" in all_fold else None)
+    # --- Taşınmaz tanımlayıcıları (aynı-varlık mutabakatı) — gerçek UYAP yazımı, iki sıra ---
+    desc = asset_descriptors(all_fold)
+    ev.ada = desc["ada"]
+    ev.parsel = desc["parsel"]
+    ev.block = desc["block"]
+    ev.section_no = desc["section_no"]
+    ev.floor = desc["floor"] or ("zemin" if "zemin kat" in all_fold else None)
     for pt in ("mesken", "konut", "dukkan", "isyeri", "arsa", "bagimsiz bolum"):
         if pt in all_fold:
             ev.property_type = pt

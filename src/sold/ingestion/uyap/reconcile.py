@@ -23,14 +23,6 @@ from .models import (
 _APPRAISAL_BEARING = (ARTIFACT_APPRAISAL_REPORT, ARTIFACT_SALE_NOTICE)
 _AUCTION_BEARING = (ARTIFACT_AUCTION_RESULT, ARTIFACT_STATUS_CARD)
 
-_DESCRIPTOR_PATTERNS = {
-    "ada": r"(\d+)\s*ada",
-    "parsel": r"(\d+)\s*parsel",
-    "block": r"([a-z])\s*blok",
-    "section_no": r"(\d+)\s*no\.?\s*lu",
-    "floor": r"(\d+)\.\s*kat",
-}
-
 
 def _artifact_text(artifact: dict) -> str:
     from .extract import _artifact_text as _t
@@ -39,13 +31,10 @@ def _artifact_text(artifact: dict) -> str:
 
 
 def _descriptors(text: str) -> dict:
-    fold = _ascii_lower(text)
-    out: dict = {}
-    for key, pat in _DESCRIPTOR_PATTERNS.items():
-        m = re.search(pat, fold)
-        if m:
-            out[key] = m.group(1)
-    return out
+    """Aynı hardened ``asset_descriptors``'ı kullanır (extraction ile mutabakat TUTARLI)."""
+    from .extract import asset_descriptors
+
+    return {k: v for k, v in asset_descriptors(_ascii_lower(text)).items() if v}
 
 
 def reconcile(
