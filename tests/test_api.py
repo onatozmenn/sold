@@ -304,3 +304,16 @@ def test_structural_index_page_action_wording(structural_ready):
     for forbidden in ("Predict actual sale price", "observed closing price", "true sale price"):
         assert forbidden not in html
 
+
+def test_search_budget_stability_reproducible():
+    # (8) arama-bütçesi kararlılık tanısı YENİDEN-ÜRETİLEBİLİR (aynı bütçe/seed → aynı sonuç)
+    from sold.api.structural_product import search_budget_stability
+
+    a = search_budget_stability(budgets=(200, 400))
+    b = search_budget_stability(budgets=(200, 400))
+    assert a["near_fit_search_stability"] == b["near_fit_search_stability"]
+    assert [r["best_objective"] for r in a["table"]] == [r["best_objective"] for r in b["table"]]
+    assert a["near_fit_search_stability"] in ("STABLE", "SEARCH_SENSITIVE", "INSUFFICIENT_COVERAGE")
+    # sayısal tanı; ekonometrik sınıflandırma DEĞİL (rank/moment değişmez)
+    assert "identification classification" in a["note"].lower()
+

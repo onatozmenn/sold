@@ -128,6 +128,9 @@ def admissible_near_fit_set(
     rel: float = TOLERANCE_REL,
     absolute: float = TOLERANCE_ABS,
     wide_range_fraction: float = WIDE_RANGE_FRACTION,
+    descent_starts: int = 6,
+    descent_iters: int = 80,
+    refine_rounds: int = 3,
 ) -> AdmissibleNearFitResult:
     """Θ_A = {θ : Q(θ) ≤ Q_min + tol} kabul edilebilir YAKIN-UYUM kümesini kurar.
 
@@ -141,6 +144,8 @@ def admissible_near_fit_set(
     bounds = bounds or PARAM_BOUNDS
     base = start or StructuralParams()
     rng = np.random.default_rng(seed)
+    lo_b = np.array([bounds[p][0] for p in free_names], dtype=float)
+    hi_b = np.array([bounds[p][1] for p in free_names], dtype=float)
 
     def _eval(matrix: np.ndarray) -> np.ndarray:
         out = np.empty(matrix.shape[0], dtype=float)
@@ -149,21 +154,50 @@ def admissible_near_fit_set(
             out[i] = objective_value(replace(base, **upd), m_obs, ctx, sim_seed)
         return out
 
-    # 1) KÜRESEL uniform tarama (yeniden-üretilebilir); 2) en iyi anchor'lar etrafında
-    #    YEREL inceltme — yassı (null-space) yönleri yoğunca örnekler. Tek seed sürer.
-    n_global = max(int(n_candidates // 2), 1)
-    n_local = max(int(n_candidates - n_global), 0)
+    def _obj_vec(x: np.ndarray) -> float:
+        xc = np.clip(np.asarray(x, dtype=float), lo_b, hi_b)  # kutu-kırpma (bounds korunur)
+        upd = {name: float(xc[j]) for j, name in enumerate(free_names)}
+        return objective_value(replace(base, **upd), m_obs, ctx, sim_seed)
+
+    # 1) KÜRESEL uniform tarama (yeniden-üretilebilir).
+    n_global = max(int(n_candidates // 3), 1)
     glob = _sample_candidates(free_names, bounds, n_global, rng)
     obj_glob = _eval(glob)
-    k = min(12, n_global)
-    anchors = glob[np.argsort(obj_glob)[:k]]
-    if n_local:
-        loc = _local_candidates(free_names, bounds, anchors, n_local, rng, scale_frac=0.20)
-        cand = np.vstack([glob, loc])
-        objs = np.concatenate([obj_glob, _eval(loc)])
-    else:
-        cand, objs = glob, obj_glob
 
+    # 2) En iyi birkaç global noktadan NELDER-MEAD inişi → DOĞRU Q_min (AYNI objektif + CRN).
+    #    Küçük bütçede de gerçek minimumu bulup Q_min'i BÜTÇEYE-KARARLI kılar (yalnızca sayısal
+    #    arama iyileştirmesi; tolerans/bound/kriter DEĞİŞMEZ).
+    from .smm import nelder_mead
+
+    anchors = []
+    for idx in np.argsort(obj_glob)[: min(descent_starts, n_global)]:
+        xb, _fb, _ = nelder_mead(_obj_vec, glob[idx], max_iter=descent_iters)
+        anchors.append(np.clip(xb, lo_b, hi_b))
+    anchor_arr = np.atleast_2d(np.array(anchors)) if anchors else glob[np.argsort(obj_glob)[:1]]
+
+    # 3) YİNELEMELİ yerel örnekleme: anchor'lar + o ana dek kabul edilebilir noktalar etrafında
+    #    yoğunlaş (yassı null-space yönlerini yeniden-üretilebilir biçimde doldurur).
+    cand_parts = [glob, anchor_arr]
+    obj_parts = [obj_glob, _eval(anchor_arr)]
+    n_local = max(int(n_candidates - n_global), 0)
+    rounds = max(int(refine_rounds), 1)
+    per_round = max(n_local // rounds, 1)
+    cur_anchors = anchor_arr
+    for _ in range(rounds):
+        loc = _local_candidates(free_names, bounds, cur_anchors, per_round, rng, scale_frac=0.12)
+        loc_obj = _eval(loc)
+        cand_parts.append(loc)
+        obj_parts.append(loc_obj)
+        cand_so = np.vstack(cand_parts)
+        obj_so = np.concatenate(obj_parts)
+        fin_so = obj_so[np.isfinite(obj_so)]
+        q_so = float(fin_so.min()) if fin_so.size else float("inf")
+        t_so = identification_tolerance(q_so, rel, absolute)
+        adm_so = cand_so[np.isfinite(obj_so) & (obj_so <= q_so + t_so)]
+        cur_anchors = np.vstack([anchor_arr, adm_so]) if adm_so.size else anchor_arr
+
+    cand = np.vstack(cand_parts)
+    objs = np.concatenate(obj_parts)
     finite = objs[np.isfinite(objs)]
     q_min = float(finite.min()) if finite.size else float("inf")
     tol = identification_tolerance(q_min, rel, absolute)
@@ -194,10 +228,13 @@ def admissible_near_fit_set(
 
     correlations: dict = {}
     if adm.shape[0] >= 3:
-        C = np.corrcoef(adm, rowvar=False)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            C = np.corrcoef(adm, rowvar=False)  # sabit parametre → NaN (aşağıda atlanır)
         for a in range(len(free_names)):
             for b in range(a + 1, len(free_names)):
-                correlations[f"{free_names[a]}|{free_names[b]}"] = float(C[a, b])
+                c = float(C[a, b])
+                if np.isfinite(c):
+                    correlations[f"{free_names[a]}|{free_names[b]}"] = c
 
     rule = f"tol = max({absolute:g}, {rel:g}·|Q_min|)"
     return AdmissibleNearFitResult(

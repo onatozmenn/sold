@@ -16,8 +16,13 @@ from __future__ import annotations
 
 from ..model.synthetic import load_province_ppm2
 from ..structural import (
+    CENTRAL_ESTIMATE_DEFINITION,
+    CONDITIONAL_ON_TRADE_STATEMENT,
     DEFAULT_FREE,
     FUTURE_METHODOLOGY_NOTE,
+    PRICE_ESTIMATE_CONDITION,
+    REPRESENTATIVE_THETA_RULE,
+    TRADE_SHARE_CALIBRATION,
     IdentificationAwarePredictor,
     StructuralParams,
     admissible_near_fit_set,
@@ -116,11 +121,19 @@ def structural_valuation(
         "fair_value": round(float(fv), 0),
         "province": province,
         "gross_m2": gross_m2,
+        # KOŞULLU-TİCARET fiyat semantiği
+        "price_estimate_condition": pred["price_estimate_condition"],
+        "conditional_on_trade_statement": pred["conditional_on_trade_statement"],
+        "central_estimate_definition": pred["central_estimate_definition"],
+        "representative_theta_rule": pred["representative_theta_rule"],
         "central_structural_estimate": pred["central_structural_estimate"],
         "within_theta_negotiation_interval": list(pred["within_theta_negotiation_interval"]),
         "between_theta_near_fit_band": list(pred["between_theta_near_fit_band"]),
         "structural_sensitivity_range": list(pred["structural_sensitivity_range"]),
-        "trade_probability_band": list(pred["trade_probability_band"]),
+        # model-implied simüle B≥S payı — ampirik satış olasılığı DEĞİL
+        "simulated_trade_share_band": list(pred["simulated_trade_share_band"]),
+        "trade_probability_band": list(pred["trade_probability_band"]),  # geriye uyumluluk
+        "trade_share_calibration": pred["trade_share_calibration"],
         "ask_to_fair_value_ratio": round(ic["ask_to_fair_value_ratio"], 4),
         "input_conflict": ic["input_conflict"],
         "input_conflict_warning": ic["message"],
@@ -128,7 +141,12 @@ def structural_valuation(
         "smm_moments_used": list(rep["moment_keys"]),
         "jacobian_rank": int(rep["rank"]),
         "parameter_dimension": int(rep["n_structural_parameters"]),
-        "near_fit_parameter_count": int(res.n_admissible),
+        # near-fit θ sayıları (ticaret eden + etmeyen = toplam; zarf yalnızca ticaret edenlerden)
+        "near_fit_parameter_count": int(pred["near_fit_parameter_count"]),
+        "trading_near_fit_parameter_count": int(pred["trading_near_fit_parameter_count"]),
+        "nontrading_near_fit_parameter_count": int(pred["nontrading_near_fit_parameter_count"]),
+        "price_envelope_theta_count": int(pred["price_envelope_theta_count"]),
+        "near_fit_search_stability": _CACHE.get("stability_status", "not_computed"),
         "no_coverage_statement": NO_COVERAGE_STATEMENT,
         "disclaimer": PRODUCT_DISCLAIMER,
         "note": pred["note"],
@@ -197,5 +215,130 @@ def method_overview() -> dict:
         },
         "conflict_bounds_note": "The default ask-to-fair-value conflict bounds [0.5, 2.0] are "
                                 "CONFIGURABLE product diagnostics, not econometrically estimated thresholds.",
+        "prediction_semantics": {
+            "price_estimate_condition": PRICE_ESTIMATE_CONDITION,
+            "conditional_on_trade_statement": CONDITIONAL_ON_TRADE_STATEMENT,
+            "central_estimate_definition": CENTRAL_ESTIMATE_DEFINITION,
+            "representative_theta_rule": REPRESENTATIVE_THETA_RULE,
+            "trade_share_calibration": TRADE_SHARE_CALIBRATION,
+            "trade_share_note": "trade_probability_band / simulated_trade_share_band is the Monte "
+                                "Carlo simulated share satisfying B >= S under each near-fit theta; "
+                                "it is NOT a probability of sale / sale likelihood / empirically "
+                                "estimated trade probability. A simulated share of zero is not proof "
+                                "that the population trade probability is mathematically zero.",
+        },
         "disclaimer": PRODUCT_DISCLAIMER,
+    }
+
+
+# --- Θ_A arama-bütçesi sayısal kararlılık tanılaması (ekonometrik sınıflandırma DEĞİL) --- #
+STABILITY_RANGE_TOL = 0.15       # parametre bant-payı değişimi (bound-genişliğine göre)
+STABILITY_ENVELOPE_TOL = 0.25    # duyarlılık zarfı genişlik değişimi (göreli)
+STABILITY_CENTER_TOL = 0.10      # zarf merkezi kayması (göreli)
+STABILITY_COVERAGE_GROWTH = 1.5  # |Θ_A| bu katı büyürse yetersiz kapsama işareti
+
+
+def _env_width_center(env):
+    if env is None or env[0] is None or env[1] is None:
+        return None, None
+    return float(env[1] - env[0]), float((env[0] + env[1]) / 2.0)
+
+
+def _classify_stability(rows: list[dict]) -> tuple[str, str]:
+    """İki en büyük bütçeyi karşılaştıran BELGELİ sayısal kural (kapsama/aralık/zarf).
+
+    - |Θ_A| büyümesi >= STABILITY_COVERAGE_GROWTH → INSUFFICIENT_COVERAGE (arama yakınsamadı),
+    - parametre bant-payları + zarf kararlıysa → STABLE,
+    - aksi halde → SEARCH_SENSITIVE.
+    """
+    from ..structural.partial import PARAM_BOUNDS
+
+    if len(rows) < 2:
+        return "SEARCH_SENSITIVE", "en az iki bütçe gerekir"
+    prev, last = rows[-2], rows[-1]
+    n_prev = max(int(prev["near_fit_parameter_count"]), 1)
+    coverage_growth = last["near_fit_parameter_count"] / n_prev
+    # parametre bant-payı kararlılığı
+    range_ok = True
+    for p, (lo, hi) in {k: v for k, v in last["param_ranges"].items()}.items():
+        w_last = hi - lo
+        plo, phi = prev["param_ranges"][p]
+        w_prev = phi - plo
+        bw = PARAM_BOUNDS[p][1] - PARAM_BOUNDS[p][0]
+        if bw > 0 and abs(w_last - w_prev) / bw > STABILITY_RANGE_TOL:
+            range_ok = False
+            break
+    # zarf kararlılığı
+    wl, cl = _env_width_center(last["structural_sensitivity_range"])
+    wp, cp = _env_width_center(prev["structural_sensitivity_range"])
+    if wl is None or wp is None:
+        env_ok = (wl is None) and (wp is None)  # ikisi de null ise "kararlı" say (ikisi de ~0 ticaret)
+    else:
+        env_ok = (abs(wl - wp) / max(wl, 1.0) <= STABILITY_ENVELOPE_TOL) and (
+            abs(cl - cp) / max(cl, 1.0) <= STABILITY_CENTER_TOL
+        )
+    if coverage_growth >= STABILITY_COVERAGE_GROWTH:
+        return "INSUFFICIENT_COVERAGE", (
+            f"|Θ_A| {prev['near_fit_parameter_count']}→{last['near_fit_parameter_count']} "
+            f"(×{coverage_growth:.2f} ≥ {STABILITY_COVERAGE_GROWTH}); arama daha büyük bütçede "
+            "belirgin biçimde daha çok yakın-uyum vektörü buluyor"
+        )
+    if range_ok and env_ok:
+        return "STABLE", "en büyük iki bütçede parametre bant-payları ve duyarlılık zarfı kararlı"
+    return "SEARCH_SENSITIVE", "parametre bant-payı ve/veya duyarlılık zarfı bütçeyle belirgin değişiyor"
+
+
+def search_budget_stability(
+    budgets=(750, 1500, 3000),
+    asking: float = 5_000_000.0,
+    province: str = "İstanbul",
+    gross_m2: float = 100.0,
+    seed: int = NEAR_FIT_SEED,
+) -> dict:
+    """Θ_A arama-bütçesi KARARLILIK çalışması (yeniden-üretilebilir; sayısal — ekonometrik DEĞİL).
+
+    Aynı hedef/bound/CRN/near-fit kriteriyle artan aday yoğunluklarında Θ_A + tahmin
+    ölçütlerini karşılaştırır. Tolerans kuralı, moment tanımı, bound DEĞİŞMEZ."""
+    g = load_genuine_datasets()
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    ctx = context_from_datasets(g["uyap"], g["kap"])
+    fv = fair_value_for(province, gross_m2)
+    rows: list[dict] = []
+    for b in budgets:
+        res = admissible_near_fit_set(built["moments"], ctx, n_candidates=b, seed=seed)
+        pred = IdentificationAwarePredictor(res.admissible_params, res.best_params).predict(
+            asking, fv, n=12000, seed=0
+        )
+        rows.append({
+            "candidate_count": int(b),
+            "near_fit_parameter_count": int(res.n_admissible),
+            "best_objective": round(float(res.best_objective), 6),
+            "param_ranges": {p: [round(r["min"], 3), round(r["max"], 3)] for p, r in res.param_ranges.items()},
+            "eta_range": [round(res.param_ranges["eta"]["min"], 3), round(res.param_ranges["eta"]["max"], 3)],
+            "central_structural_estimate": pred["central_structural_estimate"],
+            "between_theta_near_fit_band": list(pred["between_theta_near_fit_band"]),
+            "structural_sensitivity_range": list(pred["structural_sensitivity_range"]),
+            "trading_near_fit_parameter_count": int(pred["trading_near_fit_parameter_count"]),
+            "nontrading_near_fit_parameter_count": int(pred["nontrading_near_fit_parameter_count"]),
+        })
+    status, reason = _classify_stability(rows)
+    _CACHE["stability_status"] = status
+    return {
+        "diagnostic": "near_fit_search_stability",
+        "note": "numerical approximation diagnostic of the reproducible search over the bounded "
+                "theta space — NOT an econometric identification classification. Tolerance rule, "
+                "moments and bounds are unchanged.",
+        "interpretation": "A non-STABLE result is the EXPECTED numerical signature of "
+                          "STRUCTURALLY_UNDERIDENTIFIED (Jacobian rank 4 < dim 6): the near-fit "
+                          "region is a large, near-flat manifold along ~2 weakly-constrained "
+                          "directions, so a finite reproducible search does not stably enumerate "
+                          "it. This is not a code defect; STABLE is not claimed for a genuinely "
+                          "underidentified near-fit region. Each fixed (seed, budget) run is "
+                          "itself deterministic and reproducible.",
+        "reference_scenario": {"asking_price": asking, "province": province, "gross_m2": gross_m2,
+                               "fair_value": round(float(fv), 0)},
+        "budgets": list(budgets),
+        "table": rows,
+        "near_fit_search_stability": status,
+        "rule": reason,
     }

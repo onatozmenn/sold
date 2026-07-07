@@ -406,6 +406,18 @@ def structural_method() -> dict:
     return method_overview()
 
 
+@app.get("/structural/stability")
+def structural_stability() -> dict:
+    """Θ_A arama-bütçesi KARARLILIK tanılaması (sayısal; ekonometrik sınıflandırma DEĞİL).
+
+    Artan aday yoğunluklarında parametre bant-payları + duyarlılık zarfını karşılaştırır →
+    STABLE / SEARCH_SENSITIVE / INSUFFICIENT_COVERAGE. Tolerans/bound/moment değişmez.
+    """
+    from .structural_product import search_budget_stability
+
+    return search_budget_stability()
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     return _INDEX_HTML
@@ -531,19 +543,27 @@ _INDEX_HTML = """<!DOCTYPE html>
         if(!r.ok){ el.innerHTML = '<div class="card">Hata: '+(d.detail||'bilinmeyen')+'</div>'; return; }
         const ic = { input_conflict:d.input_conflict, ask_to_fair_value_ratio:d.ask_to_fair_value_ratio, input_conflict_candidate_explanations:d.input_conflict_candidate_explanations };
         const wt = d.within_theta_negotiation_interval, bt = d.between_theta_near_fit_band, sr = d.structural_sensitivity_range;
+        const sh = d.simulated_trade_share_band || [null,null];
+        const noTrade = (d.central_structural_estimate == null);
+        const body = noTrade
+          ? '<div class="status">Bu senaryoda Θ_A boyunca simüle ticaret payı ~0 → koşullu-ticaret fiyatı raporlanmaz (dürüst null). Monte Carlo ~0 payı, popülasyon ticaret olasılığının matematiksel olarak 0 olduğu anlamına GELMEZ.</div>'
+          : ('<div class="row"><span class="k">Within-θ negotiation uncertainty</span><span class="v">'+tl(wt[0])+' – '+tl(wt[1])+'</span></div>' +
+             '<div class="expl">Sabit bir yapısal parametre yapılandırmasında simüle alıcı/satıcı değerlerinin ve pazarlık sürecinin doğurduğu değişim.</div>' +
+             '<div class="row"><span class="k">Between-θ near-fit uncertainty</span><span class="v">'+tl(bt[0])+' – '+tl(bt[1])+'</span></div>' +
+             '<div class="expl">Ekonomik olarak kabul edilebilir birden çok yapısal parametre yapılandırması, mevcut kamu momentlerine neredeyse eşit iyi uyar.</div>' +
+             '<div class="envelope"><div class="lbl muted">Structural sensitivity range (iki belirsizlik birlikte)</div>' +
+             '<div class="rng">'+tl(sr[0])+' – '+tl(sr[1])+'</div>' +
+             '<div class="nocov">'+d.no_coverage_statement+'</div></div>');
         el.innerHTML = '<div class="card">' +
-          '<div class="estimate"><div class="lbl">Central structural estimate · inferred transaction-price estimate</div>' +
+          '<div class="estimate"><div class="lbl">Central structural estimate, conditional on simulated trade</div>' +
           '<div class="big">'+tl(d.central_structural_estimate)+'</div>' +
-          '<div class="muted">İlan '+tl(d.asking_price)+' · fair value (TCMB çıpa) '+tl(d.fair_value)+'</div></div>' +
-          renderConflict(ic) +
-          '<div class="row"><span class="k">Within-θ negotiation uncertainty</span><span class="v">'+tl(wt[0])+' – '+tl(wt[1])+'</span></div>' +
-          '<div class="expl">Sabit bir yapısal parametre yapılandırmasında simüle alıcı/satıcı değerlerinin ve pazarlık sürecinin doğurduğu değişim.</div>' +
-          '<div class="row"><span class="k">Between-θ near-fit uncertainty</span><span class="v">'+tl(bt[0])+' – '+tl(bt[1])+'</span></div>' +
-          '<div class="expl">Ekonomik olarak kabul edilebilir birden çok yapısal parametre yapılandırması, mevcut kamu momentlerine neredeyse eşit iyi uyar.</div>' +
-          '<div class="envelope"><div class="lbl muted">Structural sensitivity range (iki belirsizlik birlikte)</div>' +
-          '<div class="rng">'+tl(sr[0])+' – '+tl(sr[1])+'</div>' +
-          '<div class="nocov">'+d.no_coverage_statement+'</div></div>' +
-          '<div class="status">Identification status: <b>'+d.identification_status+'</b> · Jacobian rank '+d.jacobian_rank+' / '+d.parameter_dimension+
+          '<div class="muted">İlan '+tl(d.asking_price)+' · fair value (TCMB çıpa) '+tl(d.fair_value)+'</div>' +
+          '<div class="expl">'+d.conditional_on_trade_statement+'</div></div>' +
+          renderConflict(ic) + body +
+          '<div class="row"><span class="k">Model-implied simulated trade-share band</span><span class="v">'+(sh[0]==null?'—':(sh[0]+' – '+sh[1]))+'</span></div>' +
+          '<div class="expl">Monte Carlo simüle B≥S payı — GÖZLENEN UYAP no-trade sonuçlarına KALİBRE DEĞİL; satış olasılığı / satış ihtimali DEĞİL.</div>' +
+          '<div class="row"><span class="k">Near-fit configs (trading / total)</span><span class="v">'+d.trading_near_fit_parameter_count+' / '+d.near_fit_parameter_count+'</span></div>' +
+          '<div class="status">Identification status: <b>'+d.identification_status+'</b> · Jacobian rank '+d.jacobian_rank+' / '+d.parameter_dimension+' · near-fit search: '+d.near_fit_search_stability+
           '<div class="expl">The available genuine public moments do not uniquely determine all structural parameters, so the system reports sensitivity across near-fit parameter configurations instead of pretending one parameter vector is known exactly.</div></div>' +
           '</div>';
       } catch(err){ el.innerHTML = '<div class="card">İstek başarısız: '+err+'</div>'; }

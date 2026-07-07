@@ -983,6 +983,95 @@ def test_identification_aware_uses_trading_configs_when_best_trades_zero():
     assert only_zero["structural_sensitivity_range"] == (None, None)
 
 
+# --- Tahmin-semantiği doğruluk denetimi (temsili-θ + conditional-on-trade) --- #
+_TR = StructuralParams(mu_b=0.12, sigma_b=0.15, mu_s=-0.05, sigma_s=0.15, eta=0.5, asking_signal=0.4)   # ticaret eder
+_TR2 = StructuralParams(mu_b=0.16, sigma_b=0.18, mu_s=-0.02, sigma_s=0.14, eta=0.6, asking_signal=0.4)  # ticaret eder
+_TR3 = StructuralParams(mu_b=0.08, sigma_b=0.12, mu_s=-0.08, sigma_s=0.16, eta=0.4, asking_signal=0.4)  # ticaret eder
+_NT = StructuralParams(mu_b=-0.6, sigma_b=0.03, mu_s=0.6, sigma_s=0.03, asking_signal=0.5)               # ticaret ETMEZ
+
+
+def test_central_estimate_inside_within_theta_interval():
+    # (1) central, KENDİ within-θ aralığının İÇİNDE (temsili-θ kuralı; inşa gereği)
+    pred = IdentificationAwarePredictor([_TR, _TR2, _TR3], best_params=_TR).predict(
+        3_000_000, 3_000_000, n=9000, seed=0
+    )
+    c = pred["central_structural_estimate"]
+    lo, hi = pred["within_theta_negotiation_interval"]
+    assert c is not None and lo <= c <= hi
+
+
+def test_price_outputs_declare_conditional_on_trade():
+    # (2) fiyat çıktıları AÇIKÇA conditional_on_trade beyan eder
+    pred = IdentificationAwarePredictor([_TR]).predict(3_000_000, 3_000_000, n=7000, seed=0)
+    assert pred["price_estimate_condition"] == "conditional_on_trade"
+    assert "conditional on the structural simulation producing trade" in pred["conditional_on_trade_statement"]
+
+
+def test_nontrading_thetas_not_given_synthetic_zero_price():
+    # (3) ticaret ETMEYEN θ'lar sentetik 0-fiyat ALMAZ (zarf pozitif; 0 enjekte edilmez)
+    pred = IdentificationAwarePredictor([_NT, _TR], best_params=_NT).predict(
+        3_000_000, 3_000_000, n=9000, seed=0
+    )
+    assert pred["nontrading_near_fit_parameter_count"] >= 1
+    lo, hi = pred["structural_sensitivity_range"]
+    assert lo is not None and lo > 100_000  # 0-fiyat yok
+    assert pred["price_envelope_theta_count"] == pred["trading_near_fit_parameter_count"]
+
+
+def test_near_fit_counts_reconcile_to_total():
+    # (4) ticaret eden + ticaret etmeyen = toplam
+    pred = IdentificationAwarePredictor([_TR, _NT], best_params=_TR).predict(
+        3_000_000, 3_000_000, n=7000, seed=0
+    )
+    assert (pred["trading_near_fit_parameter_count"]
+            + pred["nontrading_near_fit_parameter_count"]) == pred["near_fit_parameter_count"]
+
+
+def test_price_envelope_uses_exactly_trading_configs():
+    # (5) fiyat zarfı TAM OLARAK ticaret eden konfigürasyonları kullanır (3 ticaret + 2 no-trade)
+    pred = IdentificationAwarePredictor([_TR, _TR2, _TR3, _NT, _NT], best_params=_TR).predict(
+        3_000_000, 3_000_000, n=9000, seed=0
+    )
+    assert pred["near_fit_parameter_count"] == 5
+    assert pred["trading_near_fit_parameter_count"] == 3
+    assert pred["nontrading_near_fit_parameter_count"] == 2
+    assert pred["price_envelope_theta_count"] == 3
+
+
+def test_trade_share_not_empirical_sale_probability():
+    # (6) trade-share ampirik satış OLASILIĞI olarak sunulmaz
+    pred = IdentificationAwarePredictor([_TR]).predict(3_000_000, 3_000_000, n=7000, seed=0)
+    assert pred["trade_share_calibration"] == "not_empirically_calibrated_to_observed_uyap_no_trade_outcomes"
+    assert "simulated_trade_share_band" in pred
+    low = pred["note"].lower()
+    assert "probability of sale" not in low and "sale likelihood" not in low
+
+
+def test_no_coverage_claim_in_predictor_output():
+    # (7) hiçbir güven/frekansçı kapsama iddiası yok
+    pred = IdentificationAwarePredictor([_TR]).predict(3_000_000, 3_000_000, n=7000, seed=0)
+    assert pred["coverage_claim"] is None
+    assert "confidence_interval" not in pred and "accuracy" not in pred
+
+
+def test_frozen_smm_moments_and_rank_unchanged():
+    # (9) donmuş SMM momentleri + rank 4/6 kimliklendirme sonucu DEĞİŞMEZ
+    g = load_genuine_datasets()
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    ctx = context_from_datasets(g["uyap"], g["kap"])
+    rep = identification_report(
+        ctx, StructuralParams(), DEFAULT_FREE, m_obs=built["moments"],
+        auctions=g["uyap"], kap=g["kap"], toki_result=g["toki_result"],
+        provenance=built["provenance"], unavailable=built["unavailable"], ineligible=built["ineligible"],
+    )
+    assert rep["status"] == "STRUCTURALLY_UNDERIDENTIFIED"
+    assert rep["rank"] == 4 and rep["n_structural_parameters"] == 6
+    assert set(rep["moment_keys"]) == {
+        "uyap_win_over_appraisal_mean", "uyap_win_over_appraisal_sd",
+        "kap_log_ratio_mean", "kap_log_ratio_sd",
+    }
+
+
 # --- Girdi-çelişki tanılaması (asking ↔ TCMB-çıpalı fair value) ------------- #
 def test_input_conflict_asking_above_fair_value_allowed():
     # (1) asking > fair value İZİN verilir (reddedilmez/kırpılmaz)

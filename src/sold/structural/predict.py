@@ -38,6 +38,30 @@ DISCLAIMER_SENSITIVITY = (
     "(admissible_near_fit_set bir identified set / confidence region DEĞİLdir)."
 )
 
+# Fiyat dağılımı KOŞULLU-TİCARET semantiği (P yalnızca B≥S simülasyonlarında tanımlıdır).
+CONDITIONAL_ON_TRADE_STATEMENT = (
+    "The transaction-price distribution is computed conditional on the structural "
+    "simulation producing trade, B >= S. It is not an unconditional expected sale outcome."
+)
+PRICE_ESTIMATE_CONDITION = "conditional_on_trade"
+
+# central_structural_estimate / within_theta tutarlılığı: TEK bir temsili θ'dan raporlanır.
+CENTRAL_ESTIMATE_DEFINITION = (
+    "conditional-on-trade median closing price of the single representative trading near-fit "
+    "parameter configuration (see representative_theta_rule); reported together with that "
+    "same configuration's conditional quantile interval so the central estimate lies inside "
+    "its own within_theta_negotiation_interval by construction"
+)
+REPRESENTATIVE_THETA_RULE = (
+    "among near-fit theta configurations that produce simulated trade, choose the one whose "
+    "conditional-on-trade median is closest to the cross-theta median of those medians; "
+    "deterministic tie-break by smallest conditional median. Both central_structural_estimate "
+    "and within_theta_negotiation_interval are reported from this single configuration."
+)
+
+# trade-share alanı: model-implied simüle B≥S payı — GÖZLENEN UYAP no-trade'e KALİBRE DEĞİL.
+TRADE_SHARE_CALIBRATION = "not_empirically_calibrated_to_observed_uyap_no_trade_outcomes"
+
 # Girdi-çelişki tanılaması: asking ile TCMB-çıpalı fair value CİDDİ biçimde uyuşmuyorsa
 # AÇIK uyarı verilir (tahmin REDDEDİLMEZ/KIRPILMAZ). Sınırlar belgeli ve yapılandırılabilir.
 INPUT_CONFLICT_LOW = 0.5
@@ -222,37 +246,47 @@ class IdentificationAwarePredictor:
         max_thetas: int = 300,
     ) -> dict:
         thetas = self.admissible[:max_thetas] if self.admissible else [self.best]
-        per_theta_median: list[float] = []
-        per_theta_p10: list[float] = []
-        per_theta_p90: list[float] = []
-        per_theta_trade: list[float] = []
+        trading: list[tuple[float, float, float, float]] = []  # (median, p10, p90, share) — YALNIZCA ticaret eden θ
+        all_shares: list[float] = []                            # her θ'nın simüle B≥S payı (ticaret etmeyenler dahil)
         for th in thetas:
             # ORTAK rastgele sayılar: her θ AYNI tohum → fark θ'dan
-            prices, tp = self._draw(th, asking_price, fair_value, tightness, n, np.random.default_rng(seed))
-            per_theta_trade.append(tp)
+            prices, share = self._draw(th, asking_price, fair_value, tightness, n, np.random.default_rng(seed))
+            all_shares.append(float(share))
             if prices.size:
-                per_theta_median.append(float(np.median(prices)))
                 lo, hi = np.percentile(prices, [10, 90])
-                per_theta_p10.append(float(lo))
-                per_theta_p90.append(float(hi))
-        # EN İYİ uyum θ'sının fiyat dağılımı (within-θ için tercih edilir; ticaret ederse)
-        best_prices, best_tp = self._draw(
-            self.best, asking_price, fair_value, tightness, n, np.random.default_rng(seed)
-        )
+                trading.append((float(np.median(prices)), float(lo), float(hi), float(share)))
         conflict = input_conflict_diagnostic(asking_price, fair_value)
+        n_total = len(thetas)
+        n_trading = len(trading)
+        share_band = (
+            (round(min(all_shares), 4), round(max(all_shares), 4)) if all_shares else (None, None)
+        )
         base = {
             # STATÜ: biçimsel identified set/confidence DEĞİL — yapısal ALTKİMLİKLENDİRME.
             "identification_status": "STRUCTURALLY_UNDERIDENTIFIED",
             "coverage_claim": None,  # frekansçı KAPSAMA iddiası YOK
-            "parameter_set_size": len(thetas),
+            "parameter_set_size": n_total,
             "asking_price": float(asking_price),
             "fair_value": float(fair_value),
             "input_conflict": conflict,
+            # KOŞULLU-TİCARET semantiği (fiyat yalnızca B≥S simülasyonlarında tanımlı)
+            "price_estimate_condition": PRICE_ESTIMATE_CONDITION,
+            "conditional_on_trade_statement": CONDITIONAL_ON_TRADE_STATEMENT,
+            "central_estimate_definition": CENTRAL_ESTIMATE_DEFINITION,
+            "representative_theta_rule": REPRESENTATIVE_THETA_RULE,
+            # near-fit θ sayıları (ticaret eden + etmeyen = toplam; zarf yalnızca ticaret edenlerden)
+            "near_fit_parameter_count": n_total,
+            "trading_near_fit_parameter_count": n_trading,
+            "nontrading_near_fit_parameter_count": n_total - n_trading,
+            "price_envelope_theta_count": n_trading,
+            # model-implied simüle B≥S payı — GÖZLENEN UYAP no-trade'e KALİBRE DEĞİL (olasılık İDDİA edilmez)
+            "simulated_trade_share_band": share_band,
+            "trade_probability_band": share_band,  # geriye uyumluluk (AYNI değer; ampirik olasılık DEĞİL)
+            "trade_share_calibration": TRADE_SHARE_CALIBRATION,
         }
-        # Yalnızca HİÇBİR yakın-uyum θ'sı ticaret etmiyorsa çöker (model ~0 ticaret ima eder).
-        # DÜZELTME (doğruluk): tek bir (en düşük-Q) θ 0 ticaret etse de, ticaret eden DİĞER
-        # kabul-edilebilir θ'lar varsa zarf ONLARDAN kurulur (best-θ artefaktına çökmez).
-        if not per_theta_median:
+        # HİÇBİR near-fit θ simüle ticaret üretmiyorsa DÜRÜST null (no-trade fiyatı ATANMAZ).
+        # Simüle pay ~0 → pop. ticaret olasılığı MATEMATİKSEL 0 DEĞİL (Monte Carlo semantiği korunur).
+        if not trading:
             base.update({
                 "central_structural_estimate": None,
                 "within_theta_negotiation_interval": (None, None),
@@ -260,35 +294,29 @@ class IdentificationAwarePredictor:
                 "sensitivity_envelope_lower": None,
                 "sensitivity_envelope_upper": None,
                 "structural_sensitivity_range": (None, None),
-                "trade_probability_band": (round(min(per_theta_trade), 4), round(max(per_theta_trade), 4)),
-                "note": DISCLAIMER_SENSITIVITY + " (bu senaryoda Θ_A boyunca ticaret olasılığı ~0).",
+                "note": DISCLAIMER_SENSITIVITY + " " + CONDITIONAL_ON_TRADE_STATEMENT
+                        + " (bu senaryoda Θ_A boyunca simüle ticaret payı ~0).",
             })
             return base
-        near_fit_central = float(np.median(per_theta_median))
-        if best_prices.size:
-            # en iyi uyum θ ticaret ediyor → merkezî tahmin + within-θ onun dağılımından
-            central = float(np.median(best_prices))
-            w_lo, w_hi = np.percentile(best_prices, [10, 90])
-        else:
-            # en iyi uyum θ 0 ticaret → merkezî tahmin near-fit medyanların merkezi; within-θ
-            # ise merkeze EN YAKIN ticaret eden θ'nın temsili pazarlık aralığı
-            central = near_fit_central
-            j = int(np.argmin([abs(m - central) for m in per_theta_median]))
-            w_lo, w_hi = per_theta_p10[j], per_theta_p90[j]
-        env_lo, env_hi = round(min(per_theta_p10), 0), round(max(per_theta_p90), 0)
+        medians = [r[0] for r in trading]
+        cross_theta_median = float(np.median(medians))
+        # TEMSİLİ ticaret eden θ: koşullu medyanı cross-theta medyanına EN YAKIN; tie-break en küçük medyan.
+        rep = min(trading, key=lambda r: (abs(r[0] - cross_theta_median), r[0]))
+        central, w_lo, w_hi, _ = rep  # central ∈ [w_lo, w_hi] İNŞA GEREĞİ (aynı θ'nın medyanı+aralığı)
+        env_lo = round(min(r[1] for r in trading), 0)
+        env_hi = round(max(r[2] for r in trading), 0)
         base.update({
-            # merkezi yapısal tahmin (en iyi uyum θ ticaret ederse onun medyanı; aksi halde Θ_A merkezi)
+            # merkezi yapısal tahmin = TEMSİLİ ticaret eden θ'nın KOŞULLU medyanı (kendi aralığında)
             "central_structural_estimate": round(central, 0),
-            "central_across_theta": round(near_fit_central, 0),
-            # within-θ (YALNIZCA pazarlık belirsizliği; temsili tek θ)
-            "within_theta_negotiation_interval": (round(float(w_lo), 0), round(float(w_hi), 0)),
-            # between-θ (YALNIZCA yakın-uyum parametre belirsizliği; θ-medyanları bandı)
-            "between_theta_near_fit_band": (round(min(per_theta_median), 0), round(max(per_theta_median), 0)),
+            "central_across_theta": round(cross_theta_median, 0),
+            # within-θ (YALNIZCA pazarlık belirsizliği; TEMSİLİ tek θ'nın koşullu quantile aralığı)
+            "within_theta_negotiation_interval": (round(w_lo, 0), round(w_hi, 0)),
+            # between-θ (YALNIZCA yakın-uyum parametre belirsizliği; ticaret eden θ-medyanları bandı)
+            "between_theta_near_fit_band": (round(min(medians), 0), round(max(medians), 0)),
             # yapısal duyarlılık zarfı (İKİ belirsizlik birlikte) = structural sensitivity range
             "sensitivity_envelope_lower": env_lo,
             "sensitivity_envelope_upper": env_hi,
             "structural_sensitivity_range": (env_lo, env_hi),
-            "trade_probability_band": (round(min(per_theta_trade), 4), round(max(per_theta_trade), 4)),
-            "note": DISCLAIMER_SENSITIVITY,
+            "note": DISCLAIMER_SENSITIVITY + " " + CONDITIONAL_ON_TRADE_STATEMENT,
         })
         return base
