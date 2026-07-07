@@ -178,18 +178,29 @@ def build_observed_moments(
     moments: dict = {}
     provenance: dict = {}
     unavailable: list = []
+    ineligible: list = []
     sample_sizes: dict = {}
 
     # --- UYAP ---
+    # DİKKAT: uyap_sale_prob SMM'den KALDIRILDI. Gerçek e-Satış üst-düzey taksonomisi
+    # (Satıldı / Birinci Alıcıya Süre Verildi / Malın Satışının Düşmesi / İhale Sonucu
+    # Girilmemiştir) KARŞILAŞTIRILABİLİR bir negatif açık-artırma ticaret sınıfını AYIRAMIYOR
+    # (geri-çekilme/iptal/uzlaşma-bekleyen/eksik sonuç ≠ piyasa no-trade). Bu yüzden
+    # sale_prob savunulabilir bir popülasyon momenti DEĞİLdİr → ineligible (uydurulmaz).
     if uyap is not None and len(uyap):
         um = uyap_observed_moments(uyap)
         n = int(len(uyap))
         n_sold = int(uyap["sold"].astype(bool).sum())
-        sample_sizes["uyap_sale_prob"] = n
         sample_sizes["uyap_win_over_appraisal_mean"] = n_sold
         sample_sizes["uyap_win_over_appraisal_sd"] = n_sold
-        _add_moment(moments, provenance, unavailable, "uyap_sale_prob",
-                    um.get("uyap_sale_prob"), "uyap", f"needs>=1 auction, have {n}")
+        _sp = um.get("uyap_sale_prob")
+        ineligible.append({
+            "moment": "uyap_sale_prob", "source": "uyap",
+            "observed_value": float(_sp) if _sp is not None and np.isfinite(_sp) else None,
+            "reason": "public UYAP outcome taxonomy does not currently identify a comparable negative auction trade class",
+        })
+        # KOŞULLU-TİCARET momentleri: winning_bid/appraised_value | GÖZLENEN TAMAMLANMIŞ satış
+        # (koşulsuz açık-artırma piyasa momenti OLARAK yorumlanmaz)
         _add_moment(moments, provenance, unavailable, "uyap_win_over_appraisal_mean",
                     um.get("uyap_win_over_appraisal_mean"), "uyap", f"needs>=1 sold, have {n_sold}")
         var = um.get("uyap_win_over_appraisal_var")
@@ -197,7 +208,7 @@ def build_observed_moments(
         _add_moment(moments, provenance, unavailable, "uyap_win_over_appraisal_sd",
                     sd, "uyap", f"needs>=2 sold, have {n_sold}")
     else:
-        for k in ("uyap_sale_prob", "uyap_win_over_appraisal_mean", "uyap_win_over_appraisal_sd"):
+        for k in ("uyap_win_over_appraisal_mean", "uyap_win_over_appraisal_sd"):
             sample_sizes[k] = 0
             unavailable.append({"moment": k, "source": "uyap", "reason": "no_uyap_observations"})
 
@@ -235,7 +246,12 @@ def build_observed_moments(
         "moments": moments,
         "provenance": provenance,
         "unavailable": unavailable,
+        "ineligible": ineligible,
         "sample_sizes": sample_sizes,
+        "moment_semantics": {
+            "uyap_win_over_appraisal_mean": "winning_bid/appraised_value | observed completed auction sale (conditional-on-trade, NOT unconditional)",
+            "uyap_win_over_appraisal_sd": "winning_bid/appraised_value | observed completed auction sale (conditional-on-trade, NOT unconditional)",
+        },
     }
 
 

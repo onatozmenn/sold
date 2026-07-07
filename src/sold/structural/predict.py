@@ -29,6 +29,12 @@ DISCLAIMER_IDENTIFIED = (
     "ÇIKARIMSAL yapısal closing-fiyat DAĞILIMI — gözlenen closing fiyatı veya ölçülen "
     "sıradan-yeniden-satış doğruluğu DEĞİL. Sonuç mekanizma-transfer varsayımlarına duyarlıdır."
 )
+DISCLAIMER_PARTIAL = (
+    "KISMİ-KİMLİKLENDİRİLMİŞ (PARTIALLY_IDENTIFIED) yapısal closing DAĞILIMI. Aralık İKİ "
+    "belirsizlik kaynağını birlikte yansıtır: (1) örtük pazarlık (within-θ negotiation) ve "
+    "(2) EKSİK kimliklendirmeden gelen yapısal parametre belirsizliği (between-θ). Bu bir "
+    "gözlenen closing fiyatı ya da ölçülen sıradan-yeniden-satış doğruluğu DEĞİLDİR."
+)
 
 
 class StructuralClosingPredictor:
@@ -126,4 +132,89 @@ class StructuralClosingPredictor:
             "base_median": round(float(base_median), 0),
             "scenarios": scenarios,
             "median_band": band,
+        }
+
+
+class PartiallyIdentifiedPredictor:
+    """Kabul edilebilir yapısal parametre KÜMESİ (Θ_I) üzerinde kimliklendirme-farkında tahmin.
+
+    Tek bir keyfi provizyonel θ'dan nihai aralık ÜRETİLMEZ. Her ``θ ∈ Θ_I`` için yapısal
+    pazarlık simülasyonu (``trade iff B≥S``, ``P=η·B+(1−η)·S``) çalıştırılır ve KOŞULLU-
+    TİCARET closing dağılımı toplanır. İKİ belirsizlik AYRILIR:
+
+    - within-θ pazarlık belirsizliği: sabit θ'da örtük B,S çekimlerinin fiyat yayılımı,
+    - between-θ kimliklendirme belirsizliği: θ ∈ Θ_I arasında merkezi eğilimin yayılımı.
+
+    ORTAK rastgele sayılar: her θ AYNI tohumla değerlendirilir → medyan farkları θ'dan gelir.
+    """
+
+    def __init__(self, admissible_params, best_params=None) -> None:
+        self.admissible = list(admissible_params)
+        self.best = best_params or (self.admissible[0] if self.admissible else StructuralParams())
+
+    def _draw(self, params, asking, fair_value, tightness, n, rng):
+        B = draw_buyer_values(rng, fair_value, params, n, tightness)
+        S = draw_seller_values(rng, fair_value, params, n, tightness, asking=asking)
+        traded = B >= S
+        P = negotiated_price(B, S, params.eta)
+        return P[traded], float(traded.mean())
+
+    def predict(
+        self,
+        asking_price: float,
+        fair_value: float,
+        tightness: float = 0.0,
+        n: int = 20000,
+        seed: int = 0,
+        max_thetas: int = 300,
+    ) -> dict:
+        thetas = self.admissible[:max_thetas] if self.admissible else [self.best]
+        per_theta_median: list[float] = []
+        per_theta_p10: list[float] = []
+        per_theta_p90: list[float] = []
+        per_theta_trade: list[float] = []
+        for th in thetas:
+            # ORTAK rastgele sayılar: her θ AYNI tohum → fark θ'dan
+            prices, tp = self._draw(th, asking_price, fair_value, tightness, n, np.random.default_rng(seed))
+            per_theta_trade.append(tp)
+            if prices.size:
+                per_theta_median.append(float(np.median(prices)))
+                lo, hi = np.percentile(prices, [10, 90])
+                per_theta_p10.append(float(lo))
+                per_theta_p90.append(float(hi))
+        # within-model (negotiation) aralığı: EN İYİ uyum θ'sının fiyat dağılımı
+        best_prices, best_tp = self._draw(
+            self.best, asking_price, fair_value, tightness, n, np.random.default_rng(seed)
+        )
+        if best_prices.size == 0 or not per_theta_median:
+            return {
+                "identification_status": "PARTIALLY_IDENTIFIED",
+                "parameter_set_size": len(thetas),
+                "central_structural_estimate": None,
+                "within_model_interval": (None, None),
+                "identification_aware_lower": None,
+                "identification_aware_upper": None,
+                "between_theta_median_band": (None, None),
+                "trade_probability_band": (None, None),
+                "note": DISCLAIMER_PARTIAL + " (bu senaryoda ticaret olasılığı ~0).",
+            }
+        w_lo, w_hi = np.percentile(best_prices, [10, 90])
+        central = float(np.median(per_theta_median))  # Θ_I medyanlarının merkezi
+        return {
+            "identification_status": "PARTIALLY_IDENTIFIED",
+            "parameter_set_size": len(thetas),
+            "asking_price": float(asking_price),
+            "fair_value": float(fair_value),
+            # merkezi yapısal tahmin (en iyi uyum θ medyanı + Θ_I medyanlarının merkezi)
+            "central_structural_estimate": round(float(np.median(best_prices)), 0),
+            "central_across_theta": round(central, 0),
+            # within-model (yalnızca pazarlık belirsizliği; en iyi θ)
+            "within_model_interval": (round(float(w_lo), 0), round(float(w_hi), 0)),
+            # between-θ (yalnızca kimliklendirme belirsizliği; θ-medyanları bandı)
+            "between_theta_median_band": (round(min(per_theta_median), 0), round(max(per_theta_median), 0)),
+            # kimliklendirme-farkında zarf (İKİ belirsizlik birlikte)
+            "identification_aware_lower": round(min(per_theta_p10), 0),
+            "identification_aware_upper": round(max(per_theta_p90), 0),
+            "trade_probability_band": (round(min(per_theta_trade), 4), round(max(per_theta_trade), 4)),
+            "note": DISCLAIMER_PARTIAL,
         }

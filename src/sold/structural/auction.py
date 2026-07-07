@@ -43,8 +43,61 @@ AUCTION_FIELDS = (
     "parcel_area_m2",      # parsel yüzey alanı (birim alanı DEĞİL)
     "unit_net_m2",         # birim net alanı (parsel/brüt DEĞİL)
     "unit_gross_m2",       # birim brüt alanı (parsel/net DEĞİL)
+    "outcome_status",      # HAM e-Satış üst-düzey durumu (taksonomi korunur)
+    "outcome_reason",      # HAM düşme/sonuç sebebi (ör. Satıştan Vazgeçilmesi)
+    "trade_outcome_class", # yapısal ticaret sınıfı (completed_sale / censored / no_trade)
     "source_audited",      # kayıt elle denetlendi mi
 )
+
+# Gerçek authenticated e-Satış arayüzünde görülen ÜST-DÜZEY durumlar (operatör denetimi).
+# BEŞİNCİ bir kamu durumu UYDURULMAZ (yalnızca sale_prob'u açmak için bile).
+UYAP_OUTCOME_STATUSES = (
+    "Satıldı",                        # terminal pozitif tamamlanmış satış
+    "Birinci Alıcıya Süre Verildi",   # ödüllü / uzlaşma-bekleyen (sold=false DEĞİL)
+    "Malın Satışının Düşmesi",         # sebep-bağımlı (idari/geri-çekilme ≠ no-trade)
+    "İhale Sonucu Girilmemiştir",     # çözülmemiş / eksik sonuç (sold=false DEĞİL)
+)
+
+# Satışın düşmesinde idari/geri-çekilme sebebi jetonları (piyasa talebi başarısızlığı DEĞİL)
+_WITHDRAWAL_TOKENS = ("vazgeç", "vazgec", "iptal", "withdraw", "cancel", "idari")
+
+
+def classify_auction_outcome(outcome_status: object, outcome_reason: object = None) -> dict:
+    """Resmî e-Satış ÜST-DÜZEY durumundan yapısal ticaret sınıfı türetir (uydurma YOK).
+
+    Döner: ``trade_outcome_class``, ``sold`` (yalnızca completed_sale True), ``negative_trade``
+    (yalnızca açıkça ekonomik no-award/no-trade), ``sale_prob_eligible``.
+
+    KRİTİK: Yalnızca ``Satıldı`` terminal pozitif tamamlanmış satıştır. ``Birinci Alıcıya
+    Süre Verildi`` (uzlaşma-bekleyen) ve ``İhale Sonucu Girilmemiştir`` (eksik sonuç)
+    ``sold=false`` OLARAK SINIFLANDIRILMAZ — CENSORED'dır. ``Malın Satışının Düşmesi``
+    sebep-bağımlıdır: geri-çekilme/vazgeçme/iptal idari bir sonuçtur (no-trade DEĞİL).
+    Bir negatif ticaret gözlemi ancak resmî belge açıkça ekonomik no-award/no-trade
+    kurarsa girer; aksi halde CENSORED / outcome-ineligible korunur.
+    """
+    s = str(outcome_status or "").strip()
+    reason = str(outcome_reason or "").strip().lower()
+    if s == "Satıldı":
+        return {"trade_outcome_class": "completed_sale", "sold": True,
+                "negative_trade": False, "sale_prob_eligible": True}
+    if s == "Birinci Alıcıya Süre Verildi":
+        return {"trade_outcome_class": "settlement_pending", "sold": False,
+                "negative_trade": False, "sale_prob_eligible": False}
+    if s == "İhale Sonucu Girilmemiştir":
+        return {"trade_outcome_class": "missing_result", "sold": False,
+                "negative_trade": False, "sale_prob_eligible": False}
+    if s == "Malın Satışının Düşmesi":
+        if any(tok in reason for tok in _WITHDRAWAL_TOKENS):
+            return {"trade_outcome_class": "dropped_administrative", "sold": False,
+                    "negative_trade": False, "sale_prob_eligible": False}
+        if "no_trade" in reason or "talep yok" in reason or "teklif gelmedi" in reason:
+            return {"trade_outcome_class": "dropped_no_trade", "sold": False,
+                    "negative_trade": True, "sale_prob_eligible": True}
+        # Sebep kamuya gözlenemez → outcome-ineligible (no-trade OLARAK ALINMAZ)
+        return {"trade_outcome_class": "dropped_unspecified", "sold": False,
+                "negative_trade": False, "sale_prob_eligible": False}
+    return {"trade_outcome_class": "unknown", "sold": False,
+            "negative_trade": False, "sale_prob_eligible": False}
 
 
 def legal_floor(
@@ -96,10 +149,21 @@ def normalize_auction(rec: dict) -> dict:
     floor, exact = legal_floor(Q, pc, rc)
 
     sold = rec.get("sold")
-    if sold is None:
+    outcome_status = rec.get("outcome_status", rec.get("ihale_sonucu_durumu"))
+    outcome_reason = rec.get("outcome_reason", rec.get("dusme_sebebi"))
+    if outcome_status:
+        # HAM üst-düzey duruma dayalı taksonomi (yalnızca Satıldı → completed_sale)
+        cls = classify_auction_outcome(outcome_status, outcome_reason)
+        sold = cls["sold"]
+        trade_outcome_class = cls["trade_outcome_class"]
+    elif sold is None:
         result = str(rec.get("ihale_sonucu") or rec.get("result") or "").lower()
         bid = rec.get("winning_bid", rec.get("ihale_bedeli"))
         sold = bool(bid) and ("satılma" not in result)
+        trade_outcome_class = "completed_sale" if sold else "unclassified"
+    else:
+        sold = bool(sold)
+        trade_outcome_class = "completed_sale" if sold else "unclassified"
     sold = bool(sold)
     winning = _num(rec.get("winning_bid", rec.get("ihale_bedeli")))
     offer = rec.get("offer_count", rec.get("teklif_sayisi"))
@@ -123,6 +187,9 @@ def normalize_auction(rec: dict) -> dict:
         "parcel_area_m2": _num(rec.get("parcel_area_m2", rec.get("parsel_alani_m2"))),
         "unit_net_m2": _num(rec.get("unit_net_m2", rec.get("birim_net_m2"))),
         "unit_gross_m2": _num(rec.get("unit_gross_m2", rec.get("birim_brut_m2"))),
+        "outcome_status": outcome_status,          # HAM taksonomi korunur
+        "outcome_reason": outcome_reason,          # HAM sebep korunur
+        "trade_outcome_class": trade_outcome_class,
         "source_audited": bool(rec.get("source_audited", False)),
     }
 

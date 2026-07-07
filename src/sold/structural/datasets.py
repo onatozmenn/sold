@@ -70,15 +70,24 @@ def load_genuine_datasets(directory: Path | None = None) -> dict:
 
 
 def _uyap_status(df: pd.DataFrame) -> dict:
+    keys0 = (
+        "total_audited_auctions", "sold", "unsold", "censored_outcomes", "genuine_no_trade",
+        "winning_bids_observed", "offer_counts_observed", "bidder_counts_observed",
+        "exact_legal_floors_observed",
+    )
     if df is None or len(df) == 0:
-        return {k: 0 for k in (
-            "total_audited_auctions", "sold", "unsold", "winning_bids_observed",
-            "offer_counts_observed", "bidder_counts_observed", "exact_legal_floors_observed")}
+        return {k: 0 for k in keys0}
     sold = df["sold"].astype(bool)
+    cls = df["trade_outcome_class"].astype(str) if "trade_outcome_class" in df.columns else pd.Series([""] * len(df))
+    _CENSORED = ("settlement_pending", "missing_result", "dropped_administrative", "dropped_unspecified", "unknown")
+    no_trade = int((cls == "dropped_no_trade").sum())
     return {
         "total_audited_auctions": int(len(df)),
         "sold": int(sold.sum()),
-        "unsold": int((~sold).sum()),
+        # unsold = yalnızca AÇIK ekonomik no-trade; censored (bekleyen/eksik/idari) DEĞİL
+        "unsold": no_trade,
+        "censored_outcomes": int(cls.isin(_CENSORED).sum()),
+        "genuine_no_trade": no_trade,
         "winning_bids_observed": int(pd.to_numeric(df["winning_bid"], errors="coerce").notna().sum()),
         "offer_counts_observed": int(pd.to_numeric(df["offer_count"], errors="coerce").notna().sum()),
         "bidder_counts_observed": int(pd.to_numeric(df["bidder_count"], errors="coerce").notna().sum()),

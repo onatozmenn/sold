@@ -1392,6 +1392,7 @@ def structural_value_cmd(
     province: str = typer.Option("İstanbul", help="İl"),
     gross_m2: float = typer.Option(100.0, help="Brüt m²"),
     tightness: float = typer.Option(0.0, help="Piyasa sıkılığı (TÜİK hacminden; 0=nötr)"),
+    partial: bool = typer.Option(False, "--partial", help="KİMLİKLENDİRME-FARKINDA: Θ_I kabul edilebilir küme üzerinde aralık"),
 ) -> None:
     """Sıradan ilan için YAPISAL-YÖNTEM PROTOTİPİ closing dağılımı — gözlenen fiyat DEĞİL.
 
@@ -1415,6 +1416,48 @@ def structural_value_cmd(
             fg=typer.colors.RED,
         )
         raise typer.Exit(code=1)
+
+    if partial:
+        # KİMLİKLENDİRME-FARKINDA: gerçek momentlerden Θ_I kur, her θ için simüle et.
+        from .structural import (
+            PartiallyIdentifiedPredictor,
+            admissible_set,
+            build_observed_moments,
+            context_from_datasets,
+            load_genuine_datasets,
+        )
+
+        g = load_genuine_datasets()
+        built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+        ctx = context_from_datasets(g["uyap"], g["kap"])
+        res = admissible_set(built["moments"], ctx, n_candidates=2500)
+        pred = PartiallyIdentifiedPredictor(res.admissible_params, res.best_params).predict(
+            asking, fv, tightness=tightness
+        )
+        typer.secho(
+            "KİMLİKLENDİRME-FARKINDA YAPISAL ÇIKARIM (PARTIALLY_IDENTIFIED)",
+            fg=typer.colors.CYAN, bold=True,
+        )
+        typer.echo(f"  İlan: {asking:,.0f} TL · Fair value (TCMB çağdaş çıpa): {fv:,.0f} TL")
+        typer.echo(f"  Kabul edilebilir parametre kümesi |Θ_I|: {pred['parameter_set_size']}")
+        ce = pred["central_structural_estimate"]
+        if ce is None:
+            typer.secho("  Bu senaryoda ticaret olasılığı ~0 (Θ_I çoğunda no-trade).", fg=typer.colors.YELLOW)
+        else:
+            wlo, whi = pred["within_model_interval"]
+            blo, bhi = pred["between_theta_median_band"]
+            ilo, ihi = pred["identification_aware_lower"], pred["identification_aware_upper"]
+            typer.echo(f"  Merkezi yapısal tahmin: {ce:,.0f} TL")
+            typer.echo(f"  within-θ (pazarlık belirsizliği) %80: {wlo:,.0f} – {whi:,.0f} TL")
+            typer.echo(f"  between-θ (kimliklendirme belirsizliği) medyan bandı: {blo:,.0f} – {bhi:,.0f} TL")
+            typer.secho(
+                f"  KİMLİKLENDİRME-FARKINDA ARALIK (iki belirsizlik birlikte): {ilo:,.0f} – {ihi:,.0f} TL",
+                fg=typer.colors.GREEN,
+            )
+            tlo, thi = pred["trade_probability_band"]
+            typer.echo(f"  Ticaret olasılığı bandı: {tlo:.3f} – {thi:.3f}")
+        typer.secho(f"  {pred['note']}", fg=typer.colors.YELLOW)
+        return
 
     # identified=False → sensitivity mode (kimliklendirilmiş SMM tahmini yok)
     out = StructuralClosingPredictor(StructuralParams(), identified=False).predict(
@@ -1576,6 +1619,7 @@ def structural_identify_cmd(
     m_obs: dict = {}
     provenance: dict = {}
     unavailable: list = []
+    ineligible: list = []
     sample_sizes: dict = {}
 
     if demo:
@@ -1603,13 +1647,15 @@ def structural_identify_cmd(
             auctions_df, kap_df, toki_res = genuine["uyap"], genuine["kap"], genuine["toki_result"]
         built = build_observed_moments(auctions_df, kap_df, toki_res)
         m_obs, provenance, unavailable = built["moments"], built["provenance"], built["unavailable"]
+        ineligible = built.get("ineligible", [])
         sample_sizes = built["sample_sizes"]
         ctx = context_from_datasets(auctions_df, kap_df)
 
     rep = identification_report(
         ctx, StructuralParams(), DEFAULT_FREE, m_obs=m_obs,
         auctions=auctions_df, kap=kap_df, toki_result=toki_res,
-        provenance=provenance, unavailable=unavailable, sample_sizes=sample_sizes,
+        provenance=provenance, unavailable=unavailable, ineligible=ineligible,
+        sample_sizes=sample_sizes,
     )
     ds = rep["dataset"]
     typer.secho("Yapısal kimliklendirme raporu", fg=typer.colors.CYAN, bold=True)
@@ -1627,6 +1673,12 @@ def structural_identify_cmd(
         typer.echo(f"  Moment provenance: {rep['moment_provenance']}")
     for un in rep.get("unavailable_moments", []):
         typer.echo(f"  Eksik moment: {un['moment']} [{un['source']}] — {un['reason']}")
+    for il in rep.get("ineligible_moments", []):
+        typer.secho(
+            f"  KALDIRILDI (SMM DIŞI) moment: {il['moment']} [{il['source']}] "
+            f"(gözlenen={il.get('observed_value')}) — {il['reason']}",
+            fg=typer.colors.YELLOW,
+        )
     # Dış çapraz-mekanizma benchmark (gözlenir + kullanılabilir ama SMM DİŞI — unavailable DEĞİL)
     for fam, eb in (rep.get("external_benchmarks") or {}).items():
         typer.secho(
@@ -1690,11 +1742,68 @@ def structural_identify_cmd(
             typer.echo(f"    durum: {cmp['status']['before']} → {cmp['status']['after']}")
     if rep["status"] != "IDENTIFIED":
         typer.secho(
-            "  Not: rank < dim veya zayıf kimliklendirme → optimizer sonucu NOKTA TAHMİNİ olarak "
-            "SUNULMAZ; sensitivity/prototip mode. (Optimizer yakınsaması ≠ kimliklendirme.) "
-            "Sonraki iş: gerçek UYAP/KAP/tekrarlı TOKİ gözlem genişletmesi.",
+            "  Not: rank < dim → optimizer sonucu tek NOKTA TAHMİNİ olarak SUNULMAZ. Ama artık "
+            "rank(J)=dim ZORUNLU değil: KISMİ KİMLİKLENDİRME (partial identification) kapısı "
+            "devrede — 'sold structural partial' ile kabul edilebilir yapısal parametre kümesi "
+            "Θ_I ve 'sold structural value --partial' ile kimliklendirme-farkında aralık üretilir.",
             fg=typer.colors.YELLOW,
         )
+
+
+@structural_app.command("partial")
+def structural_partial_cmd(
+    candidates: int = typer.Option(3000, "--candidates", help="Örneklenecek aday parametre vektörü sayısı"),
+    rel: float = typer.Option(0.25, "--rel", help="Tolerans göreli payı: tol=max(1e-4, rel·|Q_min|)"),
+    seed: int = typer.Option(12345, "--seed", help="Yeniden-üretilebilir örnekleme tohumu"),
+    sensitivity: bool = typer.Option(True, "--sensitivity/--no-sensitivity", help="Tolerans duyarlılık taraması"),
+) -> None:
+    """KISMİ KİMLİKLENDİRME: kabul edilebilir yapısal parametre kümesi Θ_I ve tanılamaları.
+
+    Θ_I = {θ : Q(θ) ≤ Q_min + tol}. Tolerans AÇIK (tol=max(1e-4, rel·|Q_min|)) ve duyarlılık
+    testli — gizlice dar aralık için seçilmez. Ortak rastgele sayılar; yeniden-üretilebilir
+    örnekleme. Hangi parametrelerin NOKTA yerine KÜME-kimliklendirildiği raporlanır.
+    """
+    from .structural import (
+        admissible_set,
+        build_observed_moments,
+        context_from_datasets,
+        load_genuine_datasets,
+        tolerance_sensitivity,
+    )
+
+    g = load_genuine_datasets()
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    ctx = context_from_datasets(g["uyap"], g["kap"])
+    res = admissible_set(built["moments"], ctx, n_candidates=candidates, seed=seed, rel=rel)
+
+    typer.secho("Kısmi kimliklendirme (partial identification) — Θ_I", fg=typer.colors.CYAN, bold=True)
+    typer.echo(f"  En iyi SMM hedefi (Q_min): {res.best_objective:.4e}")
+    typer.echo(f"  Tolerans: {res.tolerance:.4e}  ({res.tolerance_rule})")
+    typer.echo(f"  Aday: {res.n_candidates} · kabul edilebilir |Θ_I|: {res.n_admissible}")
+    typer.echo(f"  KÜME-kimliklendirilmiş (set-identified): {res.set_identified() or '—'}")
+    typer.echo(f"  Nokta-benzeri (point-like): {res.point_like() or '—'}")
+    for p, r in res.param_ranges.items():
+        typer.echo(
+            f"    {p}: [{r['min']:.3f}, {r['max']:.3f}] "
+            f"(bant payı {r['range_fraction']:.2f}) → {r['classification']}"
+        )
+    if res.correlations:
+        strong = {k: round(v, 2) for k, v in res.correlations.items() if abs(v) >= 0.5}
+        typer.echo(f"  Güçlü parametre ödünleşimleri (|corr|≥0.5): {strong or '—'}")
+    if sensitivity:
+        typer.secho("  Tolerans duyarlılığı (gizli seçim YOK):", fg=typer.colors.CYAN)
+        for row in tolerance_sensitivity(built["moments"], ctx, rel_grid=(0.10, 0.25, 0.50, 1.00),
+                                         n_candidates=max(candidates // 2, 800), seed=seed):
+            typer.echo(
+                f"    rel={row['rel']:.2f} → tol={row['tolerance']:.3e} · "
+                f"|Θ_I|={row['n_admissible']} · set-id={row['set_identified'] or '—'}"
+            )
+    typer.secho(
+        "  DURUM: PARTIALLY_IDENTIFIED — rank(J)<dim; θ nokta olarak tanımlanmaz. Bu kabul "
+        "edilebilir küme dürüst yapısal belirsizliği taşır (θ rank için KÜÇÜLTÜLMEDİ).",
+        fg=typer.colors.YELLOW,
+        bold=True,
+    )
 
 
 @app.command("serve")

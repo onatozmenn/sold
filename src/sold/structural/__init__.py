@@ -15,7 +15,9 @@ from __future__ import annotations
 
 from .auction import (
     AUCTION_FIELDS,
+    UYAP_OUTCOME_STATUSES,
     auction_moments,
+    classify_auction_outcome,
     legal_floor,
     load_auctions,
     normalize_auction,
@@ -65,7 +67,15 @@ from .moments import (
     simulated_moments,
 )
 from .params import DEFAULT_FREE, StructuralParams
-from .predict import StructuralClosingPredictor
+from .partial import (
+    PARAM_BOUNDS,
+    PartialIdentificationResult,
+    admissible_set,
+    identification_tolerance,
+    objective_value,
+    tolerance_sensitivity,
+)
+from .predict import PartiallyIdentifiedPredictor, StructuralClosingPredictor
 from .smm import SMMResult, estimate_smm, nelder_mead, smm_objective
 from .toki import difference_disclosures, toki_composition_moments
 
@@ -90,6 +100,8 @@ __all__ = [
     "simulate_auctions",
     "auction_moments",
     "uyap_observed_moments",
+    "classify_auction_outcome",
+    "UYAP_OUTCOME_STATUSES",
     "AUCTION_FIELDS",
     # KAP yapısal veri kümesi
     "normalize_kap_disposal",
@@ -128,6 +140,14 @@ __all__ = [
     "save_snapshot",
     "load_snapshot",
     "compare_snapshots",
+    # kısmi kimliklendirme (partial identification)
+    "admissible_set",
+    "PartialIdentificationResult",
+    "PARAM_BOUNDS",
+    "identification_tolerance",
+    "tolerance_sensitivity",
+    "objective_value",
     # tahmin
     "StructuralClosingPredictor",
+    "PartiallyIdentifiedPredictor",
 ]

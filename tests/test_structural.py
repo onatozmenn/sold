@@ -18,10 +18,13 @@ from sold.structural import (
     DEFAULT_FREE,
     HedonicPremium,
     MomentContext,
+    PartiallyIdentifiedPredictor,
     StructuralClosingPredictor,
     StructuralParams,
+    admissible_set,
     auction_moments,
     build_observed_moments,
+    classify_auction_outcome,
     compare_snapshots,
     context_from_datasets,
     dataset_status,
@@ -29,6 +32,7 @@ from sold.structural import (
     difference_disclosures,
     estimate_smm,
     identification_report,
+    identification_tolerance,
     kap_observed_moments,
     legal_floor,
     load_auctions,
@@ -47,6 +51,7 @@ from sold.structural import (
     source_jacobian_ranks,
     tcmb_fair_value,
     toki_composition_moments,
+    tolerance_sensitivity,
     trade_mask,
 )
 
@@ -512,8 +517,14 @@ def test_build_observed_moments_reports_provenance_and_unavailable():
     g = load_genuine_datasets()
     built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
     m, prov, un = built["moments"], built["provenance"], built["unavailable"]
-    assert "uyap_sale_prob" in m and "uyap_win_over_appraisal_mean" in m and "kap_log_ratio_mean" in m
-    assert prov["kap_log_ratio_mean"] == "kap" and prov["uyap_sale_prob"] == "uyap"
+    # uyap_sale_prob SMM'den KALDIRILDI → m_obs'ta YOK; ineligible listesinde (dokümante neden)
+    assert "uyap_sale_prob" not in m and "uyap_win_over_appraisal_mean" in m and "kap_log_ratio_mean" in m
+    assert prov["kap_log_ratio_mean"] == "kap" and prov["uyap_win_over_appraisal_mean"] == "uyap"
+    inel = {x["moment"]: x for x in built["ineligible"]}
+    assert "uyap_sale_prob" in inel
+    assert inel["uyap_sale_prob"]["reason"] == (
+        "public UYAP outcome taxonomy does not currently identify a comparable negative auction trade class"
+    )
     un_moments = {u["moment"] for u in un}
     # UYAP artık 2 satılan açık artırma → uyap_win_over_appraisal_sd AÇILDI
     assert "uyap_win_over_appraisal_sd" in m and "uyap_win_over_appraisal_sd" not in un_moments
@@ -550,16 +561,17 @@ def test_identify_genuine_data_not_identified():
         ctx, StructuralParams(), DEFAULT_FREE, m_obs=built["moments"],
         auctions=g["uyap"], kap=g["kap"], toki_result=g["toki_result"],
         provenance=built["provenance"], unavailable=built["unavailable"],
+        ineligible=built["ineligible"],
     )
     assert rep["status"] == "NOT_IDENTIFIED"
     assert rep["rank"] < rep["n_structural_parameters"]  # rank 4 < dim 6
-    assert rep["n_observed_moments"] == 5  # uyap sale_prob/mean/sd + kap mean/sd
+    assert rep["n_observed_moments"] == 4  # uyap mean/sd + kap mean/sd (sale_prob KALDIRILDI)
     assert rep["prediction_mode"] == "sensitivity_mode"
     assert rep["moment_provenance"]
-    # 2 UYAP + 2 KAP → modellenen tüm momentler artık GÖZLENİR; unavailable listesi BOŞ olabilir.
-    # Kalan açık (rank 4 < dim 6) eksik momentten DEĞİL, dejenere sale_prob (iki satış) + sınırlı
-    # varyasyondan; bu operatör-bloklu (satılmayan açık artırma) — uydurulmaz.
+    # sale_prob SMM'den KALDIRILDI (geçersiz popülasyon momenti). Kalan açık (rank 4 < dim 6)
+    # → 2 parametre KÜME-kimliklendirilmiş; nokta-kimliklendirme ZORLANMAZ (partial id kapısı).
     assert isinstance(rep["unavailable_moments"], list)
+    assert any(x["moment"] == "uyap_sale_prob" for x in rep["ineligible_moments"])
 
 
 def test_identify_single_param_can_be_identified():
@@ -600,8 +612,8 @@ def test_source_jacobian_ranks_on_genuine_data():
     )
     assert sj["J_TOKI"]["rank"] == 0 and sj["J_TOKI"]["n_moments"] == 0  # kohort external benchmark
     assert sj["J_KAP"]["rank"] == 2 and sj["J_KAP"]["n_moments"] == 2  # mean + sd (2 müzakereli gözlem)
-    assert sj["J_UYAP"]["rank"] == 2 and sj["J_UYAP"]["n_moments"] == 3  # mean+sd bağımsız yön ekler (sale_prob=1.0 dejenere)
-    assert sj["J_combined"]["rank"] == 4  # birleşik = ölçülen rank (3→4, gerçek 2. UYAP satışı)
+    assert sj["J_UYAP"]["rank"] == 2 and sj["J_UYAP"]["n_moments"] == 2  # win mean+sd (sale_prob KALDIRILDI)
+    assert sj["J_combined"]["rank"] == 4  # birleşik = ölçülen rank (dejenere sale_prob'suz)
 
 
 # --- Snapshot karşılaştırması (identification-katkı) ------------------------ #
@@ -637,7 +649,9 @@ def test_second_sold_auction_unlocks_win_sd_fixture():
     assert built["sample_sizes"]["uyap_win_over_appraisal_mean"] == 2
 
 
-def test_unsold_auction_makes_sale_prob_non_degenerate_fixture():
+def test_uyap_sale_prob_removed_and_outcome_taxonomy_fixture():
+    # sale_prob SMM'den KALDIRILDI; gerçek e-Satış üst-durum taksonomisi karşılaştırılabilir
+    # negatif açık-artırma ticaret sınıfını AYIRAMIYOR → ineligible (dokümante neden).
     df = load_auctions(
         [
             {"muhammen_bedel": 1_000_000, "sold": True, "winning_bid": 950_000},
@@ -645,7 +659,9 @@ def test_unsold_auction_makes_sale_prob_non_degenerate_fixture():
         ]
     )
     built = build_observed_moments(df, None, None)
-    assert built["moments"]["uyap_sale_prob"] == 0.5  # artık mekanik 1.0 DEĞİL
+    assert "uyap_sale_prob" not in built["moments"]  # geçersiz moment SMM'de YOK
+    inel = {x["moment"] for x in built["ineligible"]}
+    assert "uyap_sale_prob" in inel  # dokumante ineligible
 
 
 def test_two_consecutive_disclosures_unlock_toki_cohort_fixture():
@@ -857,5 +873,88 @@ def test_uyap_second_sold_unlocks_win_sd_genuine():
     _ratios = [4_545_000 / 4_500_000, 6_550_000 / 13_000_000]
     assert built["moments"]["uyap_win_over_appraisal_sd"] == pytest.approx(float(np.std(_ratios)), abs=1e-12)
     assert built["moments"]["uyap_win_over_appraisal_mean"] == pytest.approx(float(np.mean(_ratios)), abs=1e-12)
-    # sale_prob HÂLÂ 1.0 (iki açık artırma da satıldı — satılmayan gözlem hâlâ operatör bekliyor)
-    assert built["moments"]["uyap_sale_prob"] == 1.0
+    # sale_prob SMM'den KALDIRILDI (geçersiz) → m_obs'ta YOK; ineligible'da dokümante
+    assert "uyap_sale_prob" not in built["moments"]
+    assert any(x["moment"] == "uyap_sale_prob" for x in built["ineligible"])
+
+
+# --- UYAP sonuç taksonomisi (gerçek e-Satış üst-durumları) ------------------- #
+def test_classify_auction_outcome_taxonomy():
+    # Yalnızca Satıldı terminal pozitif tamamlanmış satıştır
+    c = classify_auction_outcome("Satıldı")
+    assert c["trade_outcome_class"] == "completed_sale" and c["sold"] is True
+    # Uzlaşma-bekleyen ve eksik sonuç sold=false OLARAK SINIFLANDIRILMAZ (censored, no-trade DEĞİL)
+    for st, expect in (("Birinci Alıcıya Süre Verildi", "settlement_pending"),
+                       ("İhale Sonucu Girilmemiştir", "missing_result")):
+        cc = classify_auction_outcome(st)
+        assert cc["sold"] is False and cc["negative_trade"] is False
+        assert cc["trade_outcome_class"] == expect
+    # Malın Satışının Düşmesi: geri-çekilme/vazgeçme → idari (piyasa no-trade DEĞİL)
+    cw = classify_auction_outcome("Malın Satışının Düşmesi", "Satıştan Vazgeçilmesi")
+    assert cw["trade_outcome_class"] == "dropped_administrative" and cw["negative_trade"] is False
+    # Sebep kamuya gözlenemezse outcome-ineligible (no-trade OLARAK ALINMAZ)
+    cu = classify_auction_outcome("Malın Satışının Düşmesi", None)
+    assert cu["negative_trade"] is False and cu["trade_outcome_class"] == "dropped_unspecified"
+
+
+def test_genuine_uyap_records_completed_sale_class():
+    g = load_genuine_datasets()
+    a = g["uyap"].set_index("public_record_id")
+    for pid in ("16766356960", "16662608597"):
+        assert a.loc[pid]["outcome_status"] == "Satıldı"
+        assert a.loc[pid]["trade_outcome_class"] == "completed_sale"
+        assert bool(a.loc[pid]["sold"]) is True
+    # dataset_status: 2 tamamlanmış satış, 0 censored, 0 gerçek no-trade
+    st = dataset_status()["genuine"]["uyap"]
+    assert st["sold"] == 2 and st["censored_outcomes"] == 0 and st["genuine_no_trade"] == 0
+
+
+# --- Kısmi kimliklendirme (partial identification) -------------------------- #
+def test_partial_identification_admissible_set():
+    g = load_genuine_datasets()
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    ctx = context_from_datasets(g["uyap"], g["kap"])
+    res = admissible_set(built["moments"], ctx, n_candidates=2000, seed=7, rel=0.5)
+    assert np.isfinite(res.best_objective) and res.n_admissible >= 2
+    # AÇIK tolerans kuralı (gizli seçim YOK): tol = max(1e-4, 0.5·|Q_min|)
+    assert res.tolerance == pytest.approx(identification_tolerance(res.best_objective, rel=0.5), rel=1e-9)
+    assert "max(0.0001" in res.tolerance_rule
+    # rank(J)=4 < dim 6 → en az bazı parametreler KÜME-kimliklendirilmiş (nokta DEĞİL)
+    assert len(res.set_identified()) >= 1
+    assert set(res.param_ranges) == set(DEFAULT_FREE)
+    # YENİDEN-ÜRETİLEBİLİR (aynı seed → aynı sonuç)
+    res2 = admissible_set(built["moments"], ctx, n_candidates=2000, seed=7, rel=0.5)
+    assert res2.n_admissible == res.n_admissible
+    assert res2.best_objective == pytest.approx(res.best_objective)
+    # θ rank için KÜÇÜLTÜLMEZ: tüm 6 serbest parametre korunur
+    assert len(res.free_names) == 6
+
+
+def test_tolerance_sensitivity_is_explicit_and_monotone():
+    g = load_genuine_datasets()
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    ctx = context_from_datasets(g["uyap"], g["kap"])
+    rows = tolerance_sensitivity(built["moments"], ctx, rel_grid=(0.10, 0.25, 0.50, 1.00),
+                                 n_candidates=900, seed=7)
+    tols = [r["tolerance"] for r in rows]
+    sizes = [r["n_admissible"] for r in rows]
+    assert tols == sorted(tols)                 # tolerans rel ile artar
+    assert sizes[-1] >= sizes[0]                # kabul edilebilir küme daralmaz (gizli daraltılmamış)
+
+
+def test_identification_aware_prediction_dual_uncertainty():
+    g = load_genuine_datasets()
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    ctx = context_from_datasets(g["uyap"], g["kap"])
+    res = admissible_set(built["moments"], ctx, n_candidates=1200, seed=7)
+    pred = PartiallyIdentifiedPredictor(res.admissible_params, res.best_params).predict(
+        2_500_000, 5_000_000, n=6000, seed=0, max_thetas=120
+    )
+    assert pred["identification_status"] == "PARTIALLY_IDENTIFIED"
+    assert pred["parameter_set_size"] >= 1
+    # within-θ (pazarlık) ve between-θ (kimliklendirme) belirsizliği AYRI raporlanır
+    for key in ("within_model_interval", "between_theta_median_band",
+                "identification_aware_lower", "identification_aware_upper", "trade_probability_band"):
+        assert key in pred
+    # gözlenen fiyat / ölçülen sıradan-yeniden-satış doğruluğu İDDİA EDİLMEZ
+    assert "DEĞİL" in pred["note"]
