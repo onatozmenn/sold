@@ -184,3 +184,23 @@ milestones:
   price-semantics cases + admission idempotency/duplication/freeze). Full suite: **237 passed**
   (217 baseline + 20 ingestion tests). Structural moments, `θ`, mechanism, SMM, `Θ_A`,
   `conditional_on_trade`, and the numerical-search convention are unchanged.
+
+- **UYAP Live Browser Pilot 1 (non-mutating verification; outcome = `NOT_RUN`)** — added
+  [`src/sold/ingestion/uyap/pilot.py`](../src/sold/ingestion/uyap/pilot.py) and a
+  `sold uyap pilot` command that attempt, through a **user-controlled** Chrome/CDP session,
+  to collect the already-admitted record **2026/263 Esas** and reproduce its manually-audited
+  truth (`appraisal 6,800,000` / `İhale Bedeli 5,715,000` / `P/Q 0.8404411764705882` /
+  `ADMISSIBLE_COMPLETED_SALE`). The known truth is a **verification target only** — never
+  injected into extraction. The pilot is **non-mutating**: it never admits, a mutation guard
+  fingerprints `uyap.json` (sha256 + count + four-moment SMM vector) before/after, the genuine
+  UYAP count stays **7**, and no eighth observation is created. `BrowserCollector` gained a
+  minimal live `collect_record` (real-DOM document-link discovery via `discover_document_links`;
+  unsupported `javascript:`/popup/PDF patterns reported honestly, never fabricated). **Measured
+  outcome in the dev environment: `NOT_RUN`** (`browser_connection_status = playwright_missing`,
+  `live_page_reached = false`) — no user-controlled UYAP session was reachable, so no live run
+  occurred; the operator-side live run is still pending. Added 12 offline pilot tests (verification
+  layer, appraisal/İhale/P-Q/decision mismatch reporting, mutation guard, NOT_RUN semantics,
+  “offline fixture is not a live PASS”, no eighth observation, structural freeze). Full suite:
+  **249 passed** (237 baseline + 12 pilot tests). Structural core, four SMM moments,
+  `conditional_on_trade`, `Θ_A`, TOKİ external status, and the numerical-search convention
+  are unchanged.

@@ -234,6 +234,33 @@ sold uyap status                            # discovered / audited / admissible 
 
 > **Live UYAP access status.** Live end-to-end UYAP access was **not** available in the development environment and was **not** tested; there is **no** official UYAP API integration. The browser adapter is implemented and its prerequisites documented honestly, the deterministic parsers run against local fixtures and manually saved artifacts, and the **automated test suite requires no network**.
 
+### UYAP Live Browser Pilot 1 (verification workflow)
+
+A **non-mutating verification** milestone that checks whether the pipeline can, through a **user-controlled browser session**, collect the already-known completed-sale record **2026/263 Esas** and reproduce its manually-audited truth (`appraisal 6,800,000` / `İhale Bedeli 5,715,000` / `P/Q 0.8404411764705882` / `ADMISSIBLE_COMPLETED_SALE`). Because **2026/263 is already admitted**, the pilot **never** admits it again — the genuine UYAP count stays **7** and `uyap.json` is unchanged (a mutation guard fingerprints the file, count, and four-moment SMM vector before/after). e-Devlet authentication is always **manual**; the pilot only attaches to a session you launched and signed into yourself.
+
+Windows operator workflow (PowerShell; adjust the Chrome path for your machine):
+
+```powershell
+# 1) install the optional browser extra
+pip install -e ".[browser]"; python -m playwright install chromium
+
+# 2) start Chrome with remote debugging and a DEDICATED non-repo profile (sign in yourself in this window)
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="$env:LOCALAPPDATA\uyap_pilot_profile"
+#   (Chrome may also live at 'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe' or "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe")
+
+# 3) in that Chrome window: authenticate to e-Devlet/UYAP and open the 2026/263 result page
+
+# 4) run the non-mutating pilot (uses the current tab; never admits, never fabricates)
+sold uyap pilot --cdp-endpoint http://127.0.0.1:9222
+
+# 5) inspect the JSON report (gitignored runtime artifact)
+Get-Content data\ingestion\uyap\pilot_report.json
+```
+
+The dedicated profile lives **outside** the repository; browser profiles, cookies, tokens, and the pilot report are gitignored and never committed. Outcome semantics: **`PASS`** (real live session reached, required evidence extracted, reconciliation passed, audit `ADMISSIBLE_COMPLETED_SALE`, known-truth matched, `uyap.json` unchanged, count still 7); **`PARTIAL`** (live session worked but a required artifact/parser path was unsupported, reconciliation ambiguous, or terminal evidence not collected); **`FAIL`** (a real live run produced incorrect required evidence or an incorrect audit decision); **`NOT_RUN`** (no real user-controlled UYAP browser session was available). Offline regression success does **not** convert `NOT_RUN` into `PASS`.
+
+> **Measured pilot result: `NOT_RUN`.** The development environment had no user-controlled UYAP browser session (the optional Playwright extra was not installed and no CDP browser was reachable), so no live end-to-end run occurred. The safe orchestration, verification layer, mutation guards, and offline tests are in place; **the operator-side live run is still pending** and must be executed on a machine with an authenticated UYAP session.
+
 ## Optional direct-label validation channel
 
 Separately from the structural evidence above, `sold` retains a **frozen** listing-outcome channel that lets a broker or seller record the *outcome* of a listing and receive simple **non-ML negotiation analytics** in return. This channel is **not** part of the structural model:
