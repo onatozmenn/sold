@@ -230,7 +230,9 @@ def run_pilot(
         try:
             from .collect import BrowserCollector
 
-            coll = BrowserCollector(cdp_endpoint=cdp_endpoint).collect_record(url=url)
+            coll = BrowserCollector(cdp_endpoint=cdp_endpoint).collect_record(
+                url=url, target_file_id=file_id, target_institution=KNOWN_TRUTH["institution"]
+            )
             live_reached, browser_status = True, "connected"
             source_refs = [coll.get("url")]
             doc_patterns = coll.get("document_access_patterns", [])

@@ -47,6 +47,13 @@ DOCUMENT_LIST_CONTROL_TEXTS = ("ihale evrak listesi", "evrak listesi")
 
 # Satır-yerel görüntüle/eye eylemini tanıyan jetonlar (global Nth-eye KULLANILMAZ).
 _VIEW_ACTION_TOKENS = ("goruntule", "goster", "incele", "evrak", "eye", "view", "gor", "goz", "ac")
+_DOWNLOAD_TOKENS = ("indir", "download", "dosya", "kaydet")
+
+
+def _is_download_action(a: dict) -> bool:
+    """Bir eylemin indirme oku/kontrolü olup olmadığını belirler (eye/görüntüle DEĞİL)."""
+    blob = _ascii_lower(" ".join([str(a.get("text", "")), str(a.get("css", ""))]))
+    return a.get("kind") == "download" or any(k in blob for k in _DOWNLOAD_TOKENS)
 
 
 def classify_document_label(text: str) -> str | None:
@@ -89,12 +96,16 @@ def select_row_document_actions(rows: list[dict]) -> list[dict]:
         actions = row.get("actions") or []
         view = None
         for a in actions:
+            if _is_download_action(a):
+                continue  # indirme oku EYE/görüntüle DEĞİL
             t = _ascii_lower(a.get("text", "") or "")
             if a.get("kind") == "eye" or any(k in t for k in _VIEW_ACTION_TOKENS):
                 view = a
                 break
-        if view is None and actions:
-            view = actions[0]  # satır-yerel tek eylem
+        if view is None:
+            non_dl = [a for a in actions if not _is_download_action(a)]
+            if non_dl:
+                view = non_dl[0]  # satır-yerel eylem (indirme HARİÇ)
         if view is not None:
             selected.append({"row_index": i, "label": row.get("label"), "artifact_type": atype, "action": view})
     return selected
@@ -247,6 +258,121 @@ def classify_view_access_pattern(container_kind: str, observed: dict) -> str:
     return f"{prefix}_unsupported"
 
 
+# --- Fix 3: sayfa-durumu farkında, HEDEF-KAYIT-kapsamlı belge girişi (iki gerçek yol) --- #
+def classify_page_state(html: str, url: str | None = None) -> str:
+    """UYAP sayfa durumunu sınıflandırır: search_listing / record_detail / udf_viewer / unknown.
+
+    İçerik semantiği (yalnızca URL değil) kullanılır. Bilinen pilot değerleri GENEL varsayılan DEĞİL.
+    """
+    u = _ascii_lower(url or "").replace(" ", "")
+    fold = _ascii_lower(html or "")
+    if "viewer.jsp" in u or "mimetype=udf" in u or "evrak goruntuleme" in fold:
+        return "udf_viewer"
+    if "detayli inceleme" in fold or "ihaleye ait tekliflerim" in fold:
+        return "record_detail"
+    if re.search(r"\bincele\b", fold) and "evrak listesi" in fold:
+        return "search_listing"
+    return "unknown"
+
+
+def normalize_file_identity(file_id: str) -> str:
+    """'2026/263 Esas' / '2026/263 Icra' → '2026/263' (Esas/İcra listeleme ALIAS'ı normalize)."""
+    fold = _ascii_lower(file_id or "")
+    m = re.search(r"(\d{3,4})\s*/\s*(\d+)", fold)
+    return f"{m.group(1)}/{m.group(2)}" if m else fold.strip()
+
+
+def file_identity_matches(text: str, target_file_id: str) -> bool:
+    """Metin, hedef resmî dosya kimliğini içeriyor mu (Esas/İcra alias kabul; fiyat/P/Q DEĞİL)."""
+    tnum = normalize_file_identity(target_file_id)
+    if not tnum:
+        return False
+    fold = _ascii_lower(text or "")
+    pat = re.escape(tnum).replace("/", r"\s*/\s*")
+    return bool(re.search(pat, fold))
+
+
+def classify_document_entry_path(page_state: str) -> str:
+    """Sayfa durumundan belge-giriş yolunu türetir (listing_card_modal / detail_tab_panel)."""
+    if page_state == "search_listing":
+        return "listing_card_modal"
+    if page_state == "record_detail":
+        return "detail_tab_panel"
+    return "unsupported"
+
+
+def _card_control_labels(card_html: str) -> list[str]:
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(card_html or "", "html.parser")
+        out = []
+        for c in soup.select("a, button, [role=button]"):
+            t = c.get_text(" ", strip=True)
+            if t:
+                out.append(t[:40])
+        return out[:10]
+    except Exception:
+        return []
+
+
+def find_target_record_card(html: str, target_file_id: str, institution: str | None = None) -> dict | None:
+    """Listeleme sayfasında HEDEF kaydı resmî dosya kimliğiyle bulur (fiyat/P/Q/nth DEĞİL).
+
+    Aynı dosya kimliğine sahip TEK kartı döndürür; birden çok distinkt dosya no içeren container
+    (tüm-liste) satır/kart SAYILMAZ. İlk-global-kart ya da nth-kart seçilmez. OFFLINE testable.
+    """
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html or "", "html.parser")
+    except Exception:
+        return None
+    tnum = normalize_file_identity(target_file_id)
+    for sel in ("[class*=card]", "[class*=sonuc]", "[class*=result]", "[class*=ilan]", "li", "tr", "div"):
+        matches = []
+        for c in soup.select(sel):
+            text = c.get_text(" ", strip=True)
+            if not file_identity_matches(text, target_file_id):
+                continue
+            nums = set(re.findall(r"\d{3,4}\s*/\s*\d+", _ascii_lower(text)))
+            if len({re.sub(r"\s+", "", n) for n in nums}) != 1:
+                continue  # birden çok kayıt → container, kart değil
+            match_fields = ["file_id"]
+            if institution:
+                inst_tok = _ascii_lower(institution).split()
+                if inst_tok and inst_tok[0] in _ascii_lower(text):
+                    match_fields.append("institution")
+            matches.append((c, re.sub(r"\s+", " ", text), match_fields))
+        if len(matches) >= 1:
+            c, text, match_fields = matches[0]
+            return {
+                "html": str(c),
+                "file_text": text[:120],
+                "match_fields": match_fields,
+                "control_labels": _card_control_labels(str(c)),
+                "target_file": tnum,
+            }
+    return None
+
+
+def card_document_list_control(card_html: str) -> dict:
+    """Kart-yerel AKSİYONE EDİLEBİLİR 'İhale Evrak Listesi' kontrolü (metin-yalnız YETERSİZ)."""
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(card_html or "", "html.parser")
+    except Exception:
+        return {"found": False, "actionable": False, "kind": None}
+    for kind, sel in (("button", "button, [role=button]"), ("link", "a")):
+        for el in soup.select(sel):
+            if "evrak listesi" in _ascii_lower(el.get_text(" ", strip=True)):
+                return {"found": True, "actionable": True, "kind": kind, "text": el.get_text(" ", strip=True)[:40]}
+    if "evrak listesi" in _ascii_lower(soup.get_text(" ", strip=True)):
+        return {"found": False, "actionable": False, "kind": "non_actionable_text_only"}
+    return {"found": False, "actionable": False, "kind": None}
+
+
 def discover_document_links(html: str) -> list[dict]:
     """GERÇEK DOM'daki ``<a>`` bağlantılarından bilinen UYAP belge etiketlerini eşler.
 
@@ -391,15 +517,14 @@ class BrowserCollector:
             page.close()
             return html
 
-    def collect_record(self, url: str | None = None, follow_documents: bool = True) -> dict:  # pragma: no cover - canlı tarayıcı gerektirir
-        """Kullanıcının açtığı GERÇEK UYAP kaydını (mevcut sekme ya da verilen URL) toplar.
+    def collect_record(self, url: str | None = None, follow_documents: bool = True,
+                       target_file_id: str | None = None, target_institution: str | None = None) -> dict:  # pragma: no cover - canlı tarayıcı gerektirir
+        """Kullanıcının açtığı GERÇEK UYAP kaydını (arama/listeleme YA DA detay sayfası) toplar.
 
-        CDP ile kullanıcı-kontrollü oturuma bağlanır; ``url`` verilmezse mevcut ÖN sekmeyi
-        kullanır (operatörün elle açtığı 2026/263 kaydı). Ana sayfa HTML'i + başlık + URL +
-        GERÇEK DOM'dan keşfedilen belge bağlantıları döner; kullanılabilir (normal) belge
-        bağlantıları aynı oturumda izlenir. Desteklenmeyen desenler (javascript/popup/PDF-viewer)
-        UYDURULMAZ; ``document_access_patterns`` içinde dürüstçe raporlanır. Test paketi bu yolu
-        ÇAĞIRMAZ (ağ gerektirmez).
+        SAYFA-DURUMU FARKINDA: ``search_listing`` ise HEDEF kayıt kartı (``target_file_id`` /
+        listeleme alias'ı) bulunur, kart-yerel "İhale Evrak Listesi" → modal; ``record_detail``
+        ise detay-sekmesi → aynı-sayfa panel. İki yol aynı belge-satırı soyutlamasında birleşir.
+        Test paketi bu yolu ÇAĞIRMAZ (ağ gerektirmez).
         """
         sync_playwright = self._sync_playwright()
         with sync_playwright() as pw:
@@ -414,7 +539,7 @@ class BrowserCollector:
                 else:
                     if not context.pages:
                         raise RuntimeError(
-                            "no_matching_uyap_page: açık sekme yok. Önce 2026/263 UYAP sonuç sayfasını açın."
+                            "no_matching_uyap_page: açık sekme yok. Önce 2026/263 UYAP sayfasını açın."
                         )
                     page = context.pages[0]
             elif self.user_data_dir:
@@ -432,6 +557,12 @@ class BrowserCollector:
             documents: list[dict] = []
             access_patterns: list[dict] = []
             collection_diagnostics: dict = {
+                "page_state": classify_page_state(html, page_url),
+                "document_entry_path": "unsupported",
+                "target_record_card_found": False,
+                "target_record_card_match_fields": [],
+                "target_record_card_file_text": None,
+                "target_record_card_control_labels": [],
                 "document_list_control_found": False,
                 "document_list_control_kind": None,
                 "document_list_opened": False,
@@ -459,13 +590,11 @@ class BrowserCollector:
                         dp.close()
                     except Exception as exc:
                         access_patterns.append({"label": lk["text"], "pattern": "navigation_failed", "detail": str(exc)[:120]})
-                # Gerçek UYAP belge UI'si: "İhale Evrak Listesi" AYNI-SAYFA tab/panel (modal DEĞİL);
-                # satır-yerel eye → yeni-sekme UDF görüntüleyici. Modal yol yalnızca YEDEK.
-                if has_document_list_control(html):
-                    m_docs, m_patterns, m_diag = self._collect_documents(page, context)
-                    documents += m_docs
-                    access_patterns += m_patterns
-                    collection_diagnostics = m_diag
+                # SAYFA-DURUMU FARKINDA belge girişi (listeleme-kartı-modal VEYA detay-tab-panel).
+                m_docs, m_patterns, m_diag = self._collect_documents(page, context, target_file_id, target_institution)
+                documents += m_docs
+                access_patterns += m_patterns
+                collection_diagnostics = m_diag
             return {
                 "html": html,
                 "title": title,
@@ -476,17 +605,27 @@ class BrowserCollector:
                 "collection_diagnostics": collection_diagnostics,
             }
 
-    def _collect_documents(self, page, context) -> tuple:  # pragma: no cover - canlı DOM/olay gerektirir
-        """Gerçek gözlenen UYAP belge iş akışı: "İhale Evrak Listesi" AYNI-SAYFA tab/panel →
-        satır-yerel eye → YENİ-SEKME UDF görüntüleyici (viewer.jsp?mimeType=Udf).
+    def _collect_documents(self, page, context, target_file_id=None, target_institution=None) -> tuple:  # pragma: no cover - canlı DOM/olay gerektirir
+        """SAYFA-DURUMU FARKINDA, HEDEF-KAYIT-KAPSAMLI belge girişi (iki gerçek gözlenen yol).
 
-        Önce aynı-sayfa panel state-transition'ı algılanır (ilgili belge etiketleri görünür olur);
-        modal/dialog YEDEK'tir. Görüntüleyici temsili (dom_text/iframe/embed/canvas-image) runtime'da
-        GÖZLENİR; kanıt yalnızca deterministik erişilebilir kaynaktan alınır (UYDURMA/OCR YOK).
+        ``search_listing`` → HEDEF kayıt kartı dosya kimliğiyle bulunur (fiyat/nth DEĞİL) →
+        kart-yerel "İhale Evrak Listesi" → MODAL. ``record_detail`` → detay "İhale Evrak Listesi"
+        sekmesi → AYNI-SAYFA panel. İki yol aynı belge-satırı soyutlamasında birleşir
+        (``extract_panel_document_rows`` + ``select_row_document_actions``) → satır-yerel eye →
+        YENİ-SEKME UDF görüntüleyici. Global metin locator / global Nth-eye KULLANILMAZ.
         """
         import re as _re
 
+        html = page.content()
+        page_url = page.url or ""
+        page_state = classify_page_state(html, page_url)
         diag = {
+            "page_state": page_state,
+            "document_entry_path": classify_document_entry_path(page_state),
+            "target_record_card_found": False,
+            "target_record_card_match_fields": [],
+            "target_record_card_file_text": None,
+            "target_record_card_control_labels": [],
             "document_list_control_found": False,
             "document_list_control_kind": None,
             "document_list_opened": False,
@@ -502,21 +641,56 @@ class BrowserCollector:
         patterns: list[dict] = []
 
         control = None
-        for kind, loc in (
-            ("link", page.get_by_role("link", name=_re.compile("evrak listesi", _re.I))),
-            ("button", page.get_by_role("button", name=_re.compile("evrak listesi", _re.I))),
-            ("tab", page.get_by_role("tab", name=_re.compile("evrak listesi", _re.I))),
-            ("text", page.get_by_text(_re.compile("evrak listesi", _re.I))),
-        ):
-            try:
-                if loc.count() > 0:
-                    control = loc.first
-                    diag["document_list_control_found"] = True
-                    diag["document_list_control_kind"] = kind
-                    break
-            except Exception:
-                continue
+        if page_state == "search_listing":
+            if not target_file_id:
+                diag["document_collection_attempts"].append({"stage": "target_card", "blocking_reason": "no_target_file_id_provided"})
+                diag["document_collection_failures"] += 1
+                return documents, patterns, diag
+            card = find_target_record_card(html, target_file_id, target_institution)
+            if card is None:
+                diag["document_collection_attempts"].append({"stage": "target_card", "blocking_reason": "target_record_card_not_found_on_listing"})
+                diag["document_collection_failures"] += 1
+                return documents, patterns, diag
+            diag["target_record_card_found"] = True
+            diag["target_record_card_match_fields"] = card["match_fields"]
+            diag["target_record_card_file_text"] = card["file_text"]
+            diag["target_record_card_control_labels"] = card["control_labels"]
+            ctrl_info = card_document_list_control(card["html"])
+            diag["document_list_control_found"] = ctrl_info.get("found", False)
+            diag["document_list_control_kind"] = (f"card_{ctrl_info['kind']}" if ctrl_info.get("actionable") else ctrl_info.get("kind"))
+            if not ctrl_info.get("actionable"):
+                diag["document_collection_attempts"].append({"stage": "card_control", "blocking_reason": f"card_local_control_not_actionable:{ctrl_info.get('kind')}"})
+                diag["document_collection_failures"] += 1
+                return documents, patterns, diag
+            # Kart-yerel kontrolü CANLI DOM'da HEDEF kart kapsamında bul (global text locator DEĞİL —
+            # üçüncü canlı hatanın kök nedeni buydu).
+            control = self._locate_card_control(page, target_file_id)
+        elif page_state == "record_detail":
+            if target_file_id and not file_identity_matches(html, target_file_id):
+                diag["document_collection_attempts"].append({"stage": "detail_identity", "blocking_reason": "detail_page_does_not_match_target_file_id"})
+                diag["document_collection_failures"] += 1
+                return documents, patterns, diag
+            for kind, loc in (
+                ("tab", page.get_by_role("tab", name=_re.compile("evrak listesi", _re.I))),
+                ("link", page.get_by_role("link", name=_re.compile("evrak listesi", _re.I))),
+                ("button", page.get_by_role("button", name=_re.compile("evrak listesi", _re.I))),
+            ):
+                try:
+                    if loc.count() > 0:
+                        control = loc.first
+                        diag["document_list_control_found"] = True
+                        diag["document_list_control_kind"] = f"detail_{kind}"
+                        break
+                except Exception:
+                    continue
+        else:
+            diag["document_collection_attempts"].append({"stage": "page_state", "blocking_reason": f"unsupported_page_state:{page_state}"})
+            diag["document_collection_failures"] += 1
+            return documents, patterns, diag
+
         if control is None:
+            diag["document_collection_attempts"].append({"stage": "control_locate", "blocking_reason": "document_list_control_not_located_in_live_dom"})
+            diag["document_collection_failures"] += 1
             return documents, patterns, diag
 
         try:
@@ -526,14 +700,13 @@ class BrowserCollector:
             diag["document_collection_failures"] += 1
             return documents, patterns, diag
 
-        # AYNI-SAYFA panel / modal / dialog state-transition'ını bekle (sınırlı poll; modal YEDEK).
+        # Konteyner state-transition'ını bekle (listeleme→modal; detay→aynı-sayfa panel).
         observed = {"panel_labels_visible": False, "modal_visible": False, "dialog_visible": False, "new_page": False}
         scope = page
         for _ in range(12):  # ~6s
             try:
                 if extract_panel_document_rows(page.content()):
                     observed["panel_labels_visible"] = True
-                    break
             except Exception:
                 pass
             for key, sel in (("dialog_visible", "[role=dialog]"), ("modal_visible", ".modal")):
@@ -544,7 +717,7 @@ class BrowserCollector:
                         scope = m.first
                 except Exception:
                     pass
-            if observed["modal_visible"] or observed["dialog_visible"]:
+            if observed["modal_visible"] or observed["dialog_visible"] or observed["panel_labels_visible"]:
                 break
             page.wait_for_timeout(500)
 
@@ -557,6 +730,46 @@ class BrowserCollector:
             diag["document_collection_failures"] += 1
             return documents, patterns, diag
 
+        d2, p2 = self._collect_from_container(page, context, scope, container_kind, diag)
+        documents += d2
+        patterns += p2
+        return documents, patterns, diag
+
+    def _locate_card_control(self, page, target_file_id):  # pragma: no cover - canlı DOM
+        """HEDEF kaydın CANLI kartını dosya kimliğiyle bulur; kart-yerel "İhale Evrak Listesi"
+        kontrolünü döner (global metin locator DEĞİL — kart kapsamı zorunlu)."""
+        import re as _re
+
+        tnum = normalize_file_identity(target_file_id)
+        key = _re.escape(tnum).replace("/", r"\s*/\s*")
+        for csel in ("[class*=card]", "[class*=sonuc]", "[class*=result]", "[class*=ilan]", "li", "tr"):
+            try:
+                cards = page.locator(csel).filter(has_text=_re.compile(key, _re.I))
+                if cards.count() == 0:
+                    continue
+                card = cards.first
+                for name in ("button", "link"):
+                    try:
+                        act = card.get_by_role(name, name=_re.compile("evrak listesi", _re.I))
+                        if act.count() > 0:
+                            return act.first
+                    except Exception:
+                        continue
+                try:
+                    act = card.get_by_text(_re.compile("evrak listesi", _re.I))
+                    if act.count() > 0:
+                        return act.first
+                except Exception:
+                    pass
+            except Exception:
+                continue
+        return None
+
+    def _collect_from_container(self, page, context, scope, container_kind, diag) -> tuple:  # pragma: no cover - canlı DOM
+        """İki yolun BİRLEŞTİĞİ ortak belge-satırı toplayıcı: konteynerden satırlar → satır-yerel
+        eye (indirme oku DEĞİL) → YENİ-SEKME UDF görüntüleyici. ``diag`` yerinde güncellenir."""
+        documents: list[dict] = []
+        patterns: list[dict] = []
         try:
             panel_html = scope.inner_html(timeout=2000) if scope is not page else page.content()
         except Exception:
@@ -649,7 +862,7 @@ class BrowserCollector:
                 attempt["blocking_reason"] = str(exc)[:120]
                 diag["document_collection_failures"] += 1
             diag["document_collection_attempts"].append(attempt)
-        return documents, patterns, diag
+        return documents, patterns
 
     def _locate_row_eye(self, page, label):  # pragma: no cover - canlı DOM
         import re as _re
