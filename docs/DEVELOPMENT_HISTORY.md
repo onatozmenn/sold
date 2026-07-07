@@ -329,3 +329,47 @@ milestones:
   asserted to be programmatically reached — a post-Fix-4 operator rerun is required. Structural core, four
   SMM moments, `conditional_on_trade`, `Θ_A`, TOKİ external status (5 observed / 0 SMM), and the
   numerical-search convention are unchanged; the pilot remains non-mutating (genuine count stays 7).
+
+- **UYAP Live Browser Pilot 1 — Live Interoperability Fix 5 (measured fifth live result: `FAIL`)** —
+  chronology: run 1 = **FAIL** → Fix 1 → run 2 = **FAIL** → Fix 2 → run 3 = **FAIL** → Fix 3 → run 4 =
+  **FAIL** → Fix 4 → run 5 = **FAIL** → Fix 5 → operator rerun pending. Run 5 proved live that everything
+  up to and including the click works: `page_state = search_listing`, the `2026/263` card was found by
+  `file_id` + `institution`, `document_entry_path = listing_card_modal`, the card-local "İhale Evrak
+  Listesi" control was found (`document_list_control_kind = card_link`), and the click succeeded. The
+  operator **directly watched the real Chrome window during the collector run and confirmed the UYAP "İhale
+  Evrak Listesi" modal visibly opened** (dimmed background, foreground overlay, document rows: *Satış İlanı*,
+  *Belediye İmar Durumu*, *Satış Şartnamesi Ve Tutanağı*, *BİLİRKİŞİ RAPORU 2026 263 ESAS.udf*, *Artırma
+  Sonuç / Uzatma Tutanağı*, each with a download and an eye control). Yet the collector reported
+  `document_list_opened = false`, `document_modal_opened = false`, `document_labels_observed = []`,
+  `document_actions_observed = 0`, `blocking_reason = "document list did not become visible after control
+  click"`. The mutation guard passed again (`uyap.json` unchanged, count `7 -> 7`, SMM unchanged). The exact
+  defect was a **visible-modal / document-list recognition false negative**: detection required `.modal` /
+  `role=dialog` / `<tr>` markup, but the real overlay is a div/portal, and run-5 diagnostics also showed
+  mojibake-like label text. **Fix 5 (narrow, recognition only):** detect the open list from **visible
+  semantic content** — `detect_document_list` requires a document-list title **and ≥2 distinct recognized
+  document types** (never the title alone); `detect_document_container` locates the **nearest common
+  ancestor** of the recognized visible label elements, guarded so `html`/`body`/`[document]` and any
+  whole-multi-record results container (`spans_multiple_records`) can never be chosen and **without**
+  requiring `.modal`/`role=dialog` (`_container_strategy` reports `semantic_dialog` / `semantic_modal_class`
+  / `semantic_common_ancestor`); `extract_document_rows_semantic` anchors **document rows on the label
+  elements** (no `<tr>`/`li`/`class*=row` assumption, hidden templates ignored via `_is_hidden`) and reuses
+  the unified DocumentRow abstraction; `resolve_row_view_action` distinguishes a **row-local download vs
+  eye/view action** and returns `resolved=False` (never clicking arbitrarily) when a row is download-only or
+  ambiguous; `document_list_semantic_transition` tracks a **pre-click→post-click** change over *visible*
+  labels; and a constrained `_demojibake` (UTF-8-as-Latin-1/cp1252) repairs `İhale`/`Satış`/`Bilirkişi`/
+  `Artırma` for classification input only, guarded so correct Turkish Unicode is untouched and source
+  artifacts are never mutated. On success the live collector sets `document_list_opened = true`,
+  `document_list_container_kind = listing_modal` (from the entry path via `document_container_kind_for_entry`,
+  not CSS), populates labels/actions, and flows into the existing shared collection → new-tab UDF viewer
+  (Fix-2 handling unchanged). New privacy-safe diagnostics: `pre_click_visible_document_types`,
+  `post_click_visible_document_types`, `document_list_semantic_transition_detected`,
+  `document_container_strategy`, `document_container_recognized_types`, `document_row_detection_strategy`,
+  `recognized_document_rows` (per row: `artifact_type`, `normalized_label`, `action_count`,
+  `view_action_resolved`, `download_action_detected` — no source text, no personal data). Collection
+  priority (auction_result > appraisal_report > sale_notice > sale_spec) is preserved; `Belediye İmar
+  Durumu` is not collected; result-card `Satış Tutarı` is never substituted for the explicit İhale Bedeli.
+  Added 31 offline tests. Full suite: **363 passed** (332 baseline + 31 tests). **No live `PASS` is claimed**,
+  the modal is **not** asserted to open programmatically in a live run, and **UDF source extraction is not
+  proven** — a post-Fix-5 operator rerun is required. Structural core, four SMM moments,
+  `conditional_on_trade`, `Θ_A`, TOKİ external status (5 observed / 0 SMM), and the numerical-search
+  convention are unchanged; the pilot remains non-mutating (genuine count stays 7).
