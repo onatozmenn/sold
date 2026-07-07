@@ -204,3 +204,30 @@ milestones:
   **249 passed** (237 baseline + 12 pilot tests). Structural core, four SMM moments,
   `conditional_on_trade`, `Θ_A`, TOKİ external status, and the numerical-search convention
   are unchanged.
+
+- **UYAP Live Browser Pilot 1 — Live Interoperability Fix 1 (measured first live result: `FAIL`)** —
+  the operator executed the pilot against a **real** Chrome/CDP session and the **real** UYAP
+  `2026/263` page (`esatis.uyap.gov.tr/pp/index.jsp?...kayitId=16737826545`). Measured pre-fix
+  live signature: `mode=live`, `browser_connection_status=connected`, `live_page_reached=true`,
+  `extracted_appraisal=6800000`, `terminal_evidence=satildi`, but `artifact_types_collected=['status_card']`,
+  `document_access_patterns=[]`, `extracted_auction_price=null`, `kdv_rate=null`,
+  `reconciliation_status=ambiguous`, `audit_decision=MISSING_AUCTION_PRICE`, `pilot_outcome=FAIL`.
+  The mutation guard passed (identical `uyap.json` sha256, genuine count `7 -> 7`, SMM unchanged),
+  so this was a **collection/parser interoperability** defect, not a structural/admission defect.
+  **Root cause:** UYAP exposes documents through an “İhale Evrak Listesi” **button → modal →
+  row-local view/eye-action** UI; the anchor-only `discover_document_links` collected nothing from it,
+  so the official *Artırma Sonuç Tutanağı* (explicit `İhale Bedeli 5.715.000`) was never collected.
+  **Fix 1 (narrow):** a live `collect_record` modal path (text/role-based control detection,
+  `select_row_document_actions` row-local association — never a global Nth-eye, bounded
+  popup/new-tab/same-page/PDF/download event handling classified by `classify_access_pattern`);
+  token-based `classify_document_label` (incl. `BLR_BILIRKISI_RAPORU`, `Artırma Sonuç / Uzatma
+  Tutanağı`); KDV parsing for separated `KDV Oranı : %20` nodes; both-ordering asset-identifier
+  extraction (`50984 Ada, 1 Parsel` / `Ada 50984, Parsel 1` / `12. Kat` / `60 Nolu B.B.`); shared
+  `asset_descriptors` used by extraction and reconciliation; and privacy-safe report diagnostics
+  (`document_list_control_found`, `document_modal_opened`, `document_labels_observed`,
+  `document_collection_attempts`, …). Result-card `Satış Tutarı` is still **not** substituted for the
+  explicit İhale Bedeli. Added 13 offline tests (reproducing the FAIL signature and validating the
+  fixed ADMISSIBLE/reconciled path, modal logic, KDV, identifiers, non-mutation, freeze). Full suite:
+  **262 passed** (249 baseline + 13 tests). **No live `PASS` is claimed** — the operator rerun against
+  real UYAP is still required to establish a live `PASS`. Structural core, four SMM moments,
+  `conditional_on_trade`, `Θ_A`, TOKİ external status, and the numerical-search convention are unchanged.
