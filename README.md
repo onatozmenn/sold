@@ -148,15 +148,23 @@ The **four** SMM moments currently in `m_obs` are:
 3. `kap_log_ratio_mean`
 4. `kap_log_ratio_sd`
 
+**Five** genuine TOKİ external-benchmark moments are observed, but **zero** enter the current SMM objective — the simulator has **no primary-market mechanism** to produce a model-implied counterpart for them. UYAP, KAP and TOKİ records are **never** converted into synthetic ordinary-resale `asking → closing` ground truth.
+
 **Identification.** `sold structural identify` computes a numerical moment Jacobian `J(θ) = ∂m_sim/∂θ'` (central differences, common random numbers) **restricted to genuinely-observed moments**, and reports per-source Jacobian ranks, singular values, condition number, weak directions, and per-parameter profiles. The current fit has **`rank(J) = 4`** for **`dim(θ) = 6`**, so the reported status is:
 
 > **`identification_status = STRUCTURALLY_UNDERIDENTIFIED`** (an econometric statement about the moment structure — `rank(J) < dim(θ)`).
 
-Because the model is underidentified, prediction runs in **sensitivity mode** across the **`admissible_near_fit_set` (`Θ_A`)** — the near-minimum SMM criterion level set. `Θ_A` is **not** a formally estimated identified set, confidence region, or coverage claim; it is an admissible near-fit region used to expose parameter sensitivity.
+Because the model is underidentified, prediction runs in **sensitivity mode** across the **`admissible_near_fit_set` (`Θ_A`)**, defined as *the set of economically admissible structural parameter vectors whose SMM criterion lies within the documented near-fit tolerance of the best observed-moment fit*. `Θ_A` is explicitly **not** a formally estimated identified set, **not** a confidence region, and **not** a set with nominal coverage; it is an admissible near-fit region used only to expose parameter sensitivity.
 
-**Search stability is reported separately.** The numerical coverage of `Θ_A` by the descent-based sampler is a distinct question from econometric identification. A cumulative, incumbent-preserving search (`near_fit_search_stability`, e.g. `INSUFFICIENT_COVERAGE`) is reported **independently** of `identification_status` — a numerical-search caveat is never conflated with the structural-identification statement.
+**Search stability is reported separately from identification, and never conflated with it.** The numerical coverage of `Θ_A` by the descent-based sampler is a distinct question from econometric identification. The accepted cumulative, incumbent-preserving, common-threshold experiment (commit `3ef1208`) preserves the global incumbent as the search budget grows, so `cumulative_best_objective` **is monotone non-increasing** across increasing budgets. Its current diagnostic is:
 
-**Prediction semantics.** For an ordinary listing, the asking price conditions the seller reservation; `B`/`S` are drawn; trades (`B ≥ S`) are retained; and a **`conditional_on_trade`** closing distribution is returned. The prediction fields are:
+> **`near_fit_search_stability = INSUFFICIENT_COVERAGE`** — the common-threshold parameter support is still materially expanding at the largest audited search budget. This makes a search-stability judgment premature. The numerical coverage diagnostic is **separate from and does not establish** structural underidentification.
+
+**Prediction semantics.** For an ordinary listing, the asking price conditions the seller reservation; `B`/`S` are drawn; trades (`B ≥ S`) are retained; and a **`conditional_on_trade`** closing distribution is returned.
+
+> The transaction-price distribution is computed **conditional on the structural simulation producing trade, `B ≥ S`**. It is **not** an unconditional expected sale outcome.
+
+The prediction fields are:
 
 | Field | Meaning |
 |---|---|
@@ -165,7 +173,7 @@ Because the model is underidentified, prediction runs in **sensitivity mode** ac
 | `within_theta_negotiation_interval` | Bargaining dispersion **at a fixed `θ`** (buyer/seller heterogeneity) |
 | `between_theta_near_fit_band` | Movement of the central estimate **across `Θ_A`** (parameter sensitivity) |
 | `structural_sensitivity_range` | The combined envelope — a **structural sensitivity range, not a confidence interval**, with no frequentist coverage |
-| `simulated_trade_share_band` | Model-implied Monte-Carlo share of draws with `B ≥ S`; **not** an empirically calibrated probability of sale, and not calibrated to observed UYAP no-trade outcomes |
+| `simulated_trade_share_band` | The **model-implied Monte-Carlo share** of simulated draws satisfying `B ≥ S`. It is `not_empirically_calibrated_to_observed_uyap_no_trade_outcomes` — **not** a probability of sale, a sale likelihood, or an empirically estimated trade probability |
 
 No prediction ever returns a `confidence_interval` or an `accuracy` field.
 
@@ -368,6 +376,7 @@ The methodology is a **structural econometric** one; the following foundations d
 - **Housing search-and-bargaining models** — the economic framing of buyer/seller valuations, market tightness, and negotiated trade.
 - **Local (moment-Jacobian) identification** — assessing identification numerically via the rank/conditioning of `∂m_sim/∂θ'`, and reporting structural underidentification honestly (`rank(J) = 4 < dim(θ) = 6`).
 - **Set / near-fit sensitivity analysis** — reporting an admissible near-fit region (`Θ_A`) and prediction sensitivity across it, explicitly *not* a confidence region.
+- **Cumulative, incumbent-preserving numerical-search diagnostics** — a common-threshold search-coverage study kept **separate** from econometric identification; `cumulative_best_objective` is monotone non-increasing across increasing budgets, and the current coverage is `INSUFFICIENT_COVERAGE`.
 - **Appraisal-anchored (hedonic) fair value** — using TCMB appraisal levels as the fair-value anchor, with relative characteristic premiums only.
 - **Source-specific mechanism moments** — UYAP completed-sale auctions and KAP negotiated corporate disposals contribute moments under their own mechanism; TOKİ is an external cross-mechanism benchmark.
 
@@ -375,18 +384,19 @@ The methodology is a **structural econometric** one; the following foundations d
 
 ## Roadmap
 
-- [ ] Expand the genuine, provenance-audited UYAP completed-auction evidence set (additional audited completed-sale auctions) to add independent variation in the weak Jacobian directions (`sigma_s`, `mu_s`, `eta`) — without changing `θ`, the SMM objective, the bargaining mechanism, or the identification thresholds.
-- [ ] Add genuine audited UYAP censored / non-completed auction outcomes **only if** the public e-Satış taxonomy can define a comparable negative auction-trade class; otherwise keep `uyap_sale_prob` excluded rather than guessing a rate.
-- [ ] Expand the genuine, provenance-audited KAP negotiated-disposal evidence set (additional non-related corporate disposals with documented currency / VAT normalization at official TCMB EVDS rates).
-- [ ] Extend the structural model so the observed TOKİ external-benchmark cohort moments acquire a model-implied primary-market counterpart — only with a defensible mechanism, so TOKİ could move from external benchmark into SMM without inventing data.
-- [ ] Drive identification toward `rank(J) = dim(θ) = 6` strictly through genuine audited evidence and/or defensible model structure — never by shrinking `θ` or relaxing the identification criterion.
-- [ ] Improve `admissible_near_fit_set` (`Θ_A`) search coverage (raise `near_fit_search_stability` above `INSUFFICIENT_COVERAGE`) using the cumulative, incumbent-preserving design, without changing the production `Θ_A` definition.
-- [ ] Acquire the first genuine real-world submission through the frozen consumer direct-label validation channel (current genuine count: **0**), keeping it strictly outside SMM.
-- [ ] Broaden provincial coverage of the TCMB-anchored fair-value level and add genuine audited fair-value cross-checks.
-- [ ] Strengthen automated provenance / audit tests and the fixture-vs-genuine separation as the evidence base grows.
-- [ ] Complete a page-verified methodological bibliography (currently future documentation work) and keep `README.md` and `docs/DEVELOPMENT_HISTORY.md` aligned with the frozen core.
+The structural and prediction-semantics core is frozen. Current work focuses on expanding genuine evidence and testing how sensitive the structural conclusions are to data and assumptions.
 
-> The **structural and prediction-semantics core is frozen**, and the numerical search-approximation layer is frozen. These roadmap items expand genuine, provenance-audited evidence and documentation only — they do **not** modify the parameter vector, optimizer, bargaining mechanism, identification thresholds, or prediction terminology. Completed milestones have been moved to [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md).
+- [ ] Expand the genuine, provenance-audited UYAP completed-auction evidence set
+- [ ] Expand the genuine KAP negotiated-disposal evidence set
+- [ ] Recompute observed moments, Jacobian diagnostics, and `Theta_A` after each evidence expansion batch
+- [ ] Evaluate whether cumulative near-fit search coverage remains `INSUFFICIENT_COVERAGE` as evidence grows
+- [ ] Run UYAP and KAP leave-one-out and source-removal robustness analyses
+- [ ] Run structural-assumption sensitivity analyses for the asking-to-seller-signal specification, parameter bounds, distributional assumptions, and TCMB anchor perturbations
+- [ ] Compare structural behavior with transparent baselines: asking price, fixed-markdown rules, and the TCMB fair-value anchor, without making unsupported accuracy claims
+- [ ] Track how genuine evidence changes structural moments, Jacobian rank, near-fit parameter ranges, simulated trade-share behavior, and the structural sensitivity range
+- [ ] Produce a reproducible research report documenting the model, public evidence, identification limits, numerical search diagnostics, robustness results, and limitations
+
+_Completed pre-pivot and structural milestones are preserved in [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md); the structural and prediction-semantics core and the numerical search-approximation layer are frozen._
 
 ## Legal & Ethics
 
