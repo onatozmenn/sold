@@ -231,3 +231,32 @@ milestones:
   **262 passed** (249 baseline + 13 tests). **No live `PASS` is claimed** — the operator rerun against
   real UYAP is still required to establish a live `PASS`. Structural core, four SMM moments,
   `conditional_on_trade`, `Θ_A`, TOKİ external status, and the numerical-search convention are unchanged.
+
+- **UYAP Live Browser Pilot 1 — Live Interoperability Fix 2 (measured second live result: `FAIL`)** —
+  chronology: first real live pilot = **FAIL** → Fix 1 → second real live pilot = **FAIL** → Fix 2 →
+  operator rerun pending. On the second real run against the same real UYAP `2026/263` page, Fix 1
+  **improved KDV** (`kdv_rate: null -> 20.0`) and **found** the “İhale Evrak Listesi” control
+  (`document_list_control_found=true`, `kind=link`), but then **wrongly waited for a modal/dialog**
+  (`document_modal_opened=false`, `document_labels_observed=[]`, `document_actions_observed=0`), so the
+  official *Artırma Sonuç Tutanağı* was still not collected → `extracted_auction_price=null`,
+  `audit_decision=MISSING_AUCTION_PRICE`, `pilot_outcome=FAIL`. The mutation guard passed again
+  (`uyap.json` unchanged, count `7 -> 7`, SMM unchanged). The operator then **directly observed** the real
+  UI: “İhale Evrak Listesi” is a **same-page tab/panel** (no modal); the document list renders inside the
+  detail page; and the row-local **eye action** for *Artırma Sonuç / Uzatma Tutanağı* opens a **new UYAP
+  tab** at `viewer.jsp?mimeType=Udf&evrakId=...` (“Evrak Görüntüleme”) rendering the official UDF, whose
+  visible content includes `İhale Bedeli: 5.715.000,00` and `ALACAĞA MAHSUBEN`. **Fix 2 (narrow):**
+  first-class same-page document-panel detection (`classify_document_list_container` → `same_page_tab_panel`;
+  modal/dialog only as fallback), testable panel row extraction (`extract_panel_document_rows` /
+  `panel_has_documents`), row-local eye association (never a global Nth-eye), new-tab detection via the
+  browser-context `pages` delta, UDF viewer URL/mime classification (`classify_viewer_url`,
+  `viewer_mime_hint`), viewer-representation classification (`classify_viewer_representation`:
+  dom_text / iframe / embed_object / canvas_image_only / unknown), a new access-pattern name
+  (`same_page_tab_new_tab_udf_viewer`), and privacy-safe report diagnostics (`document_list_opened`,
+  `document_list_container_kind`, `viewer_pages_opened`, per-attempt viewer counts). The collector
+  captures the UDF **only** from a deterministically accessible source (DOM/iframe text); if the viewer
+  proves canvas/image-only it is reported unsupported — **no OCR, no fabrication, no injected truth**.
+  Result-card `Satış Tutarı` is still not substituted for the explicit İhale Bedeli. Added 15 offline
+  tests. Full suite: **277 passed** (262 baseline + 15 tests). **No live `PASS` is claimed and the UDF
+  viewer content representation is not asserted** until a runtime operator rerun observes it. Structural
+  core, four SMM moments, `conditional_on_trade`, `Θ_A`, TOKİ external status, and the numerical-search
+  convention are unchanged; the pilot remains non-mutating (genuine count stays 7).
