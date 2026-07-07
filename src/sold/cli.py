@@ -2013,6 +2013,46 @@ def uyap_status_cmd(store_dir: Optional[str] = typer.Option(None)) -> None:
     typer.echo(f"  inceleme blokerleri: {s['review_blockers']} · admissible: {s['admissible']} · admitte: {s['admitted']} · dışlanan: {s['excluded_non_terminal']}")
 
 
+@uyap_app.command("pilot")
+def uyap_pilot_cmd(
+    cdp_endpoint: Optional[str] = typer.Option(None, help="Kendi başlattığınız Chrome'un CDP uç noktası (ör. http://127.0.0.1:9222)"),
+    url: Optional[str] = typer.Option(None, help="Elle açtığınız 2026/263 UYAP sonuç sayfası URL'si (boşsa mevcut sekme)"),
+    genuine_path: Optional[str] = typer.Option(None, help="genuine uyap.json yolu (varsayılan repo)"),
+    store_dir: Optional[str] = typer.Option(None, help="Çalışma deposu / rapor dizini"),
+    report_path: Optional[str] = typer.Option(None, help="Pilot rapor JSON yolu (varsayılan data/ingestion/uyap/pilot_report.json)"),
+) -> None:
+    """UYAP LIVE BROWSER PILOT 1 — NON-MUTATING doğrulama (2026/263 zaten admitte; 8. gözlem OLUŞMAZ).
+
+    Kullanıcı-kontrollü Chrome oturumuna CDP ile bağlanır; kimlik doğrulama OTOMATİKLEŞTİRİLMEZ.
+    Canlı oturuma ulaşılamazsa NOT_RUN döner (uydurma YOK). Genuine uyap.json DEĞİŞTİRİLMEZ.
+    """
+    from .ingestion.uyap import run_pilot
+
+    r = run_pilot(cdp_endpoint=cdp_endpoint, url=url, genuine_path=genuine_path,
+                  store_dir=store_dir, report_path=report_path)
+    colors = {"PASS": typer.colors.GREEN, "PARTIAL": typer.colors.YELLOW,
+              "FAIL": typer.colors.RED, "NOT_RUN": typer.colors.CYAN}
+    outcome = r["pilot_outcome"]
+    typer.secho(f"Pilot: {outcome}  · mod={r['mode']} · tarayıcı={r['browser_connection_status']} · canlı-sayfa={r['live_page_reached']}",
+                fg=colors.get(outcome, typer.colors.WHITE), bold=True)
+    cmp = r["known_truth_comparison"]
+    typer.echo("  ZORUNLU doğrulamalar:")
+    for k, f in cmp["required"].items():
+        mark = "✓" if f["match"] else "✗"
+        typer.echo(f"    {mark} {k}: beklenen={f['expected']} · gözlenen={f['actual']}")
+    typer.echo(f"  opsiyonel korroborasyon geçti: {cmp['optional_all_passed']}")
+    mg = r["mutation_guard"]
+    typer.echo(f"  mutasyon-korumu: uyap.json değişmedi={mg['uyap_json_unchanged']} · genuine sayı 7={mg['genuine_uyap_count_unchanged']} · SMM değişmedi={mg['smm_moments_unchanged']}")
+    if r["document_access_patterns"]:
+        typer.echo(f"  belge-erişim desenleri: {r['document_access_patterns']}")
+    for reason in r["blocking_reasons"]:
+        typer.secho(f"  bloklayan: {reason}", fg=typer.colors.YELLOW)
+    typer.echo(f"  rapor: {r.get('report_path')}")
+    if outcome == "NOT_RUN":
+        typer.secho("  NOT_RUN: gerçek kullanıcı-kontrollü canlı UYAP oturumuna ulaşılamadı (offline fixture PASS'e dönüşmez).",
+                    fg=typer.colors.CYAN)
+
+
 def main() -> None:
     app()
 

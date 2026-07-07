@@ -23,7 +23,15 @@ import shutil
 from pathlib import Path
 
 from . import store
-from .models import STATE_COLLECTED, SourceArtifact
+from .models import (
+    ARTIFACT_APPRAISAL_REPORT,
+    ARTIFACT_AUCTION_RESULT,
+    ARTIFACT_SALE_NOTICE,
+    ARTIFACT_SALE_SPEC,
+    STATE_COLLECTED,
+    SourceArtifact,
+    _ascii_lower,
+)
 
 BROWSER_PREREQUISITES = (
     "Browser-assisted collection requires the optional 'browser' extra (Playwright) AND a "
@@ -33,6 +41,50 @@ BROWSER_PREREQUISITES = (
     "Attach to a session you launched yourself (CDP endpoint) or a local persistent profile you "
     "authenticated manually. If you cannot use a live browser, import saved HTML/PDF artifacts."
 )
+
+# Bilinen UYAP belge etiketi → artifact türü eşlemesi (GERÇEK DOM metnine karşı; uydurma selector YOK).
+DOCUMENT_LABEL_MAP = {
+    "satis ilani": ARTIFACT_SALE_NOTICE,
+    "bilirkisi raporu": ARTIFACT_APPRAISAL_REPORT,
+    "kiymet takdir": ARTIFACT_APPRAISAL_REPORT,
+    "ihale artirma sonuc tutanagi": ARTIFACT_AUCTION_RESULT,
+    "artirma sonuc tutanagi": ARTIFACT_AUCTION_RESULT,
+    "satis sartnamesi": ARTIFACT_SALE_SPEC,
+}
+
+
+def discover_document_links(html: str) -> list[dict]:
+    """GERÇEK DOM'daki ``<a>`` bağlantılarından bilinen UYAP belge etiketlerini eşler.
+
+    Uydurma DOM selector YOK: yalnızca gerçek bağlantı metni + ``href`` okunur. ``usable_href``
+    False ise (``javascript:`` / href yok) canlı erişim deseni DESTEKLENMİYOR olarak raporlanır.
+    Bu işlev OFFLINE test edilebilir (fixture HTML ile).
+    """
+    try:
+        from bs4 import BeautifulSoup
+
+        anchors = BeautifulSoup(html or "", "html.parser").find_all("a")
+    except Exception:  # bs4 yoksa kaba <a href> taraması
+        anchors = []
+    out: list[dict] = []
+    if not anchors:
+        for m in re.finditer(r"<a[^>]*href=\"([^\"]*)\"[^>]*>(.*?)</a>", html or "", re.IGNORECASE | re.DOTALL):
+            href, text = m.group(1), re.sub(r"<[^>]+>", " ", m.group(2))
+            _match_doc_link(text, href, out)
+        return out
+    for a in anchors:
+        _match_doc_link(a.get_text(" ", strip=True), a.get("href"), out)
+    return out
+
+
+def _match_doc_link(text: str, href: str | None, out: list[dict]) -> None:
+    fold = _ascii_lower(text or "")
+    for label, atype in DOCUMENT_LABEL_MAP.items():
+        if label in fold:
+            usable = bool(href) and not str(href).strip().lower().startswith("javascript:")
+            out.append({"text": text, "href": href, "artifact_type": atype, "usable_href": usable})
+            return
+
 
 
 def _safe_name(name: str) -> str:
@@ -146,3 +198,69 @@ class BrowserCollector:
             html = page.content()
             page.close()
             return html
+
+    def collect_record(self, url: str | None = None, follow_documents: bool = True) -> dict:  # pragma: no cover - canlı tarayıcı gerektirir
+        """Kullanıcının açtığı GERÇEK UYAP kaydını (mevcut sekme ya da verilen URL) toplar.
+
+        CDP ile kullanıcı-kontrollü oturuma bağlanır; ``url`` verilmezse mevcut ÖN sekmeyi
+        kullanır (operatörün elle açtığı 2026/263 kaydı). Ana sayfa HTML'i + başlık + URL +
+        GERÇEK DOM'dan keşfedilen belge bağlantıları döner; kullanılabilir (normal) belge
+        bağlantıları aynı oturumda izlenir. Desteklenmeyen desenler (javascript/popup/PDF-viewer)
+        UYDURULMAZ; ``document_access_patterns`` içinde dürüstçe raporlanır. Test paketi bu yolu
+        ÇAĞIRMAZ (ağ gerektirmez).
+        """
+        sync_playwright = self._sync_playwright()
+        with sync_playwright() as pw:
+            if self.cdp_endpoint:
+                browser = pw.chromium.connect_over_cdp(self.cdp_endpoint)
+                if not browser.contexts:
+                    raise RuntimeError("no_usable_browser_context: CDP oturumunda kullanılabilir bağlam yok.")
+                context = browser.contexts[0]
+                if url:
+                    page = context.new_page()
+                    page.goto(url, wait_until="domcontentloaded")
+                else:
+                    if not context.pages:
+                        raise RuntimeError(
+                            "no_matching_uyap_page: açık sekme yok. Önce 2026/263 UYAP sonuç sayfasını açın."
+                        )
+                    page = context.pages[0]
+            elif self.user_data_dir:
+                context = pw.chromium.launch_persistent_context(str(self.user_data_dir), headless=self.headless)
+                page = context.new_page()
+                if url:
+                    page.goto(url, wait_until="domcontentloaded")
+            else:
+                raise RuntimeError("no_user_controlled_session: cdp_endpoint ya da user_data_dir gerekir. " + BROWSER_PREREQUISITES)
+
+            html = page.content()
+            title = page.title()
+            page_url = page.url
+            links = discover_document_links(html)
+            documents: list[dict] = []
+            access_patterns: list[dict] = []
+            if follow_documents:
+                for lk in links:
+                    if not lk.get("usable_href"):
+                        access_patterns.append({"label": lk["text"], "pattern": "unsupported_javascript_or_handler"})
+                        continue
+                    href = lk["href"]
+                    try:
+                        dp = context.new_page()
+                        dp.goto(href, wait_until="domcontentloaded")
+                        content = dp.content()
+                        pattern = "pdf_or_download" if str(href).lower().endswith(".pdf") else "normal_link_new_page"
+                        documents.append({"artifact_type": lk["artifact_type"], "text": content, "source_ref": href})
+                        access_patterns.append({"label": lk["text"], "pattern": pattern})
+                        dp.close()
+                    except Exception as exc:
+                        access_patterns.append({"label": lk["text"], "pattern": "navigation_failed", "detail": str(exc)[:120]})
+            return {
+                "html": html,
+                "title": title,
+                "url": page_url,
+                "document_links": links,
+                "documents": documents,
+                "document_access_patterns": access_patterns,
+            }
+
