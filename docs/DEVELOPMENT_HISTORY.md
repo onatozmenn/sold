@@ -161,3 +161,26 @@ milestones:
   conditioning improved; the numerical near-fit search — a diagnostic **separate from and
   not establishing** identification — re-measured to `STABLE` at the audited budgets on the
   better-fitting 7-record evidence. Full suite: **217 passed** (215 baseline + 2 Batch-1 tests).
+
+- **UYAP Evidence Ingestion Pipeline V1 (data-acquisition subsystem)** — added
+  [`src/sold/ingestion/uyap/`](../src/sold/ingestion/uyap/): a provenance-aware
+  `discovery → collection → extraction → same-asset reconciliation → rule-based
+  completed-sale audit → human review → explicit admission` pipeline plus a `sold uyap`
+  operator CLI (`discover` / `import-artifacts` / `collect` / `extract` / `audit` /
+  `review` / `admit` / `status`). It **does not touch the frozen structural core**:
+  admission validates against the existing `normalize_auction` schema, writes genuine
+  `uyap.json` idempotently (dedupe by `public_record_id`), and preserves the UYAP P/Q
+  moment (numerator = explicit **İhale Bedeli**, never *Ödenmesi Gereken Bedel* / deposit /
+  share / setoff / KDV; KDV never adjusts P or Q; `ALACAĞA MAHSUBEN` never invalidates an
+  explicit İhale Bedeli). Non-terminal records → `EXCLUDED_NON_TERMINAL` (never a negative
+  sale-probability observation; `uyap_sale_prob` never created). Extraction is deterministic
+  (no ML / weak supervision / classifier). The browser collector (optional Playwright extra)
+  operates **only** within a user-controlled, already-authenticated or public session —
+  never automating e-Devlet login / MFA / CAPTCHA and never committing credentials, cookies,
+  tokens, or browser profiles; a manual artifact-import fallback keeps the pipeline usable
+  offline. **Live UYAP access was not available/tested in the dev environment and there is no
+  official UYAP API integration**; deterministic parsers run against local fixtures and the
+  automated suite needs no network. Added 20 offline regression/behavioral tests (six audited
+  price-semantics cases + admission idempotency/duplication/freeze). Full suite: **237 passed**
+  (217 baseline + 20 ingestion tests). Structural moments, `θ`, mechanism, SMM, `Θ_A`,
+  `conditional_on_trade`, and the numerical-search convention are unchanged.

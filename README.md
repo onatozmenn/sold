@@ -27,6 +27,7 @@ No fabricated data is ever served, and the system never reports a measured ordin
 - [How It Works](#how-it-works)
 - [Structural inference engine](#structural-inference-engine)
 - [Provenance-Audited Public Structural Evidence](#provenance-audited-public-structural-evidence)
+- [UYAP Evidence Ingestion Pipeline V1](#uyap-evidence-ingestion-pipeline-v1)
 - [Optional direct-label validation channel](#optional-direct-label-validation-channel)
 - [Data Sources](#data-sources)
 - [Install](#install)
@@ -209,6 +210,30 @@ The **SMM moment vector uses exactly four moments** (two UYAP, two KAP). TOKİ a
 - The consumer direct-label channel is **frozen** and never contributes to SMM.
 - `sold structural dataset` reports the genuine audited counts per source **separately** from fixtures, demo data, and near-fit search candidates.
 
+## UYAP Evidence Ingestion Pipeline V1
+
+A **provenance-aware data-acquisition subsystem** ([`src/sold/ingestion/uyap/`](src/sold/ingestion/uyap/)) that reduces the manual work of discovering, collecting, extracting, auditing, reviewing, and admitting UYAP e-Satış completed-sale evidence. It is **not** a new methodology or pricing mechanism and does **not** modify the frozen structural core; admission writes to the existing genuine UYAP schema and preserves the UYAP P/Q moment definition.
+
+**Workflow.** `discovery → collection → extraction → same-asset reconciliation → rule-based completed-sale audit → human review → explicit admission → existing UYAP evidence schema`. Extraction is deterministic (no ML, no weak supervision, no classifier); each field is traceable to the artifact it came from. **Audit is not admission** — a parser never writes genuine `uyap.json` directly; admission is a separate, explicit, idempotent operator action that validates the existing schema and dedupes by `public_record_id`.
+
+**Completed-sale admission rule** (formalizing the seven genuine observations + Batch 1): a candidate is admissible only with (A) an auditable appraisal `Q` for the same asset, (B) an **explicit official İhale Bedeli**, and (C) terminal completed-sale evidence (`Satıldı` / `Satış İşlemleri Tamamlandı`). The **auction-price numerator is always the explicit İhale Bedeli** — never the *Ödenmesi Gereken Bedel*, deposit-adjusted balance, ownership-share settlement, creditor-setoff, or KDV-adjusted amount; KDV never adjusts `P` or `Q`; `ALACAĞA MAHSUBEN` never invalidates an explicit İhale Bedeli. Non-terminal records (e.g. `Birinci Alıcıya Süre Verildi`) become `EXCLUDED_NON_TERMINAL` in [`validation/structural/uyap_candidates.json`](validation/structural/uyap_candidates.json) — never admitted, never a negative sale-probability observation (`uyap_sale_prob` is never created). Ambiguous candidates (missing appraisal / missing explicit İhale Bedeli / missing terminal evidence / reconciliation ambiguity) are surfaced to a **human-review queue** with the exact blocking reason and are never silently promoted.
+
+**Browser-assisted, not authentication-bypassing.** The optional browser collector (Playwright, `pip install -e ".[browser]"`) operates **only within a user-controlled, already-authenticated or public session** (attach to a browser you launched via a CDP endpoint, or a local profile you signed into yourself). It **never** automates e-Devlet login, MFA or CAPTCHA, never bypasses access controls, and never stores credentials, cookies, session tokens, or browser profiles in the repository (raw artifacts and profiles live under gitignored `data/`). If a live browser is unavailable, the **manual artifact-import** path (saved HTML/PDF/text) is the fallback.
+
+**Privacy.** Only non-personal institution / official file identifier / property / economic / public-record fields are retained. Party, debtor, creditor, counsel, and personal identifiers (names, TC IDs, phones, IBANs, accounts) are never propagated into normalized extraction or analytical records.
+
+```bash
+sold uyap discover --institution "Ankara ... Satış Memurluğu" --file-id "2026/43 Satış"
+sold uyap import-artifacts --candidate-id <id> --type auction_result --path saved_result.html
+sold uyap extract  --candidate-id <id>      # deterministic fields (not admission)
+sold uyap audit    --candidate-id <id>      # rule-based completed-sale audit (not admission)
+sold uyap review                            # human-review queue with blocking reasons
+sold uyap admit    --candidate-id <id>      # EXPLICIT, idempotent admission to uyap.json
+sold uyap status                            # discovered / audited / admissible / admitted
+```
+
+> **Live UYAP access status.** Live end-to-end UYAP access was **not** available in the development environment and was **not** tested; there is **no** official UYAP API integration. The browser adapter is implemented and its prerequisites documented honestly, the deterministic parsers run against local fixtures and manually saved artifacts, and the **automated test suite requires no network**.
+
 ## Optional direct-label validation channel
 
 Separately from the structural evidence above, `sold` retains a **frozen** listing-outcome channel that lets a broker or seller record the *outcome* of a listing and receive simple **non-ML negotiation analytics** in return. This channel is **not** part of the structural model:
@@ -351,6 +376,7 @@ src/sold/
   flywheel/          # frozen optional direct-label validation channel
   consumer/          # frozen consumer submission path + quality gate
   scraper/           # ToS-respectful local-example pipeline (no live scraping)
+  ingestion/uyap/    # UYAP evidence ingestion V1 (discovery→audit→explicit admission)
   tuik/              # TÜİK client
   db/                # SQLAlchemy models + schema
   cli.py             # `sold` command-line interface (incl. `sold structural ...`)
