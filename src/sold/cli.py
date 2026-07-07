@@ -1843,8 +1843,179 @@ def serve_cmd(
     uvicorn.run("sold.api.app:app", host=host, port=port, reload=reload)
 
 
+# --------------------------------------------------------------------------- #
+# UYAP Evidence Ingestion Pipeline V1 (data-acquisition; yapısal çekirdek DEĞİL)
+# --------------------------------------------------------------------------- #
+uyap_app = typer.Typer(
+    help="UYAP kanıt-ingestion V1 (keşif→toplama→çıkarım→denetim→inceleme→AÇIK admisyon)",
+    no_args_is_help=True,
+)
+app.add_typer(uyap_app, name="uyap")
+
+
+@uyap_app.command("discover")
+def uyap_discover_cmd(
+    institution: str = typer.Option(..., help="Kaynak kurum (ör. Ankara ... Satış Memurluğu)"),
+    file_id: str = typer.Option(..., "--file-id", help="Resmî dosya/esas kimliği (ör. '2026/43 Satış')"),
+    listing_ref: Optional[str] = typer.Option(None, help="Liste/sonuç referansı (repo-safe)"),
+    status: Optional[str] = typer.Option(None, help="Ham liste/sonuç durum metni"),
+    source_ref: Optional[str] = typer.Option(None, help="Kaynak sayfa referansı (token/cookie DEĞİL)"),
+    store_dir: Optional[str] = typer.Option(None, help="Çalışma deposu (varsayılan data/ingestion/uyap)"),
+) -> None:
+    """Bir UYAP adayını keşfeder (kişisel-olmayan metaveri; P/Q KULLANMAZ)."""
+    from .ingestion.uyap import discover
+
+    c = discover(institution, file_id, listing_ref, status, source_ref, store_dir=store_dir)
+    typer.secho(f"Keşfedildi: {c['candidate_id']}  durum={c.get('status_text')}", fg=typer.colors.GREEN)
+
+
+@uyap_app.command("import-artifacts")
+def uyap_import_cmd(
+    candidate_id: str = typer.Option(..., "--candidate-id", help="Aday kimliği (discover çıktısı)"),
+    artifact_type: str = typer.Option(..., "--type", help="sale_notice|appraisal_report|auction_result|status_card|sale_spec"),
+    path: Path = typer.Option(..., help="Elle kaydedilmiş kaynak dosya (HTML/PDF/metin)"),
+    source_ref: Optional[str] = typer.Option(None, help="Kaynak referansı (repo-safe)"),
+    store_dir: Optional[str] = typer.Option(None, help="Çalışma deposu"),
+) -> None:
+    """Elle kaydedilmiş bir kaynak artifact'ını içe aktarır (offline yedek; admisyon DEĞİL)."""
+    from .ingestion.uyap import import_artifact, store
+
+    c = store.get_candidate(candidate_id, store_dir)
+    if c is None:
+        typer.secho(f"Aday bulunamadı: {candidate_id} (önce `sold uyap discover`).", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    import_artifact(c, artifact_type, source_path=path, source_ref=source_ref, store_dir=store_dir)
+    store.upsert(c, store_dir)
+    typer.secho(f"Artifact eklendi: {artifact_type} -> {candidate_id}", fg=typer.colors.GREEN)
+
+
+@uyap_app.command("collect")
+def uyap_collect_cmd(
+    candidate_id: str = typer.Option(..., "--candidate-id"),
+    url: str = typer.Option(..., help="UYAP sonuç/liste sayfa URL'si (KULLANICI-KONTROLLÜ oturum)"),
+    artifact_type: str = typer.Option("status_card", "--type"),
+    cdp_endpoint: Optional[str] = typer.Option(None, help="Kendi başlattığınız tarayıcının CDP uç noktası"),
+    user_data_dir: Optional[str] = typer.Option(None, help="Elle oturum açtığınız yerel profil (data/ altında)"),
+    store_dir: Optional[str] = typer.Option(None, help="Çalışma deposu"),
+) -> None:
+    """Tarayıcı-DESTEKLİ toplama. Kimlik doğrulama OTOMATİKLEŞTİRİLMEZ; parola/MFA/CAPTCHA işlenmez."""
+    from .ingestion.uyap import BROWSER_PREREQUISITES, BrowserCollector, import_artifact, store
+
+    c = store.get_candidate(candidate_id, store_dir)
+    if c is None:
+        typer.secho(f"Aday bulunamadı: {candidate_id}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    try:
+        html = BrowserCollector(cdp_endpoint=cdp_endpoint, user_data_dir=user_data_dir).collect_page_html(url)
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.YELLOW)
+        typer.echo(BROWSER_PREREQUISITES)
+        raise typer.Exit(code=1)
+    import_artifact(c, artifact_type, text=html, source_ref=url, store_dir=store_dir)
+    store.upsert(c, store_dir)
+    typer.secho(f"Sayfa toplandı: {artifact_type} -> {candidate_id}", fg=typer.colors.GREEN)
+
+
+@uyap_app.command("extract")
+def uyap_extract_cmd(
+    candidate_id: str = typer.Option(..., "--candidate-id"),
+    store_dir: Optional[str] = typer.Option(None),
+) -> None:
+    """Toplanan artifact'lardan DETERMİNİSTİK alan çıkarımı (admisyon DEĞİL)."""
+    from .ingestion.uyap import run_extract, store
+
+    c = store.get_candidate(candidate_id, store_dir)
+    if c is None:
+        typer.secho(f"Aday bulunamadı: {candidate_id}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    c = run_extract(c, store_dir)
+    ev = c["extracted"]
+    typer.secho(f"Çıkarım ({ev['extraction_status']}):", fg=typer.colors.CYAN)
+    typer.echo(f"  ekspertiz(Q)={ev['appraisal_value']} · İhale Bedeli(P)={ev['ihale_bedeli']} · durum={ev['terminal_status_text']}")
+    if ev.get("ambiguities"):
+        typer.secho(f"  belirsizlik: {ev['ambiguities']}", fg=typer.colors.YELLOW)
+
+
+@uyap_app.command("audit")
+def uyap_audit_cmd(
+    candidate_id: str = typer.Option(..., "--candidate-id"),
+    store_dir: Optional[str] = typer.Option(None),
+    genuine_path: Optional[str] = typer.Option(None, help="genuine uyap.json yolu (varsayılan repo)"),
+) -> None:
+    """Aynı-varlık mutabakatı + kural-tabanlı tamamlanmış-satış denetimi (admisyon DEĞİL)."""
+    from .ingestion.uyap import run_audit, store
+
+    c = store.get_candidate(candidate_id, store_dir)
+    if c is None:
+        typer.secho(f"Aday bulunamadı: {candidate_id}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    c = run_audit(c, store_dir, genuine_path)
+    au = c["audit"]
+    typer.secho(f"Denetim: {au['decision']}", fg=typer.colors.CYAN, bold=True)
+    typer.echo(f"  ihale fiyatı(P)={au['auction_price']} · ekspertiz(Q)={au['appraisal_value']} · P/Q={au['win_over_appraisal']}")
+    for r in au.get("blocking_reasons", []):
+        typer.secho(f"  bloklayan: {r}", fg=typer.colors.YELLOW)
+
+
+@uyap_app.command("review")
+def uyap_review_cmd(store_dir: Optional[str] = typer.Option(None)) -> None:
+    """İnsan inceleme kuyruğunu listeler (belirsiz/bloklanan adaylar; sessiz terfi YOK)."""
+    from .ingestion.uyap import review_queue
+
+    items = review_queue(store_dir)
+    if not items:
+        typer.secho("İnceleme kuyruğu boş.", fg=typer.colors.GREEN)
+        return
+    for it in items:
+        typer.secho(f"- {it['candidate_id']} [{it['audit_decision']}]", fg=typer.colors.CYAN)
+        typer.echo(f"    durum={it['observed_status']} · Q={it['proposed_appraisal']} · P={it['proposed_auction_price']}")
+        typer.echo(f"    artifacts={it['artifacts_used']}")
+        typer.secho(f"    bloklayan: {it['blocking_reason']}", fg=typer.colors.YELLOW)
+        if it["fields_to_confirm"]:
+            typer.echo(f"    doğrulanacak: {it['fields_to_confirm']}")
+
+
+@uyap_app.command("admit")
+def uyap_admit_cmd(
+    candidate_id: str = typer.Option(..., "--candidate-id"),
+    store_dir: Optional[str] = typer.Option(None),
+    genuine_path: Optional[str] = typer.Option(None, help="genuine uyap.json yolu (varsayılan repo)"),
+) -> None:
+    """AÇIK admisyon: yalnızca ADMISSIBLE_COMPLETED_SALE → uyap.json (IDEMPOTENT); non-terminal → dışlanan manifest."""
+    from .ingestion.uyap import admit_candidate, record_exclusion, store
+    from .ingestion.uyap.models import ADMISSIBLE_COMPLETED_SALE, EXCLUDED_NON_TERMINAL
+
+    c = store.get_candidate(candidate_id, store_dir)
+    if c is None:
+        typer.secho(f"Aday bulunamadı: {candidate_id}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    dec = (c.get("audit") or {}).get("decision")
+    if dec == ADMISSIBLE_COMPLETED_SALE:
+        r = admit_candidate(c, genuine_path=genuine_path, store_dir=store_dir)
+        typer.secho(f"Admisyon: {r}", fg=typer.colors.GREEN)
+    elif dec == EXCLUDED_NON_TERMINAL:
+        r = record_exclusion(c, store_dir=store_dir)
+        typer.secho(f"Dışlandı (non-terminal), genuine sete GİRMEZ: {r}", fg=typer.colors.YELLOW)
+    else:
+        typer.secho(f"Admitte edilemez (karar={dec}); `sold uyap review` ile inceleyin.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+
+
+@uyap_app.command("status")
+def uyap_status_cmd(store_dir: Optional[str] = typer.Option(None)) -> None:
+    """Operatör durum özeti: aşama sayıları, inceleme blokerleri, admissible/admitted/excluded."""
+    from .ingestion.uyap import status_summary
+
+    s = status_summary(store_dir)
+    typer.secho("UYAP ingestion durumu", fg=typer.colors.CYAN, bold=True)
+    typer.echo(f"  toplam aday: {s['total_candidates']} · durumlar: {s['by_state']}")
+    typer.echo(f"  denetim kararları: {s['by_audit_decision']}")
+    typer.echo(f"  inceleme blokerleri: {s['review_blockers']} · admissible: {s['admissible']} · admitte: {s['admitted']} · dışlanan: {s['excluded_non_terminal']}")
+
+
 def main() -> None:
     app()
+
 
 
 if __name__ == "__main__":

@@ -19,6 +19,11 @@ data/
 *.sqlite
 *.sqlite3
 
+# UYAP ingestion — ham kaynak artifact'lar, tarayıcı profilleri/çerezleri ASLA commit edilmez
+data/ingestion/
+**/uyap_browser_profile/
+*.har
+
 # test / cache
 .pytest_cache/
 .mypy_cache/
