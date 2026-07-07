@@ -57,13 +57,38 @@ def _is_download_action(a: dict) -> bool:
     return a.get("kind") == "download" or any(k in blob for k in _DOWNLOAD_TOKENS)
 
 
+# --- Fix 5: kısıtlı mojibake (UTF-8-as-Latin-1/cp1252) onarımı — YALNIZCA sınıflandırma girdisi --- #
+def _looks_mojibake(text: str) -> bool:
+    """Bilinen UTF-8-as-Latin-1/cp1252 mojibake öncü karakterleri (Ã/Ä/Å) var mı."""
+    return any(lead in (text or "") for lead in ("Ã", "Ä", "Å"))
+
+
+def _demojibake(text: str) -> str:
+    """Tarayıcı/HTML anlık görüntüsündeki bilinen mojibake'i onarır (İhale/Satış/Bilirkişi/Artırma).
+
+    YALNIZCA bilinen imza varsa uygulanır; doğru Türkçe Unicode (İ/ş/ğ...) latin-1/cp1252'ye
+    kodlanamaz → olduğu gibi döner. Kaynak artifact'ları MUTASYONA UĞRATMAZ; yalnız normalize girdisi.
+    """
+    s = str(text or "")
+    if not s or not _looks_mojibake(s):
+        return s
+    for enc in ("latin-1", "cp1252"):
+        try:
+            repaired = s.encode(enc, "strict").decode("utf-8", "strict")
+        except UnicodeError:
+            continue
+        if repaired and repaired != s:
+            return repaired
+    return s
+
+
 def classify_document_label(text: str) -> str | None:
     """Bir belge etiketini artifact türüne eşler (jeton-tabanlı; GERÇEK DOM metnine karşı).
 
     ``BLR_BILIRKISI_RAPORU`` → appraisal_report; ``Artırma Sonuç / Uzatma Tutanağı`` →
     auction_result; ``Satış Şartnamesi Ve Tutanağı`` → sale_spec. Uydurma selector YOK.
     """
-    fold = re.sub(r"\s+", " ", _ascii_lower(text or "").replace("_", " ")).strip()
+    fold = re.sub(r"\s+", " ", _ascii_lower(_demojibake(text or "")).replace("_", " ")).strip()
     if not fold:
         return None
     if "satis sartnamesi" in fold:
@@ -134,31 +159,55 @@ _DOC_KEYWORDS = {
     "satis sartnamesi": ARTIFACT_SALE_SPEC,
 }
 _PANEL_ROW_SELECTORS = ("tr", "li", "[class*=evrak]", "[class*=row]")
+# Fix 5: belge toplama önceliği (auction_result > appraisal_report > sale_notice > sale_spec).
+_DOC_PRIORITY = {
+    ARTIFACT_AUCTION_RESULT: 0,
+    ARTIFACT_APPRAISAL_REPORT: 1,
+    ARTIFACT_SALE_NOTICE: 2,
+    ARTIFACT_SALE_SPEC: 3,
+}
 
 
 def _distinct_doc_types(text: str) -> set:
-    fold = _ascii_lower(text or "").replace("_", " ")
+    fold = _ascii_lower(_demojibake(text or "")).replace("_", " ")
     return {atype for kw, atype in _DOC_KEYWORDS.items() if kw in fold}
 
 
 def _row_action_specs(el) -> list[dict]:
-    """Bir satır elemanının eylem kontrollerini (a/button/i/img) çıkarır (satır-yerel)."""
+    """Bir satır elemanının EYLEM kontrollerini (a/button/ikon/başlıklı) çıkarır (satır-yerel).
+
+    Düz METİN etiketi (title/href/onclick olmayan span/div) EYLEM SAYILMAZ — aksi halde belge
+    etiketi yanlışlıkla görüntüleme eylemi olarak çözülebilir (Fix 5).
+    """
     specs: list[dict] = []
     try:
-        controls = el.select("a, button, [role=button], i, span, img")
+        controls = el.select("a, button, [role=button], i, img, [title], [aria-label], [onclick]")
     except Exception:
         return specs
+    seen: set = set()
     for a in controls:
-        title = a.get("title") or ""
+        name = getattr(a, "name", "") or ""
+        title = a.get("title") or a.get("aria-label") or ""
         try:
             txt = a.get_text(" ", strip=True)
         except Exception:
             txt = ""
         cls = " ".join(a.get("class") or [])
         alt = a.get("alt") or ""
-        blob = _ascii_lower(" ".join([title, txt, cls, alt]))
+        href = a.get("href")
+        is_action = (
+            name in ("a", "button", "i", "img")
+            or _ascii_lower(a.get("role") or "") == "button"
+            or bool(title) or bool(href) or a.has_attr("onclick")
+        )
+        if not is_action:
+            continue
+        if id(a) in seen:
+            continue
+        seen.add(id(a))
+        blob = _ascii_lower(_demojibake(" ".join([title, txt, cls, alt])))
         kind = "eye" if any(k in blob for k in _VIEW_ACTION_TOKENS) or "goz" in blob else "control"
-        specs.append({"kind": kind, "text": (title or txt or alt), "href": a.get("href"), "css": cls})
+        specs.append({"kind": kind, "text": (title or txt or alt), "href": href, "css": cls})
     return specs
 
 
@@ -197,6 +246,247 @@ def extract_panel_document_rows(html: str) -> list[dict]:
 def panel_has_documents(html: str) -> bool:
     """Aynı-sayfa panel HTML'inde ilgili belge etiketleri görünür mü (testable)."""
     return bool(extract_panel_document_rows(html))
+
+
+# --- Fix 5: canlı GÖRÜNÜR modal/overlay algısı — semantik belge-listesi + ortak-ata konteyner --- #
+def _has_doc_list_title(html: str) -> bool:
+    """Belge-listesi başlığı/kontrol semantiği var mı (İhale Evrak Listesi / Evrak Listesi)."""
+    fold = _ascii_lower(_demojibake(html or ""))
+    return any(t in fold for t in DOCUMENT_LIST_CONTROL_TEXTS)
+
+
+def _bs_soup(html: str):
+    try:
+        from bs4 import BeautifulSoup
+
+        return BeautifulSoup(html or "", "html.parser")
+    except Exception:
+        return None
+
+
+def _is_hidden(el) -> bool:
+    """Eleman (ya da bir atası) görünür-değil mi: display:none / visibility:hidden / hidden / aria-hidden.
+
+    Canlı Playwright görünürlüğü yerine OFFLINE HTML için kaba bir güvenlik: gizli şablon/kopya
+    işaretlemesini açık-belge-listesi kanıtı SAYMAMAK için (run-4 ham-HTML yanlış-pozitifi dersi).
+    """
+    cur = el
+    while cur is not None and getattr(cur, "name", None):
+        if hasattr(cur, "get"):
+            style = _ascii_lower(cur.get("style") or "").replace(" ", "")
+            if "display:none" in style or "visibility:hidden" in style:
+                return True
+            if cur.has_attr("hidden"):
+                return True
+            if _ascii_lower(cur.get("aria-hidden") or "") == "true":
+                return True
+        cur = cur.parent
+    return False
+
+
+def _single_doc_type(text: str):
+    """Metin TAM OLARAK bir belge türü içeriyorsa onu döner; aksi halde None (container/ilgisiz)."""
+    atype = classify_document_label(text)
+    if atype is None or len(_distinct_doc_types(text)) != 1:
+        return None
+    return atype
+
+
+def _semantic_label_elements(soup) -> list:
+    """GÖRÜNÜR, tek-belge-türü etiketini taşıyan EN KÜÇÜK elemanlar: ``[(el, atype, text)]``.
+
+    Sabit satır seçicisi (tr/li/class*=row) KULLANMAZ; div/section/li fark etmez. Gizli
+    (display:none/hidden/aria-hidden) şablon/kopya işaretleme YOK sayılır (yalnız görünür kanıt).
+    """
+    if soup is None:
+        return []
+    out: list = []
+    seen: set = set()
+    for el in soup.find_all(True):
+        if el.name in ("script", "style"):
+            continue
+        text = el.get_text(" ", strip=True)
+        atype = _single_doc_type(text)
+        if atype is None or _is_hidden(el):
+            continue
+        # EN KÜÇÜK: aynı türe sınıflanan bir alt-eleman varsa bu eleman etiket değil (üst) — atla
+        if any(_single_doc_type(d.get_text(" ", strip=True)) == atype for d in el.find_all(True)):
+            continue
+        key = (atype, re.sub(r"\s+", " ", _ascii_lower(_demojibake(text)))[:80])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((el, atype, text))
+    return out
+
+
+def _ancestor_chain(el) -> list:
+    chain = []
+    cur = el
+    while cur is not None:
+        chain.append(cur)
+        cur = getattr(cur, "parent", None)
+    return chain
+
+
+def _nearest_common_ancestor(elements: list):
+    """Verilen elemanların EN YAKIN ortak atası (kök-öncelikli hizalama)."""
+    chains = [list(reversed(_ancestor_chain(e))) for e in elements if e is not None]
+    if not chains:
+        return None
+    common = None
+    for level in zip(*chains):
+        if all(n is level[0] for n in level):
+            common = level[0]
+        else:
+            break
+    return common
+
+
+def _container_strategy(anc) -> str:
+    """Konteynerin (ya da yakın atasının) semantik türü: dialog / modal-class / ortak-ata."""
+    cur = anc
+    for _ in range(6):
+        if cur is None or not getattr(cur, "name", None):
+            break
+        if cur.name == "dialog" or (hasattr(cur, "get") and _ascii_lower(cur.get("role") or "") == "dialog"):
+            return "semantic_dialog"
+        cls = _ascii_lower(" ".join(cur.get("class") or [])) if hasattr(cur, "get") else ""
+        if "modal" in cls or "overlay" in cls or "dialog" in cls:
+            return "semantic_modal_class"
+        cur = cur.parent
+    return "semantic_common_ancestor"
+
+
+def detect_document_container(html: str) -> dict:
+    """Görünür belge etiketlerinden ORTAK-ATA belge konteynerini bulur (OFFLINE testable).
+
+    ``html``/``body``/tüm-sayfa ya da BİRDEN ÇOK kayıt içeren arama-sonuç container'ı SEÇİLMEZ.
+    Konteyner ≥2 distinkt tanınan belge türü içermelidir. ``.modal``/``role=dialog`` GEREKMEZ
+    (div/portal/overlay da olur); strateji buna göre raporlanır.
+    """
+    label_els = _semantic_label_elements(_bs_soup(html))
+    types = sorted({atype for _, atype, _ in label_els})
+    if len(types) < 2:
+        return {"found": False, "strategy": "not_found", "recognized_types": types,
+                "reason": "insufficient_document_types"}
+    anc = _nearest_common_ancestor([el for el, _, _ in label_els])
+    if anc is None or getattr(anc, "name", None) in ("html", "body", "[document]", None):
+        return {"found": False, "strategy": "not_found", "recognized_types": types,
+                "reason": "ancestor_too_broad"}
+    anc_text = anc.get_text(" ", strip=True)
+    file_nums = {re.sub(r"\s+", "", n) for n in re.findall(r"\d{3,4}\s*/\s*\d+", _ascii_lower(_demojibake(anc_text)))}
+    if len(file_nums) > 1:
+        return {"found": False, "strategy": "not_found", "recognized_types": types,
+                "reason": "spans_multiple_records"}
+    return {"found": True, "strategy": _container_strategy(anc),
+            "recognized_types": sorted(_distinct_doc_types(anc_text)), "container_tag": anc.name}
+
+
+def _semantic_row_for_label(label_el):
+    """Etiket elemanından, eyleme-sahip EN YAKIN kısıtlı atayı (satır) bulur (tr/li VARSAYMAZ)."""
+    cur = label_el
+    for _ in range(6):
+        if cur is None or not getattr(cur, "name", None):
+            break
+        if len(_distinct_doc_types(cur.get_text(" ", strip=True))) > 1:
+            break  # birden çok belgeyi kapsıyor → satır değil, dur
+        actions = [a for a in _row_action_specs(cur) if (a.get("text") or a.get("href") or a.get("css"))]
+        if actions:
+            return cur, actions
+        cur = cur.parent
+    return label_el, _row_action_specs(label_el)
+
+
+def extract_document_rows_semantic(html: str) -> list[dict]:
+    """Sabit satır seçicisi OLMADAN, semantik etiket-anchoring ile belge satırlarını çıkarır.
+
+    Her tanınan GÖRÜNÜR etiket → eyleme-sahip en yakın kısıtlı ata (satır) → birleşik DocumentRow
+    (``{"label", "actions"}``). Gerçek UYAP overlay'i div/portal olabilir; tr/li/class*=row GEREKMEZ.
+    ``extract_panel_document_rows`` ile aynı soyutlamayı üretir (paylaşılan toplama yolu). OFFLINE testable.
+    """
+    rows: list[dict] = []
+    seen: set = set()
+    for el, _atype, text in _semantic_label_elements(_bs_soup(html)):
+        key = re.sub(r"\s+", " ", _ascii_lower(_demojibake(text)))[:80]
+        if key in seen:
+            continue
+        seen.add(key)
+        _row_el, actions = _semantic_row_for_label(el)
+        rows.append({"label": text, "actions": actions})
+    return rows
+
+
+def visible_document_types(html: str) -> list[str]:
+    """Yalnızca GÖRÜNÜR etiketlerden tanınan belge türleri (pre/post-click imzası için)."""
+    return sorted({atype for _, atype, _ in _semantic_label_elements(_bs_soup(html))})
+
+
+def detect_document_list(html: str) -> dict:
+    """Açık belge listesini GÖRÜNÜR semantikten algılar: başlık + ≥2 distinkt tür (başlık TEK BAŞINA yetmez)."""
+    rows = extract_document_rows_semantic(html)
+    types = sorted({t for t in (classify_document_label(r["label"]) for r in rows) if t})
+    title = _has_doc_list_title(html)
+    cont = detect_document_container(html)
+    return {
+        "detected": bool(title and len(types) >= 2 and cont["found"]),
+        "title_present": title,
+        "recognized_types": types,
+        "labels": [r["label"] for r in rows],
+        "n_rows": len(rows),
+        "container_strategy": cont.get("strategy", "not_found"),
+    }
+
+
+def document_list_semantic_transition(before_html: str, after_html: str) -> dict:
+    """Tıklama öncesi/sonrası GÖRÜNÜR belge-türü kümesindeki materyal geçişi algılar."""
+    before = set(visible_document_types(before_html))
+    after = set(visible_document_types(after_html))
+    return {
+        "pre_click_visible_document_types": sorted(before),
+        "post_click_visible_document_types": sorted(after),
+        "transition_detected": len(after) >= 2 and len(after - before) >= 1,
+        "new_document_types": sorted(after - before),
+    }
+
+
+def document_container_kind_for_entry(page_state: str) -> str:
+    """Giriş yolundan konteyner türü (CSS class'ından DEĞİL): search_listing → listing_modal,
+    record_detail → same_page_tab_panel. Operatör görsel overlay'i gördü; DOM ``.modal`` gerekmez."""
+    if page_state == "search_listing":
+        return "listing_modal"
+    if page_state == "record_detail":
+        return "same_page_tab_panel"
+    return "not_opened"
+
+
+def resolve_row_view_action(actions: list[dict]) -> dict:
+    """Satır-yerel GÖRÜNTÜLE/eye eylemini çözer (indirme ile karıştırmaz). Belirsizse KEYFİ tıklama YOK.
+
+    İki-eylemli gerçek UYAP satırı (indirme + eye) → eye çözülür. Yalnız indirme / net görüntüleme
+    yok / birden çok eye adayı → ``resolved=False`` (satır çözülemez; keyfi eylem seçilmez). OFFLINE testable.
+    """
+    acts = list(actions or [])
+    downloads = [a for a in acts if _is_download_action(a)]
+    eyes = []
+    for a in acts:
+        if _is_download_action(a):
+            continue
+        blob = _ascii_lower(_demojibake(" ".join([str(a.get("text", "")), str(a.get("css", ""))])))
+        if a.get("kind") == "eye" or any(k in blob for k in _VIEW_ACTION_TOKENS):
+            eyes.append(a)
+    if len(eyes) == 1:
+        return {"view_action": eyes[0], "resolved": True, "download_action_detected": bool(downloads), "reason": "eye"}
+    non_dl = [a for a in acts if not _is_download_action(a)]
+    if not eyes and downloads and len(non_dl) == 1:
+        return {"view_action": non_dl[0], "resolved": True, "download_action_detected": True,
+                "reason": "single_non_download_beside_download"}
+    if not eyes and not non_dl:
+        return {"view_action": None, "resolved": False, "download_action_detected": bool(downloads), "reason": "download_only"}
+    if not eyes:
+        return {"view_action": None, "resolved": False, "download_action_detected": bool(downloads), "reason": "no_view_action"}
+    return {"view_action": None, "resolved": False, "download_action_detected": bool(downloads),
+            "reason": "ambiguous_multiple_view_candidates"}
 
 
 def classify_document_list_container(observed: dict) -> str:
@@ -245,7 +535,7 @@ def classify_viewer_representation(counts: dict) -> str:
 def classify_view_access_pattern(container_kind: str, observed: dict) -> str:
     """Belge-listesi konteyneri + görüntüleme olayından erişim desenini adlandırır (uydurma YOK)."""
     prefix = "same_page_tab" if container_kind == "same_page_tab_panel" else (
-        "modal" if container_kind in ("modal", "dialog") else (container_kind or "unknown"))
+        "modal" if container_kind in ("modal", "dialog", "listing_modal") else (container_kind or "unknown"))
     if observed.get("new_page"):
         if observed.get("is_udf"):
             return f"{prefix}_new_tab_udf_viewer"
@@ -714,6 +1004,13 @@ class BrowserCollector:
                 "document_modal_opened": False,
                 "document_labels_observed": [],
                 "document_actions_observed": 0,
+                "pre_click_visible_document_types": [],
+                "post_click_visible_document_types": [],
+                "document_list_semantic_transition_detected": False,
+                "document_container_strategy": "not_found",
+                "document_container_recognized_types": [],
+                "document_row_detection_strategy": None,
+                "recognized_document_rows": [],
                 "document_collection_attempts": [],
                 "document_collection_failures": 0,
                 "viewer_pages_opened": 0,
@@ -801,6 +1098,13 @@ class BrowserCollector:
             "document_modal_opened": False,
             "document_labels_observed": [],
             "document_actions_observed": 0,
+            "pre_click_visible_document_types": [],
+            "post_click_visible_document_types": [],
+            "document_list_semantic_transition_detected": False,
+            "document_container_strategy": "not_found",
+            "document_container_recognized_types": [],
+            "document_row_detection_strategy": None,
+            "recognized_document_rows": [],
             "document_collection_attempts": [],
             "document_collection_failures": 0,
             "viewer_pages_opened": 0,
@@ -861,6 +1165,13 @@ class BrowserCollector:
             diag["document_collection_failures"] += 1
             return documents, patterns, diag
 
+        # Fix 5: tıklama ÖNCESİ görünür belge-türü imzası (semantic transition kanıtı için).
+        try:
+            pre_html = page.content()
+        except Exception:
+            pre_html = ""
+        diag["pre_click_visible_document_types"] = visible_document_types(pre_html)
+
         try:
             control.click(timeout=5000)
         except Exception as exc:
@@ -868,37 +1179,45 @@ class BrowserCollector:
             diag["document_collection_failures"] += 1
             return documents, patterns, diag
 
-        # Konteyner state-transition'ını bekle (listeleme→modal; detay→aynı-sayfa panel).
-        observed = {"panel_labels_visible": False, "modal_visible": False, "dialog_visible": False, "new_page": False}
-        scope = page
+        # Fix 5: AÇILAN belge listesini GÖRÜNÜR SEMANTİK içerikten algıla (gerçek UYAP overlay'i
+        # div/portal/custom olabilir; .modal / role=dialog / <tr> GEREKMEZ). Ortak-ata konteyner +
+        # etiket-anchoring ile satırlar; başlık TEK BAŞINA yetmez (≥2 distinkt belge türü gerekir).
+        rows: list[dict] = []
+        det = {"detected": False, "recognized_types": [], "container_strategy": "not_found"}
         for _ in range(12):  # ~6s
             try:
-                if extract_panel_document_rows(page.content()):
-                    observed["panel_labels_visible"] = True
+                cur_html = page.content()
             except Exception:
-                pass
-            for key, sel in (("dialog_visible", "[role=dialog]"), ("modal_visible", ".modal")):
-                try:
-                    m = page.locator(sel)
-                    if m.count() > 0 and m.first.is_visible():
-                        observed[key] = True
-                        scope = m.first
-                except Exception:
-                    pass
-            if observed["modal_visible"] or observed["dialog_visible"] or observed["panel_labels_visible"]:
-                break
+                cur_html = ""
+            det = detect_document_list(cur_html)
+            if det["detected"]:
+                rows = extract_document_rows_semantic(cur_html) or extract_panel_document_rows(cur_html)
+                if rows:
+                    break
             page.wait_for_timeout(500)
 
-        container_kind = classify_document_list_container(observed)
-        diag["document_list_container_kind"] = container_kind
-        diag["document_list_opened"] = container_kind not in ("not_opened", "unsupported")
-        diag["document_modal_opened"] = container_kind in ("modal", "dialog")
-        if not diag["document_list_opened"]:
+        pre_types = diag.get("pre_click_visible_document_types", [])
+        post_types = det.get("recognized_types", [])
+        diag["post_click_visible_document_types"] = post_types
+        diag["document_list_semantic_transition_detected"] = (
+            len(set(post_types)) >= 2 and len(set(post_types) - set(pre_types)) >= 1
+        )
+        diag["document_container_strategy"] = det.get("container_strategy", "not_found")
+        diag["document_container_recognized_types"] = post_types
+        diag["document_row_detection_strategy"] = "semantic_label_ancestor"
+
+        if not rows:
             diag["document_collection_attempts"].append({"stage": "document_list_wait", "blocking_reason": "document list did not become visible after control click"})
             diag["document_collection_failures"] += 1
             return documents, patterns, diag
 
-        d2, p2 = self._collect_from_container(page, context, scope, container_kind, diag)
+        # Fix 5: giriş yolu + gözlenen geçiş → konteyner türü (CSS class'ından türetilmez).
+        container_kind = document_container_kind_for_entry(page_state)
+        diag["document_list_container_kind"] = container_kind
+        diag["document_list_opened"] = True
+        diag["document_modal_opened"] = (container_kind == "listing_modal")
+
+        d2, p2 = self._collect_from_container(page, context, rows, container_kind, diag)
         documents += d2
         patterns += p2
         return documents, patterns, diag
@@ -933,24 +1252,42 @@ class BrowserCollector:
                 continue
         return None
 
-    def _collect_from_container(self, page, context, scope, container_kind, diag) -> tuple:  # pragma: no cover - canlı DOM
-        """İki yolun BİRLEŞTİĞİ ortak belge-satırı toplayıcı: konteynerden satırlar → satır-yerel
-        eye (indirme oku DEĞİL) → YENİ-SEKME UDF görüntüleyici. ``diag`` yerinde güncellenir."""
+    def _collect_from_container(self, page, context, rows, container_kind, diag) -> tuple:  # pragma: no cover - canlı DOM
+        """İki yolun BİRLEŞTİĞİ ortak belge-satırı toplayıcı: verilen (semantik) satırlar → satır-yerel
+        eye (indirme oku DEĞİL; belirsizse KEYFİ tıklama YOK) → YENİ-SEKME UDF görüntüleyici.
+
+        Satırlar önceliğe göre denenir (auction_result > appraisal_report > sale_notice > sale_spec).
+        ``diag`` yerinde güncellenir (recognized_document_rows dahil)."""
         documents: list[dict] = []
         patterns: list[dict] = []
-        try:
-            panel_html = scope.inner_html(timeout=2000) if scope is not page else page.content()
-        except Exception:
-            panel_html = page.content()
-        rows = extract_panel_document_rows(panel_html)
-        diag["document_labels_observed"] = [_ascii_lower(r["label"])[:60] for r in rows]
-        diag["document_actions_observed"] = sum(len(r["actions"]) for r in rows)
+        rows = rows or []
+        diag["document_labels_observed"] = [_ascii_lower(_demojibake(r.get("label") or ""))[:60] for r in rows]
+        diag["document_actions_observed"] = sum(len(r.get("actions") or []) for r in rows)
 
-        for sel in select_row_document_actions(rows):
+        selected: list[dict] = []
+        recognized: list[dict] = []
+        for i, row in enumerate(rows):
+            atype = classify_document_label(row.get("label", ""))
+            if not atype:
+                continue
+            res = resolve_row_view_action(row.get("actions"))
+            recognized.append({
+                "artifact_type": atype,
+                "normalized_label": _ascii_lower(_demojibake(row.get("label") or ""))[:60],
+                "action_count": len(row.get("actions") or []),
+                "view_action_resolved": bool(res["resolved"]),
+                "download_action_detected": bool(res["download_action_detected"]),
+            })
+            selected.append({"row_index": i, "label": row.get("label"), "artifact_type": atype, "resolution": res})
+        diag["recognized_document_rows"] = recognized
+        selected.sort(key=lambda s: _DOC_PRIORITY.get(s["artifact_type"], 9))  # öncelik: auction_result önce
+
+        for sel in selected:
             label = sel["label"]
+            resolution = sel["resolution"]
             attempt = {
                 "artifact_type": sel["artifact_type"],
-                "normalized_document_label": _ascii_lower(label or "")[:60],
+                "normalized_document_label": _ascii_lower(_demojibake(label or ""))[:60],
                 "new_page_detected": False,
                 "viewer_url_kind": None,
                 "viewer_mime_type_hint": None,
@@ -964,6 +1301,11 @@ class BrowserCollector:
                 "artifact_collected": False,
                 "blocking_reason": None,
             }
+            if not resolution.get("resolved") or resolution.get("view_action") is None:
+                attempt["blocking_reason"] = f"row_action_unresolved:{resolution.get('reason')}"
+                diag["document_collection_failures"] += 1
+                diag["document_collection_attempts"].append(attempt)
+                continue
             eye = self._locate_row_eye(page, label)
             if eye is None:
                 attempt["blocking_reason"] = "row_local_eye_control_not_located"
@@ -1035,16 +1377,18 @@ class BrowserCollector:
     def _locate_row_eye(self, page, label):  # pragma: no cover - canlı DOM
         import re as _re
 
-        key = _re.escape((label or "").split("/")[0].strip()[:24])
+        key = _re.escape(_demojibake(label or "").split("/")[0].strip()[:24])
         if not key:
             return None
-        for rsel in ("tr", "li", "[class*=evrak]", "[class*=row]"):
+        # Fix 5: sabit tr/li VARSAYMAZ — div/section overlay satırı da olabilir (en içteki eşleşme).
+        for rsel in ("tr", "li", "[class*=evrak]", "[class*=row]", "[class*=doc]", "div", "section"):
             try:
                 row = page.locator(rsel).filter(has_text=_re.compile(key, _re.I))
                 if row.count() == 0:
                     continue
-                r = row.first
-                for asel in ("[title*=Görüntüle i]", "[title*=Göster i]", "button", "a", "i", "img"):
+                r = row.last if rsel in ("div", "section") else row.first
+                for asel in ("[title*=Görüntüle i]", "[title*=Göster i]", "[aria-label*=Görüntüle i]",
+                             "button", "a", "[role=button]", "i", "img"):
                     try:
                         act = r.locator(asel)
                         if act.count() > 0:
