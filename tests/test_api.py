@@ -237,7 +237,7 @@ def structural_ready():
 
 def test_structural_evidence_reports_genuine_counts(structural_ready):
     d = client.get("/structural/evidence").json()
-    assert d["genuine_uyap_observations"] == 2
+    assert d["genuine_uyap_observations"] == 7
     assert d["genuine_kap_observations"] == 2
     assert d["toki_external_moments"] == 5
     assert set(d["smm_moments_used"]) == {

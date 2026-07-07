@@ -42,6 +42,7 @@ from sold.structural import (
     load_genuine_datasets,
     load_kap_candidates,
     load_kap_disposals,
+    load_uyap_candidates,
     moment_jacobian,
     negotiated_price,
     normalize_auction,
@@ -456,8 +457,8 @@ def test_predictor_identified_mode_labeling():
 # --- GERÇEK denetlenmiş yapısal veri kümesi (Level-2 türevi) ---------------- #
 def test_genuine_datasets_load_and_reconcile_with_level2():
     g = load_genuine_datasets()
-    # UYAP: 2 denetlenmiş açık artırma (2 satılan); appraised_value = doğrulanmış Q (rezerv DEĞİL)
-    assert len(g["uyap"]) == 2
+    # UYAP: 7 denetlenmiş tamamlanmış-satış (2 Level-2 + UYAP Batch 1'in 5'i); hepsi satılan
+    assert len(g["uyap"]) == 7
     a = g["uyap"].set_index("public_record_id")
     a0 = a.loc["16766356960"]
     assert a0["appraised_value"] == 4_500_000  # doğrulanmış reference_price (Q)
@@ -490,11 +491,58 @@ def test_genuine_datasets_load_and_reconcile_with_level2():
     assert g["toki_result"]["revision_detected"] is False
 
 
+def test_uyap_evidence_expansion_batch1_admitted():
+    """UYAP Evidence Expansion Batch 1: 5 denetlenmiş tamamlanmış-satış açık artırma admitte;
+    win/Q = resmî İhale Bedeli / denetlenmiş ekspertiz (Ödenmesi Gereken Bedel DEĞİL)."""
+    g = load_genuine_datasets()
+    a = g["uyap"].set_index("public_record_id")
+    assert len(g["uyap"]) == 7 and bool(g["uyap"]["sold"].all())  # 2 Level-2 + 5 Batch-1; hepsi satılan
+    expected = {
+        "2026/43 Satış": (4_238_000, 4_400_000),
+        "2026/89 Satış": (3_025_000, 3_000_000),   # >1 (asking üstü); P/Q yönü FİLTRELENMEZ
+        "2026/45 Satış": (4_575_000, 5_750_000),
+        "2026/23 Esas": (4_654_000, 5_400_000),
+        "2026/263 Esas": (5_715_000, 6_800_000),   # ALACAĞA MAHSUBEN → yine de açık İhale Bedeli
+    }
+    for rid, (ihale, appraisal) in expected.items():
+        row = a.loc[rid]
+        assert row["appraised_value"] == appraisal   # payda = denetlenmiş muhammen/takdir (Q)
+        assert row["winning_bid"] == ihale            # pay = resmî İhale Bedeli (payable/deposit DEĞİL)
+        assert bool(row["sold"]) is True
+        assert row["winning_bid"] / row["appraised_value"] == pytest.approx(ihale / appraisal, abs=1e-12)
+    # ALACAĞA MAHSUBEN kaydı geçerli açık ihale-fiyat kanıtına sahip (eksik/örtük DEĞİL)
+    assert a.loc["2026/263 Esas"]["winning_bid"] == 5_715_000
+    # 7 oranın ortalaması = güncel uyap_win_over_appraisal_mean
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    ratios = [1.01, 6_550_000 / 13_000_000, 4_238_000 / 4_400_000, 3_025_000 / 3_000_000,
+              4_575_000 / 5_750_000, 4_654_000 / 5_400_000, 5_715_000 / 6_800_000]
+    assert built["moments"]["uyap_win_over_appraisal_mean"] == pytest.approx(float(np.mean(ratios)), abs=1e-9)
+    # 4-momentlik SMM TAM OLARAK 4 kalır; TOKİ external (SMM'e 0 moment); negatif sınıf YOK
+    smm_keys = {k for k in built["moments"] if k.startswith(("uyap_win", "kap_log"))}
+    assert smm_keys == {"uyap_win_over_appraisal_mean", "uyap_win_over_appraisal_sd",
+                        "kap_log_ratio_mean", "kap_log_ratio_sd"}
+    assert "uyap_sale_prob" not in built["moments"]
+
+
+def test_uyap_batch1_excluded_non_terminal_not_admitted():
+    """2026/316 Talimat (terminal-olmayan) genuine UYAP setine/momentlerine GİRMEZ; sale_prob YOK."""
+    g = load_genuine_datasets()
+    ids = set(g["uyap"]["public_record_id"].astype(str))
+    assert "2026/316 Talimat" not in ids  # tamamlanmış-satış setinde YOK
+    cands = load_uyap_candidates()
+    exc = [c for c in cands if c.get("file") == "2026/316 Talimat"]
+    assert len(exc) == 1 and exc[0]["audit_status"] == "EXCLUDED_NON_TERMINAL"
+    assert exc[0]["enters_genuine_uyap"] is False and exc[0]["enters_smm"] is False
+    st = dataset_status()
+    assert st["genuine"]["uyap"]["sold"] == 7  # dışlanan kayıt genuine sayımı ETKİLEMEZ
+    assert any(x["file"] == "2026/316 Talimat" for x in st["uyap_excluded_candidates"])
+
+
 def test_dataset_status_genuine_counts():
     st = dataset_status()
     g = st["genuine"]
-    assert g["uyap"]["total_audited_auctions"] == 2 and g["uyap"]["sold"] == 2 and g["uyap"]["unsold"] == 0
-    assert g["uyap"]["exact_legal_floors_observed"] == 0  # her iki taban kısmî
+    assert g["uyap"]["total_audited_auctions"] == 7 and g["uyap"]["sold"] == 7 and g["uyap"]["unsold"] == 0
+    assert g["uyap"]["exact_legal_floors_observed"] == 0  # tüm tabanlar kısmî (claims/costs yok)
     assert g["kap"]["audited_eligible_disposals"] == 2
     assert g["kap"]["negotiated_calibration_observations"] == 2
     assert g["kap"]["prior_appraisal_observations"] == 1 and g["kap"]["appraisal_observations"] == 1
@@ -868,12 +916,17 @@ def test_uyap_16662608597_admitted_genuine_audited():
 
 
 def test_uyap_second_sold_unlocks_win_sd_genuine():
-    # 2 gerçek SATILAN açık artırma → uyap_win_over_appraisal_sd unavailable → observable
+    # >=2 gerçek SATILAN açık artırma → uyap_win_over_appraisal_sd observable
+    # (7 satılan: 2 Level-2 + UYAP Evidence Expansion Batch 1'in 5'i)
     g = load_genuine_datasets()
     built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
     assert "uyap_win_over_appraisal_sd" in built["moments"]
-    # 2 satılan gözlemin sd'si (nüfus, ddof=0)
-    _ratios = [4_545_000 / 4_500_000, 6_550_000 / 13_000_000]
+    # TÜM genuine satılan gözlemlerin sd/mean'i (nüfus, ddof=0)
+    _ratios = [
+        4_545_000 / 4_500_000, 6_550_000 / 13_000_000,        # Level-2 (16766356960, 16662608597)
+        4_238_000 / 4_400_000, 3_025_000 / 3_000_000, 4_575_000 / 5_750_000,
+        4_654_000 / 5_400_000, 5_715_000 / 6_800_000,          # UYAP Batch 1 (5 kayıt)
+    ]
     assert built["moments"]["uyap_win_over_appraisal_sd"] == pytest.approx(float(np.std(_ratios)), abs=1e-12)
     assert built["moments"]["uyap_win_over_appraisal_mean"] == pytest.approx(float(np.mean(_ratios)), abs=1e-12)
     # sale_prob SMM'den KALDIRILDI (geçersiz) → m_obs'ta YOK; ineligible'da dokümante
@@ -909,7 +962,7 @@ def test_genuine_uyap_records_completed_sale_class():
         assert bool(a.loc[pid]["sold"]) is True
     # dataset_status: 2 tamamlanmış satış, 0 censored, 0 gerçek no-trade
     st = dataset_status()["genuine"]["uyap"]
-    assert st["sold"] == 2 and st["censored_outcomes"] == 0 and st["genuine_no_trade"] == 0
+    assert st["sold"] == 7 and st["censored_outcomes"] == 0 and st["genuine_no_trade"] == 0
 
 
 # --- Kısmi kimliklendirme (partial identification) -------------------------- #

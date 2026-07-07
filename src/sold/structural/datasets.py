@@ -55,6 +55,14 @@ def load_kap_candidates(directory: Path | None = None) -> list[dict]:
     return _load_records(Path(directory or GENUINE_DIR) / "kap_candidates.json")
 
 
+def load_uyap_candidates(directory: Path | None = None) -> list[dict]:
+    """Denetlenmiş ama GENUINE tamamlanmış-satış setine GİRMEYEN UYAP adayları
+    (uyap_candidates.json — ör. terminal-olmayan / EXCLUDED_NON_TERMINAL). Bunlar
+    ``uyap_win_over_appraisal``'a KATILMAZ ve negatif sale-probability gözlemine
+    ÇEVRİLMEZ (``uyap_sale_prob`` YOK). kap_candidates.json audit-manifest kuralını yansıtır."""
+    return _load_records(Path(directory or GENUINE_DIR) / "uyap_candidates.json")
+
+
 def load_genuine_datasets(directory: Path | None = None) -> dict:
     """Yalnızca ``source_audited=true`` kayıtlardan gerçek yapısal veri kümeleri kurar."""
     uyap_df = load_auctions(_audited(load_uyap_records(directory)))
@@ -128,6 +136,7 @@ def dataset_status(directory: Path | None = None) -> dict:
     kap_recs = load_kap_records(directory)
     toki_recs = load_toki_records(directory)
     candidates = load_kap_candidates(directory)
+    uyap_candidates = load_uyap_candidates(directory)
 
     genuine = load_genuine_datasets(directory)
     non_audited = {
@@ -148,6 +157,19 @@ def dataset_status(directory: Path | None = None) -> dict:
         for c in candidates
         if str(c.get("audit_status")) == "PENDING_AUDIT"
     ]
+    uyap_excluded = [
+        {
+            "candidate_id": c.get("candidate_id"),
+            "batch": c.get("batch"),
+            "file": c.get("file"),
+            "audit_status": c.get("audit_status"),
+            "enters_genuine_uyap": bool(c.get("enters_genuine_uyap", False)),
+            "enters_smm": bool(c.get("enters_smm", False)),
+            "exclusion_reason": c.get("exclusion_reason"),
+        }
+        for c in uyap_candidates
+        if str(c.get("audit_status")) != "ADMITTED"
+    ]
     return {
         "genuine": {
             "uyap": _uyap_status(genuine["uyap"]),
@@ -155,5 +177,6 @@ def dataset_status(directory: Path | None = None) -> dict:
             "toki": _toki_status(genuine["toki_disclosures"], genuine["toki_result"]),
         },
         "kap_pending_candidates": pending,  # audit geçene dek genuine sete GİRMEZ
+        "uyap_excluded_candidates": uyap_excluded,  # terminal-olmayan/dışlanan (genuine sete GİRMEZ)
         "non_audited_records": non_audited,  # fixture/illustratif (GERÇEK sayıma katılmaz)
     }

@@ -38,6 +38,7 @@ from .datasets import (
     load_kap_candidates,
     load_kap_records,
     load_toki_records,
+    load_uyap_candidates,
     load_uyap_records,
 )
 from .hedonic import HedonicPremium, roll_unit_price, tcmb_fair_value
@@ -138,6 +139,7 @@ __all__ = [
     "load_genuine_datasets",
     "dataset_status",
     "load_uyap_records",
+    "load_uyap_candidates",
     "load_kap_records",
     "load_kap_candidates",
     "load_toki_records",

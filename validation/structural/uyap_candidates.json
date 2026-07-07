@@ -1,0 +1,33 @@
+[
+  {
+    "candidate_id": "UYAP-ANKARA-2026-316-TALIMAT",
+    "batch": "UYAP Evidence Expansion Batch 1",
+    "domain": "uyap",
+    "audit_status": "EXCLUDED_NON_TERMINAL",
+    "source_institution": "Ankara Gayrimenkul Satış İcra Dairesi",
+    "file": "2026/316 Talimat",
+    "appraisal_value_tl": 8000000,
+    "auction_result_price_shown_tl": 6700000,
+    "status_shown": "Birinci Alıcıya Süre Verildi",
+    "enters_genuine_uyap": false,
+    "enters_smm": false,
+    "exclusion_reason": "Non-terminal sale-processing stage. The status at audit time was 'Birinci Alıcıya Süre Verildi' and the terminal 'Satıldı / Satış İşlemleri Tamamlandı' evidence was ABSENT. It therefore does NOT satisfy the completed-sale UYAP admission requirement (auditable appraisal value + auditable official auction/ihale price + TERMINAL completed-sale evidence). Recorded here only as an excluded audited candidate.",
+    "frozen_semantics_preserved": [
+      "NOT admitted to genuine completed-sale UYAP records (validation/structural/uyap.json)",
+      "NOT used in uyap_win_over_appraisal_mean / uyap_win_over_appraisal_sd",
+      "NOT converted into a negative sale-probability observation",
+      "uyap_sale_prob is NOT created (public UYAP outcome taxonomy does not currently identify a comparable negative auction trade class)",
+      "the 6,700,000 TL result price shown at the sale-processing stage is NOT used as a completed auction price"
+    ],
+    "batch_selection_rule": "Browse UYAP e-Satış auction records in browsing order and take the first five records that satisfy the existing completed-sale UYAP admission requirements. A record must have auditable appraisal value, auditable official auction/ihale price, and terminal completed-sale evidence. Do not select observations based on the magnitude or direction of P/Q.",
+    "batch_candidate_sequence": [
+      {"order": 1, "decision": "ADMITTED", "file": "2026/43 Satış", "institution": "Ankara Sulh Hukuk Mahkemeleri Satış Memurluğu", "appraisal_tl": 4400000, "ihale_bedeli_tl": 4238000, "win_over_appraisal": 0.9631818181818182, "admitted_to": "validation/structural/uyap.json"},
+      {"order": 2, "decision": "ADMITTED", "file": "2026/89 Satış", "institution": "Ankara Sulh Hukuk Mahkemeleri Satış Memurluğu", "appraisal_tl": 3000000, "ihale_bedeli_tl": 3025000, "win_over_appraisal": 1.0083333333333333, "admitted_to": "validation/structural/uyap.json"},
+      {"order": 3, "decision": "ADMITTED", "file": "2026/45 Satış", "institution": "Ankara Sulh Hukuk Mahkemeleri Satış Memurluğu", "appraisal_tl": 5750000, "ihale_bedeli_tl": 4575000, "win_over_appraisal": 0.7956521739130435, "admitted_to": "validation/structural/uyap.json"},
+      {"order": 4, "decision": "ADMITTED", "file": "2026/23 Esas", "institution": "Ankara Gayrimenkul Satış İcra Dairesi", "appraisal_tl": 5400000, "ihale_bedeli_tl": 4654000, "win_over_appraisal": 0.8618518518518519, "admitted_to": "validation/structural/uyap.json"},
+      {"order": 5, "decision": "ADMITTED", "file": "2026/263 Esas", "institution": "Ankara Gayrimenkul Satış İcra Dairesi", "appraisal_tl": 6800000, "ihale_bedeli_tl": 5715000, "win_over_appraisal": 0.8404411764705882, "admitted_to": "validation/structural/uyap.json"},
+      {"order": 6, "decision": "EXCLUDED_NON_TERMINAL", "file": "2026/316 Talimat", "institution": "Ankara Gayrimenkul Satış İcra Dairesi", "appraisal_tl": 8000000, "result_price_shown_tl": 6700000, "status_shown": "Birinci Alıcıya Süre Verildi", "reason": "terminal completed-sale evidence absent at audit time"}
+    ],
+    "_note": "Predeclared first-five-admissible completed-sale UYAP selection rule applied in browsing order. Five records satisfied the completed-sale admission requirements and were admitted to validation/structural/uyap.json as UYAP Evidence Expansion Batch 1. One encountered record (2026/316 Talimat) was at a non-terminal sale-processing stage and was excluded. This manifest mirrors the existing kap_candidates.json audit-manifest convention; it does NOT enter the genuine UYAP set, the SMM moments, or any negative-class construction. PRIVACY: only non-personal file/institution/economic/public-record fields are recorded — no party/debtor/creditor/representative/counsel names, phone/account/ID numbers."
+  }
+]
