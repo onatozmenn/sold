@@ -260,3 +260,38 @@ milestones:
   viewer content representation is not asserted** until a runtime operator rerun observes it. Structural
   core, four SMM moments, `conditional_on_trade`, `Θ_A`, TOKİ external status, and the numerical-search
   convention are unchanged; the pilot remains non-mutating (genuine count stays 7).
+
+- **UYAP Live Browser Pilot 1 — Live Interoperability Fix 3 (measured third live result: `FAIL`)** —
+  chronology: first real live pilot = **FAIL** → Fix 1 → second real live pilot = **FAIL** → Fix 2 →
+  third real live pilot = **FAIL** → Fix 3 → operator rerun pending. On the third real run the operator
+  launched from the **search/listing page** (`esatis.uyap.gov.tr/pp/index.jsp`, one tab). Fix 2's
+  document-entry logic used a **global page-level text locator** (`get_by_text("evrak listesi")`) that was
+  **not scoped to the `2026/263` record card**; a generic text node is not an actionable control, so the
+  click **timed out** (`document_list_control_found=true`, `kind=text`, then Timeout 5000ms;
+  `document_list_opened=false`, `document_labels_observed=[]`, `document_actions_observed=0`), yielding
+  `audit_decision=MISSING_APPRAISAL`, `pilot_outcome=FAIL`. The mutation guard passed again (`uyap.json`
+  unchanged, count `7 -> 7`, SMM unchanged). The operator also confirmed **two genuine entry paths** to the
+  same documents: **(A)** on the **listing card** ("Ankara … 2026/263 İcra") the card-local "İhale Evrak
+  Listesi" opens a **modal/overlay**; **(B)** "İncele" opens a **detail page** whose "İhale Evrak Listesi"
+  **tab** renders a **same-page panel** (Fix 2). Both paths reach the same document rows → row-local eye →
+  new-tab UDF viewer. **Fix 3 (narrow):** a page-state classifier (`classify_page_state` →
+  `search_listing` / `record_detail` / `udf_viewer` / `unknown`, by content semantics not just URL);
+  **target-record-card matching by official file identity** (`find_target_record_card` +
+  `normalize_file_identity` + `file_identity_matches` with an Esas/İcra listing alias) that is **never**
+  chosen by price and **never** a first/Nth card, guarded so a whole-list container (multiple file numbers)
+  is not mistaken for a card; an **actionable card-local control** requirement (`card_document_list_control`
+  returns `actionable=true` only for a button/link, else `non_actionable_text_only`); entry-path derivation
+  (`classify_document_entry_path` → `listing_card_modal` / `detail_tab_panel`); a **row-local eye vs
+  download-arrow** distinction (`_is_download_action` + `_DOWNLOAD_TOKENS`; downloads are skipped so the
+  eye/view action is used); and a page-state-aware live collector (`_collect_documents(page, context,
+  target_file_id, target_institution)`) that scopes the click to the target card in the live DOM
+  (`_locate_card_control`, not a global locator) and converges **both** paths onto one shared document-row
+  collector (`_collect_from_container`) → new-tab UDF viewer. New report diagnostics: `page_state`,
+  `document_entry_path`, `target_record_card_found`, `target_record_card_match_fields`,
+  `target_record_card_file_text`, `target_record_card_control_labels`. The collector still captures the UDF
+  **only** from a deterministically accessible source — **no OCR, no fabrication, no injected truth**, and
+  result-card `Satış Tutarı` is never substituted for the explicit İhale Bedeli. Added 27 offline tests.
+  Full suite: **304 passed** (277 baseline + 27 tests). **No live `PASS` is claimed and the UDF viewer
+  content representation is not asserted** until a runtime operator rerun observes it. Structural core, four
+  SMM moments, `conditional_on_trade`, `Θ_A`, TOKİ external status, and the numerical-search convention are
+  unchanged; the pilot remains non-mutating (genuine count stays 7).
