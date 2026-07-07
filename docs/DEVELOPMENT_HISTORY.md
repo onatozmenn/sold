@@ -295,3 +295,37 @@ milestones:
   content representation is not asserted** until a runtime operator rerun observes it. Structural core, four
   SMM moments, `conditional_on_trade`, `Θ_A`, TOKİ external status, and the numerical-search convention are
   unchanged; the pilot remains non-mutating (genuine count stays 7).
+
+- **UYAP Live Browser Pilot 1 — Live Interoperability Fix 4 (measured fourth live result: `FAIL`)** —
+  chronology: run 1 = **FAIL** → Fix 1 → run 2 = **FAIL** → Fix 2 → run 3 = **FAIL** → Fix 3 → run 4 =
+  **FAIL** → Fix 4 → operator rerun pending. On the fourth real run the operator did everything right:
+  a single Chrome/CDP session, the real UYAP **search/listing page** (active source ref
+  `https://esatis.uyap.gov.tr/pp/index.jsp`), the `2026/263 İcra` result card visible, no modal or detail
+  page manually opened. The real terminal evidence `Satış İşlemleri Tamamlandı` was even extracted from the
+  listing content. **But `classify_page_state(...)` returned `udf_viewer`** — because its top-priority rule
+  treated a weak viewer reference in the *raw HTML* (a hidden "Evrak Görüntüleme" string / a
+  `viewer.jsp?mimeType=Udf` fragment inside script/template markup) as decisive, overriding the strong
+  visible listing semantics of the active page. That yielded `document_entry_path = unsupported`
+  (`document_collection_attempts=[{stage:"page_state", blocking_reason:"unsupported_page_state:udf_viewer"}]`),
+  so the **Fix-3 target-record-card logic never executed**. The mutation guard passed again (`uyap.json`
+  unchanged, count `7 -> 7`, SMM unchanged, `uyap_sale_prob` absent). Run 4 therefore did **not** disprove
+  the Fix-3 card logic — it never reached it; the defect was a **page-state false positive**. **Fix 4
+  (narrow):** a deterministic **active-page state evidence precedence** (`_page_state_evidence` /
+  `page_state_evidence`) — (1) strong active-**URL** viewer evidence via `_active_viewer_url`, which parses
+  only the live `page.url` path/query (`/pp/viewer.jsp` + `mimeType=Udf`), never URLs embedded in HTML;
+  (2) strong visible detail semantics → `record_detail`; (3) strong visible listing semantics
+  (`\bincele\b` + "evrak listesi") → `search_listing`; (4) viewer semantics (`Evrak Görüntüleme`) only when
+  no listing/detail is present → `udf_viewer`; else `unknown`. A raw-HTML `viewer.jsp` / `mimeType=Udf`
+  reference is recorded as `weak_embedded_viewer_reference_ignored` and is **never** decisive. Multi-tab
+  safety adds a pure `select_target_page_index` (+ live `_select_target_page`) that prefers a supported
+  target page (`search_listing`/`record_detail` + file-identity match) over a stale UDF viewer tab, never
+  selecting a viewer merely because it is a UYAP page. New privacy-safe report diagnostics: `page_state_evidence`,
+  `page_candidates_seen`, `selected_page_url_kind`, `selected_page_state`,
+  `selected_page_target_identity_match` (no raw HTML/URLs, no cookies/tokens/personal data). Fix-3
+  target-card matching (file identity, Esas/İcra alias, no price/Nth selection) and both entry paths are
+  **preserved unchanged**; after classifier repair, `search_listing` again flows into the Fix-3 listing-card
+  path. Added 28 offline tests. Full suite: **332 passed** (304 baseline + 28 tests). **No live `PASS` is
+  claimed**, the listing modal is **not** asserted to open programmatically, and the UDF viewer is **not**
+  asserted to be programmatically reached — a post-Fix-4 operator rerun is required. Structural core, four
+  SMM moments, `conditional_on_trade`, `Θ_A`, TOKİ external status (5 observed / 0 SMM), and the
+  numerical-search convention are unchanged; the pilot remains non-mutating (genuine count stays 7).
