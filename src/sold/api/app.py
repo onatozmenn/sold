@@ -1,15 +1,18 @@
-"""Değerleme API'si: ilan (asking) fiyatından gerçekleşen fiyat tahmini.
+"""Değerleme API'si + YAPISAL ürün yüzeyi.
 
 Uçlar:
-- GET  /                 basit web arayüzü (form)
-- POST /valuate          tek bir ilan için realized tahmini
-- GET  /kfe              DB'deki gerçek KFE serisi (trend)
-- GET  /discount-summary etiketlerden gerçek indirim özeti
-- GET  /health           sağlık kontrolü
+- GET  /                    cilalı tek-sayfa YAPISAL değerleme arayüzü (Değerle / Model Evidence / Method)
+- POST /structural/valuate  donmuş yapısal motorla çıkarımsal işlem-fiyatı dağılımı (makine-okunur meta)
+- GET  /structural/evidence Model Evidence: gerçek kamu yapısal kanıtı (fixture/test'ten AYRI)
+- GET  /structural/method   Method: mekanizma açıklaması (çıpa → moment → SMM → Θ_A → duyarlılık)
+- POST /valuate             (legacy) ilan fiyatından realized tahmini
+- GET  /kfe                 DB'deki gerçek KFE serisi (trend)
+- GET  /discount-summary    etiketlerden gerçek indirim özeti
+- GET  /health              sağlık kontrolü
 
-Varsayılan tahmin GERÇEK veriyle çalışır (MOCK YOK): ilan fiyatı × (1 − yayınlı
-pazarlık payı), TCMB ekspertiz TL/m² çıprazıyla. GERÇEK satış etiketi (ground_truth)
-eklenip ML modeli üretilirse (RealizedValuator), otomatik devralınır.
+Yapısal yüzey DONMUŞ ekonometrik çekirdeği (Nash pazarlık + SMM + admissible_near_fit_set)
+yalnızca ÇAĞIRIR; ``confidence_interval`` / ``accuracy`` ASLA döndürülmez. Legacy /valuate
+uçları geriye dönük uyumluluk için korunur.
 """
 
 from __future__ import annotations
@@ -347,6 +350,62 @@ def consumer_stats_endpoint() -> dict:
     return {"consumer_sales": int(len(sales)), **counts}
 
 
+class StructuralValuationIn(BaseModel):
+    """Yapısal değerleme girdisi — YALNIZCA fair-value katmanının DESTEKLEDİĞİ alanlar.
+
+    Şu an fair value TCMB il-bazlı ekspertiz TL/m² × brüt m² ile kurulur; ``district`` /
+    ``room_count`` HENÜZ hedonik özellik katmanında olmadığından tahmini DEĞİŞTİRMEZ
+    (sadece meta olarak kabul edilir; görsel tamlık için zorunlu girdi yapılmaz).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    asking_price: float = Field(..., gt=0, description="İlan (asking) fiyatı, TL")
+    province: str | None = "İstanbul"
+    gross_m2: float | None = Field(100.0, gt=0, description="Brüt m²")
+    property_type: str | None = "konut"
+    tightness: float = 0.0
+
+
+@app.post("/structural/valuate")
+def structural_valuate(prop: StructuralValuationIn) -> dict:
+    """Donmuş yapısal ekonometrik motorla ÇIKARIMSAL işlem-fiyatı dağılımı (gözlenen fiyat DEĞİL).
+
+    Makine-okunur meta döner (methodology, identification_status, coverage_claim=None,
+    central_structural_estimate, within/between belirsizlik, structural_sensitivity_range,
+    input_conflict…). ``confidence_interval`` / ``accuracy`` alanı ASLA döndürülmez.
+    """
+    from .structural_product import structural_valuation
+
+    if prop.asking_price <= 0:
+        raise HTTPException(status_code=422, detail="asking_price > 0 olmalı")
+    result = structural_valuation(
+        prop.asking_price, province=prop.province, gross_m2=prop.gross_m2, tightness=prop.tightness
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{prop.province} için TCMB ekspertiz TL/m² bulunamadı (gross_m2 > 0 olmalı).",
+        )
+    return result
+
+
+@app.get("/structural/evidence")
+def structural_evidence() -> dict:
+    """Model Evidence: gerçek kamu yapısal kanıtı (fixture/test'ten AYRI; test sayısı GÖSTERİLMEZ)."""
+    from .structural_product import model_evidence
+
+    return model_evidence()
+
+
+@app.get("/structural/method")
+def structural_method() -> dict:
+    """Method: yapısal mekanizmanın özlü açıklaması (çıpa → moment → SMM → Θ_A → duyarlılık)."""
+    from .structural_product import method_overview
+
+    return method_overview()
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     return _INDEX_HTML
@@ -357,100 +416,173 @@ _INDEX_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>sold — Konut Değerleme</title>
+  <title>Konut — Yapısal İşlem-Fiyatı Çıkarımı</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; }
-    h1 { font-size: 22px; }
-    h2 { font-size: 16px; margin: 0 0 4px; }
-    .card { border: 1px solid #e2e6ea; border-radius: 10px; padding: 16px 18px; margin: 16px 0; }
-    label { display: block; margin: 10px 0 2px; font-size: 13px; color: #444; }
-    input { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
-    button { margin-top: 16px; padding: 10px 18px; font-size: 15px; cursor: pointer; border: 0; border-radius: 6px; background: #1a73e8; color: #fff; }
-    .result { margin-top: 16px; padding: 14px; background: #f4f6f8; border-radius: 8px; display: none; }
-    .big { font-size: 26px; font-weight: 600; margin: 6px 0; }
-    .muted { color: #666; font-size: 13px; }
-    #labelbar { margin: 8px 0 4px; }
+    :root { --bg:#0f1419; --card:#fff; --ink:#1a2027; --muted:#5c6773; --line:#e3e8ee; --brand:#1a73e8; --warn:#b26a00; --warnbg:#fff8ec; --ok:#0b8043; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:0; color:var(--ink); background:#f5f7fa; }
+    header { background:linear-gradient(135deg,#12233b,#1a73e8); color:#fff; padding:22px 20px; }
+    header h1 { font-size:20px; margin:0; font-weight:650; }
+    header p { margin:6px 0 0; font-size:13px; opacity:.9; }
+    .wrap { max-width:760px; margin:0 auto; padding:0 16px 48px; }
+    .tabs { display:flex; gap:4px; margin:18px 0 0; border-bottom:1px solid var(--line); }
+    .tab { padding:10px 16px; cursor:pointer; font-size:14px; color:var(--muted); border-bottom:2px solid transparent; }
+    .tab.active { color:var(--brand); border-bottom-color:var(--brand); font-weight:600; }
+    .panel { display:none; } .panel.active { display:block; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 20px; margin:16px 0; }
+    label { display:block; margin:12px 0 4px; font-size:13px; color:var(--muted); }
+    input, select { width:100%; padding:9px 10px; border:1px solid #ccd3db; border-radius:8px; font-size:15px; }
+    button { margin-top:18px; padding:12px 20px; font-size:15px; font-weight:600; cursor:pointer; border:0; border-radius:8px; background:var(--brand); color:#fff; width:100%; }
+    button:hover { background:#1666d0; }
+    .estimate { text-align:center; padding:8px 0 4px; }
+    .estimate .lbl { font-size:13px; color:var(--muted); }
+    .estimate .big { font-size:34px; font-weight:700; margin:4px 0; color:var(--ink); }
+    .row { display:flex; justify-content:space-between; padding:10px 0; border-top:1px solid var(--line); font-size:14px; }
+    .row .k { color:var(--muted); } .row .v { font-weight:600; }
+    .expl { font-size:12.5px; color:var(--muted); margin:2px 0 0; }
+    .envelope { background:#eef4ff; border:1px solid #cfe0ff; border-radius:10px; padding:12px 14px; margin-top:12px; }
+    .envelope .rng { font-size:19px; font-weight:700; color:#12233b; }
+    .nocov { font-size:12.5px; color:#8a4b00; margin-top:6px; font-weight:600; }
+    .status { margin-top:12px; padding:10px 12px; border-radius:8px; background:#fff4f4; border:1px solid #f3c9c9; font-size:13px; }
+    .status b { color:#b00020; }
+    .warn { margin-top:12px; padding:12px 14px; border-radius:8px; background:var(--warnbg); border:1px solid #f0d9a8; font-size:13px; color:#5f4400; }
+    .warn .cats { margin:6px 0 0; font-size:12.5px; }
+    .pill { display:inline-block; background:#eef1f5; border-radius:20px; padding:2px 10px; margin:2px 3px 0 0; font-size:12px; color:#3a4652; }
+    .disc { font-size:12px; color:var(--muted); margin-top:22px; padding-top:14px; border-top:1px solid var(--line); line-height:1.55; }
+    .muted { color:var(--muted); font-size:13px; }
+    code { background:#f0f2f5; padding:1px 5px; border-radius:4px; font-size:12.5px; }
+    .flow { list-style:none; padding:0; margin:0; }
+    .flow li { padding:8px 0; border-top:1px solid var(--line); font-size:13.5px; }
+    .flow li:first-child { border-top:0; }
+    h2 { font-size:15px; margin:0 0 2px; }
   </style>
 </head>
 <body>
-  <h1>Gerçekleşen Konut Fiyatı Tahmini</h1>
-  <div id="labelbar" class="muted">Etiket özeti yükleniyor…</div>
+  <header>
+    <h1>Konut — Yapısal İşlem-Fiyatı Çıkarımı</h1>
+    <p>Kamu ekspertiz / açık artırma / müzakereli-satış kanıtına kalibre yapısal ekonomik model. Gözlenen kapanış fiyatı DEĞİL.</p>
+  </header>
+  <div class="wrap">
+    <div class="tabs">
+      <div class="tab active" data-tab="estimate">Değerle</div>
+      <div class="tab" data-tab="evidence">Model Evidence</div>
+      <div class="tab" data-tab="method">Method</div>
+    </div>
 
-  <div class="card">
-    <h2>1) Değerle</h2>
-    <p class="muted">İlan fiyatı + özelliklerden tahmini gerçekleşen fiyatı hesaplar.</p>
-    <form id="valForm">
-      <label>İlan fiyatı (TL)</label>
-      <input name="asking_price" type="number" value="3200000" required />
-      <label>İlçe</label><input name="district" value="Kadıköy" />
-      <label>Brüt m²</label><input name="gross_m2" type="number" value="120" />
-      <label>Oda</label><input name="room_count" value="2+1" />
-      <label>Bina yaşı</label><input name="building_age" type="number" value="5" />
-      <label>Kat</label><input name="floor" type="number" value="3" />
-      <label>Isıtma</label><input name="heating" value="Kombi (Doğalgaz)" />
-      <button type="submit">Tahmin et</button>
-    </form>
-    <div id="valResult" class="result"></div>
-  </div>
+    <div id="estimate" class="panel active">
+      <div class="card">
+        <h2>Yapısal değerleme</h2>
+        <p class="muted">Fair-value katmanının şu an desteklediği alanlar (il + brüt m²). Desteklenmeyen alanlar görsel tamlık için gösterilmez.</p>
+        <form id="valForm">
+          <label>İlan (asking) fiyatı — TL</label>
+          <input name="asking_price" type="number" value="5000000" required />
+          <label>İl</label>
+          <input name="province" value="İstanbul" />
+          <label>Brüt m²</label>
+          <input name="gross_m2" type="number" value="100" />
+          <label>Taşınmaz türü</label>
+          <select name="property_type"><option value="konut">konut</option></select>
+          <button type="submit">Estimate inferred transaction outcome</button>
+        </form>
+      </div>
+      <div id="valResult"></div>
+    </div>
 
-  <div class="card">
-    <h2>2) Gerçek satış ekle (etiket)</h2>
-    <p class="muted">Bildiğin GERÇEK bir satışı ekle — model bunlarla öğrenir. Kişisel veri (ad/telefon) girme.</p>
-    <form id="gtForm">
-      <label>İlan fiyatı (TL)</label><input name="asking_price" type="number" required />
-      <label>Gerçek satış fiyatı (TL)</label><input name="sold_price" type="number" required />
-      <label>İlçe</label><input name="district" />
-      <label>Brüt m²</label><input name="gross_m2" type="number" />
-      <label>Oda</label><input name="room_count" />
-      <label>Bina yaşı</label><input name="building_age" type="number" />
-      <button type="submit">Etiketi ekle</button>
-    </form>
-    <div id="gtResult" class="result"></div>
+    <div id="evidence" class="panel">
+      <div class="card"><h2>Model Evidence</h2><div id="evBody" class="muted">Yükleniyor…</div></div>
+    </div>
+
+    <div id="method" class="panel">
+      <div class="card"><h2>Method</h2><div id="mBody" class="muted">Yükleniyor…</div></div>
+    </div>
+
+    <div class="disc" id="disclaimer"></div>
   </div>
 
   <script>
-    const tl = (x) => Number(x).toLocaleString('tr-TR');
-    const numFields = ['asking_price', 'sold_price', 'gross_m2', 'building_age', 'floor'];
-    function collect(form) {
-      const fd = new FormData(form); const body = {};
-      for (const [k, v] of fd.entries()) { if (v !== '') body[k] = numFields.includes(k) ? Number(v) : v; }
-      return body;
+    const tl = (x) => (x==null? '—' : Number(x).toLocaleString('tr-TR') + ' TL');
+    const numF = ['asking_price','gross_m2','tightness'];
+    function collect(form){ const fd=new FormData(form),b={}; for(const [k,v] of fd.entries()){ if(v!=='') b[k]=numF.includes(k)?Number(v):v; } return b; }
+
+    document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));
+      t.classList.add('active'); document.getElementById(t.dataset.tab).classList.add('active');
+      if(t.dataset.tab==='evidence') loadEvidence();
+      if(t.dataset.tab==='method') loadMethod();
+    }));
+
+    function renderConflict(ic){
+      if(!ic || !ic.input_conflict) return '';
+      const cats = (ic.input_conflict_candidate_explanations||[]).map(c=>'<span class="pill">'+c+'</span>').join('');
+      return '<div class="warn"><b>input_conflict</b> · ask/fair-value oranı = <b>'+ic.ask_to_fair_value_ratio+'</b>'+
+        '<div>The asking-price signal strongly disagrees with the TCMB-anchored fair-value signal. '+
+        'Structural inference may therefore be highly sensitive. The estimate was not rejected or silently clamped.</div>'+
+        '<div class="cats">Olası açıklamalar (yalnızca aday — kanıtsız SEÇİLMEZ): '+cats+'</div></div>';
     }
-    async function loadSummary() {
-      try {
-        const r = await fetch('/discount-summary'); const d = await r.json();
-        const bar = document.getElementById('labelbar');
-        if (d.count && d.count > 0) {
-          bar.innerHTML = 'Toplam etiket: <b>' + d.count + '</b> · ortalama gerçek indirim: <b>%' + d.mean_pct.toFixed(1) + '</b>';
-        } else {
-          bar.textContent = 'Henüz gerçek etiket yok — aşağıdan ekleyebilirsin.';
-        }
-      } catch (e) { /* yoksay */ }
-    }
+
     document.getElementById('valForm').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const el = document.getElementById('valResult'); el.style.display = 'block'; el.innerHTML = 'Hesaplanıyor…';
+      const el = document.getElementById('valResult');
+      el.innerHTML = '<div class="card muted">Θ_A üzerinde simüle ediliyor…</div>';
       try {
-        const r = await fetch('/valuate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collect(e.target)) });
+        const r = await fetch('/structural/valuate', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(collect(e.target)) });
         const d = await r.json();
-        if (!r.ok) { el.innerHTML = 'Hata: ' + (d.detail || 'bilinmeyen'); return; }
-        el.innerHTML = '<div class="muted">İlan: ' + tl(d.asking_price) + ' TL</div>' +
-          '<div class="big">Tahmini gerçekleşen: ' + tl(d.realized_estimate) + ' TL</div>' +
-          '<div class="muted">Örtük indirim: %' + d.implied_discount_pct + '</div>';
-      } catch (err) { el.innerHTML = 'İstek başarısız: ' + err; }
+        if(!r.ok){ el.innerHTML = '<div class="card">Hata: '+(d.detail||'bilinmeyen')+'</div>'; return; }
+        const ic = { input_conflict:d.input_conflict, ask_to_fair_value_ratio:d.ask_to_fair_value_ratio, input_conflict_candidate_explanations:d.input_conflict_candidate_explanations };
+        const wt = d.within_theta_negotiation_interval, bt = d.between_theta_near_fit_band, sr = d.structural_sensitivity_range;
+        el.innerHTML = '<div class="card">' +
+          '<div class="estimate"><div class="lbl">Central structural estimate · inferred transaction-price estimate</div>' +
+          '<div class="big">'+tl(d.central_structural_estimate)+'</div>' +
+          '<div class="muted">İlan '+tl(d.asking_price)+' · fair value (TCMB çıpa) '+tl(d.fair_value)+'</div></div>' +
+          renderConflict(ic) +
+          '<div class="row"><span class="k">Within-θ negotiation uncertainty</span><span class="v">'+tl(wt[0])+' – '+tl(wt[1])+'</span></div>' +
+          '<div class="expl">Sabit bir yapısal parametre yapılandırmasında simüle alıcı/satıcı değerlerinin ve pazarlık sürecinin doğurduğu değişim.</div>' +
+          '<div class="row"><span class="k">Between-θ near-fit uncertainty</span><span class="v">'+tl(bt[0])+' – '+tl(bt[1])+'</span></div>' +
+          '<div class="expl">Ekonomik olarak kabul edilebilir birden çok yapısal parametre yapılandırması, mevcut kamu momentlerine neredeyse eşit iyi uyar.</div>' +
+          '<div class="envelope"><div class="lbl muted">Structural sensitivity range (iki belirsizlik birlikte)</div>' +
+          '<div class="rng">'+tl(sr[0])+' – '+tl(sr[1])+'</div>' +
+          '<div class="nocov">'+d.no_coverage_statement+'</div></div>' +
+          '<div class="status">Identification status: <b>'+d.identification_status+'</b> · Jacobian rank '+d.jacobian_rank+' / '+d.parameter_dimension+
+          '<div class="expl">The available genuine public moments do not uniquely determine all structural parameters, so the system reports sensitivity across near-fit parameter configurations instead of pretending one parameter vector is known exactly.</div></div>' +
+          '</div>';
+      } catch(err){ el.innerHTML = '<div class="card">İstek başarısız: '+err+'</div>'; }
     });
-    document.getElementById('gtForm').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const el = document.getElementById('gtResult'); el.style.display = 'block'; el.innerHTML = 'Kaydediliyor…';
+
+    async function loadEvidence(){
+      const el = document.getElementById('evBody');
       try {
-        const r = await fetch('/ground-truth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collect(e.target)) });
-        const d = await r.json();
-        if (!r.ok) { el.innerHTML = 'Hata: ' + (d.detail || 'bilinmeyen'); return; }
-        el.innerHTML = '<div class="muted">Eklendi \u2713 (%' + d.discount_pct + ' indirim). Toplam etiket: <b>' + d.total_labels + '</b></div>';
-        e.target.reset(); loadSummary();
-      } catch (err) { el.innerHTML = 'İstek başarısız: ' + err; }
-    });
-    loadSummary();
+        const d = await (await fetch('/structural/evidence')).json();
+        el.innerHTML =
+          '<div class="row"><span class="k">UYAP completed-sale auctions</span><span class="v">'+d.genuine_uyap_observations+'</span></div>' +
+          '<div class="row"><span class="k">KAP negotiated disposals</span><span class="v">'+d.genuine_kap_observations+'</span></div>' +
+          '<div class="row"><span class="k">TOKİ external cross-mechanism benchmark moments</span><span class="v">'+d.toki_external_moments+'</span></div>' +
+          '<div class="row"><span class="k">SMM moments used</span><span class="v">'+d.n_smm_moments_used+'</span></div>' +
+          '<div class="expl">'+d.smm_moments_used.map(m=>'<code>'+m+'</code>').join(' ')+'</div>' +
+          '<div class="row"><span class="k">Identification</span><span class="v">'+d.identification_status+' · rank '+d.jacobian_rank+'/'+d.parameter_dimension+'</span></div>' +
+          '<p class="expl">• '+d.explanations.uyap+'</p>' +
+          '<p class="expl">• '+d.explanations.kap+'</p>' +
+          '<p class="expl">• '+d.explanations.toki+'</p>' +
+          '<p class="expl">• uyap_sale_prob: '+d.excluded_from_smm.uyap_sale_prob+'</p>';
+      } catch(err){ el.textContent = 'Yüklenemedi: '+err; }
+    }
+
+    async function loadMethod(){
+      const el = document.getElementById('mBody');
+      try {
+        const d = await (await fetch('/structural/method')).json();
+        const steps = d.pipeline.map(s=>'<li>'+s+'</li>').join('');
+        const defs = Object.entries(d.definitions).map(([k,v])=>'<div class="row"><span class="k"><code>'+k+'</code></span><span class="v">'+v+'</span></div>').join('');
+        const clar = d.clarifications.map(c=>'<p class="expl">• '+c+'</p>').join('');
+        el.innerHTML = '<ul class="flow">'+steps+'</ul>'+defs+
+          '<p class="expl" style="margin-top:10px">'+d.conflict_bounds_note+'</p>'+clar+
+          '<p class="expl">'+d.identification.future_methodology_note+'</p>';
+      } catch(err){ el.textContent = 'Yüklenemedi: '+err; }
+    }
+
+    (async () => {
+      try { const d = await (await fetch('/structural/method')).json(); document.getElementById('disclaimer').textContent = d.disclaimer; } catch(e){}
+    })();
   </script>
 </body>
 </html>

@@ -964,6 +964,25 @@ def test_identification_aware_prediction_dual_uncertainty():
     assert "DEĞİL" in pred["note"]
 
 
+def test_identification_aware_uses_trading_configs_when_best_trades_zero():
+    # DÜZELTME (doğruluk): en iyi uyum θ 0 ticaret etse de, ticaret eden DİĞER kabul-edilebilir
+    # θ'lar duyarlılık zarfını besler (best-θ artefaktına ÇÖKMEZ).
+    no_trade = StructuralParams(mu_b=-0.5, sigma_b=0.03, mu_s=0.5, sigma_s=0.03, asking_signal=0.5)  # B<<S
+    trades = StructuralParams(mu_b=0.10, sigma_b=0.15, mu_s=-0.05, sigma_s=0.15, asking_signal=0.5)  # B≥S olası
+    pred = IdentificationAwarePredictor([no_trade, trades], best_params=no_trade).predict(
+        3_000_000, 3_000_000, n=8000, seed=0
+    )
+    assert pred["central_structural_estimate"] is not None       # ticaret eden θ'dan
+    assert pred["structural_sensitivity_range"][0] is not None
+    assert pred["identification_status"] == "STRUCTURALLY_UNDERIDENTIFIED"
+    # HİÇBİR θ ticaret etmiyorsa DÜRÜST null (model ~0 ticaret ima eder) korunur
+    only_zero = IdentificationAwarePredictor([no_trade], best_params=no_trade).predict(
+        3_000_000, 3_000_000, n=8000, seed=0
+    )
+    assert only_zero["central_structural_estimate"] is None
+    assert only_zero["structural_sensitivity_range"] == (None, None)
+
+
 # --- Girdi-çelişki tanılaması (asking ↔ TCMB-çıpalı fair value) ------------- #
 def test_input_conflict_asking_above_fair_value_allowed():
     # (1) asking > fair value İZİN verilir (reddedilmez/kırpılmaz)

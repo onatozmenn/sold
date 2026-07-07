@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -219,4 +221,86 @@ def test_consumer_sale_rejects_extra_personal_field(tmp_path, monkeypatch):
         },
     )
     assert r.status_code == 422
+
+
+# --- Yapısal ürün yüzeyi (final productization; DONMUŞ çekirdek) ------------ #
+@pytest.fixture(scope="module")
+def structural_ready():
+    """Yapısal önbelleği KÜÇÜK aday sayısıyla kurar (test hızı) — ekonometrik çekirdek değişmez."""
+    import sold.api.structural_product as sp
+
+    sp.NEAR_FIT_CANDIDATES = 500
+    sp.reset_near_fit_cache()
+    yield
+    sp.reset_near_fit_cache()
+
+
+def test_structural_evidence_reports_genuine_counts(structural_ready):
+    d = client.get("/structural/evidence").json()
+    assert d["genuine_uyap_observations"] == 2
+    assert d["genuine_kap_observations"] == 2
+    assert d["toki_external_moments"] == 5
+    assert set(d["smm_moments_used"]) == {
+        "uyap_win_over_appraisal_mean", "uyap_win_over_appraisal_sd",
+        "kap_log_ratio_mean", "kap_log_ratio_sd",
+    }
+    assert d["jacobian_rank"] == 4 and d["parameter_dimension"] == 6
+    # test sayıları (ör. "192 passed") KANIT olarak GÖSTERİLMEZ
+    assert "passed" not in json.dumps(d)
+    # açıklamalar: UYAP koşullu, KAP kurumsal (ordinary resale GT DEĞİL), TOKİ external (0 moment)
+    assert "conditional" in d["explanations"]["uyap"].lower()
+    assert "not ordinary residential resale ground truth" in d["explanations"]["kap"].lower()
+    assert "zero moments" in d["explanations"]["toki"].lower()
+
+
+def test_structural_method_view(structural_ready):
+    d = client.get("/structural/method").json()
+    assert any("trade iff B >= S" in s for s in d["pipeline"])
+    assert any("P = eta * B" in s for s in d["pipeline"])
+    assert d["definitions"]["eta"] == "seller bargaining power"
+    assert d["definitions"]["B"].startswith("buyer") and d["definitions"]["S"].startswith("seller")
+    joined = " ".join(d["clarifications"]).lower()
+    assert "not directly measured from kap" in joined  # eta KAP'tan doğrudan ölçülmez
+    assert "not the auction reserve" in joined          # UYAP appraised value rezerv DEĞİL
+    assert "configurable" in d["conflict_bounds_note"].lower()  # [0.5,2.0] YAPILANDIRILABİLİR
+
+
+def test_structural_valuate_machine_readable(structural_ready):
+    d = client.post("/structural/valuate", json={
+        "asking_price": 7_500_000, "province": "İstanbul", "gross_m2": 100,
+    }).json()
+    assert d["methodology"] == "structural_econometrics"
+    assert d["identification_status"] == "STRUCTURALLY_UNDERIDENTIFIED"
+    assert d["coverage_claim"] is None
+    for k in ("central_structural_estimate", "within_theta_negotiation_interval",
+              "between_theta_near_fit_band", "structural_sensitivity_range",
+              "ask_to_fair_value_ratio", "input_conflict", "input_conflict_warning",
+              "genuine_uyap_observations", "genuine_kap_observations", "toki_external_moments",
+              "jacobian_rank", "parameter_dimension", "near_fit_parameter_count"):
+        assert k in d
+    # YASAK alanlar YOK
+    assert "confidence_interval" not in d and "accuracy" not in d
+    assert d["jacobian_rank"] == 4 and d["parameter_dimension"] == 6
+
+
+def test_structural_valuate_input_conflict_warns_not_clamped(structural_ready):
+    d = client.post("/structural/valuate", json={
+        "asking_price": 30_000_000, "province": "İstanbul", "gross_m2": 100,  # oran > 2
+    }).json()
+    assert d["input_conflict"] is True and d["ask_to_fair_value_ratio"] > 2.0
+    assert d["input_conflict_warning"]
+    # olası açıklamalar YALNIZCA 6 aday kategorisi (kanıtsız seçilmez)
+    assert len(d["input_conflict_candidate_explanations"]) == 6
+    # KIRPILMADI/reddedilmedi: yapısal alanlar + coverage_claim=None yine döner
+    assert "structural_sensitivity_range" in d and d["coverage_claim"] is None
+
+
+def test_structural_index_page_action_wording(structural_ready):
+    html = client.get("/").text
+    assert "Konut" in html                                   # index korunur (legacy test)
+    assert "Estimate inferred transaction outcome" in html   # doğru birincil eylem
+    assert "Structural sensitivity range" in html
+    # YASAKLI etiketler GÖSTERİLMEZ
+    for forbidden in ("Predict actual sale price", "observed closing price", "true sale price"):
+        assert forbidden not in html
 

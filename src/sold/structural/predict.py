@@ -235,7 +235,7 @@ class IdentificationAwarePredictor:
                 lo, hi = np.percentile(prices, [10, 90])
                 per_theta_p10.append(float(lo))
                 per_theta_p90.append(float(hi))
-        # within-θ (negotiation) aralığı: EN İYİ uyum θ'sının fiyat dağılımı
+        # EN İYİ uyum θ'sının fiyat dağılımı (within-θ için tercih edilir; ticaret ederse)
         best_prices, best_tp = self._draw(
             self.best, asking_price, fair_value, tightness, n, np.random.default_rng(seed)
         )
@@ -249,7 +249,10 @@ class IdentificationAwarePredictor:
             "fair_value": float(fair_value),
             "input_conflict": conflict,
         }
-        if best_prices.size == 0 or not per_theta_median:
+        # Yalnızca HİÇBİR yakın-uyum θ'sı ticaret etmiyorsa çöker (model ~0 ticaret ima eder).
+        # DÜZELTME (doğruluk): tek bir (en düşük-Q) θ 0 ticaret etse de, ticaret eden DİĞER
+        # kabul-edilebilir θ'lar varsa zarf ONLARDAN kurulur (best-θ artefaktına çökmez).
+        if not per_theta_median:
             base.update({
                 "central_structural_estimate": None,
                 "within_theta_negotiation_interval": (None, None),
@@ -257,17 +260,27 @@ class IdentificationAwarePredictor:
                 "sensitivity_envelope_lower": None,
                 "sensitivity_envelope_upper": None,
                 "structural_sensitivity_range": (None, None),
-                "trade_probability_band": (None, None),
-                "note": DISCLAIMER_SENSITIVITY + " (bu senaryoda ticaret olasılığı ~0).",
+                "trade_probability_band": (round(min(per_theta_trade), 4), round(max(per_theta_trade), 4)),
+                "note": DISCLAIMER_SENSITIVITY + " (bu senaryoda Θ_A boyunca ticaret olasılığı ~0).",
             })
             return base
-        w_lo, w_hi = np.percentile(best_prices, [10, 90])
+        near_fit_central = float(np.median(per_theta_median))
+        if best_prices.size:
+            # en iyi uyum θ ticaret ediyor → merkezî tahmin + within-θ onun dağılımından
+            central = float(np.median(best_prices))
+            w_lo, w_hi = np.percentile(best_prices, [10, 90])
+        else:
+            # en iyi uyum θ 0 ticaret → merkezî tahmin near-fit medyanların merkezi; within-θ
+            # ise merkeze EN YAKIN ticaret eden θ'nın temsili pazarlık aralığı
+            central = near_fit_central
+            j = int(np.argmin([abs(m - central) for m in per_theta_median]))
+            w_lo, w_hi = per_theta_p10[j], per_theta_p90[j]
         env_lo, env_hi = round(min(per_theta_p10), 0), round(max(per_theta_p90), 0)
         base.update({
-            # merkezi yapısal tahmin (en iyi uyum θ medyanı)
-            "central_structural_estimate": round(float(np.median(best_prices)), 0),
-            "central_across_theta": round(float(np.median(per_theta_median)), 0),
-            # within-θ (YALNIZCA pazarlık belirsizliği; en iyi θ)
+            # merkezi yapısal tahmin (en iyi uyum θ ticaret ederse onun medyanı; aksi halde Θ_A merkezi)
+            "central_structural_estimate": round(central, 0),
+            "central_across_theta": round(near_fit_central, 0),
+            # within-θ (YALNIZCA pazarlık belirsizliği; temsili tek θ)
             "within_theta_negotiation_interval": (round(float(w_lo), 0), round(float(w_hi), 0)),
             # between-θ (YALNIZCA yakın-uyum parametre belirsizliği; θ-medyanları bandı)
             "between_theta_near_fit_band": (round(min(per_theta_median), 0), round(max(per_theta_median), 0)),
