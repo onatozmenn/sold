@@ -766,3 +766,52 @@ milestones:
   required.** Structural core, four SMM moments, `conditional_on_trade`, `Θ_A`, TOKİ external status (5
   observed / 0 SMM), and the numerical-search convention are unchanged; the pilot remains non-mutating (genuine
   count stays 7).
+
+- **UYAP Live Browser Pilot 1 — Live Interoperability Fix 13 (measured thirteenth live result: `FAIL`;
+  cross-row native download misbinding)** — chronology: runs 1–12 = **FAIL** → Fixes 1–12 → run 13 = **FAIL**
+  → the exact automated artifact was inspected byte-for-byte → Fix 13 → operator rerun pending. Run 13
+  **live-proved the native UDF path technically**: `native_download_event_detected=true`,
+  `native_artifact_collected=true`, `native_artifact_extension=.udf`, and `native_udf_zip_valid` /
+  `native_udf_content_xml_found` / `native_udf_xml_parse_succeeded` / `native_udf_content_element_found` /
+  `native_udf_source_text_available` all `true`. But direct byte/container inspection of the **exact automated
+  artifact** (`12109` bytes, `content.xml` `127346` bytes) proved it is the **sale-notice** UDF — its
+  `content.xml` title is `TAŞINMAZIN ELEKTRONİK SATIŞ ORTAMINDA AÇIK ARTIRMA İLANI` with `Kıymeti` + `KDV`,
+  **not** the manually downloaded correct `Artırma Sonuç / Uzatma Tutanağı` result document (`4406` bytes,
+  `content.xml` `17940` bytes, carrying explicit `İhale Bedeli` and `Ödenmesi Gereken Bedel : ALACAĞA
+  MAHSUBEN`). The automated `auction_result` path therefore **downloaded the sale-notice UDF and misbound it as
+  `auction_result`**, and the sale-notice boilerplate's inflected prose (`ihale bedelini`/`ihale bedelinin`)
+  falsely set `auction_price_field_label_found=true` (`auction_price_candidate_count=0`). This is not a parser
+  hypothesis — the exact automated bytes were inspected. Root cause: **DocumentRow identity was not preserved
+  through the native download click** — `_locate_row_download_action` filtered candidate rows by a broad
+  `has_text` label and returned the **first** matching download control, which in DOM order (sale-notice
+  first) belonged to a different row. **Fix 13 (DocumentRow-bound native download + native document-type
+  corroboration only; native UDF parsing, viewer stabilization, and appraisal parsing are unchanged; no OCR,
+  no ML, no known-truth injection; structural freeze):** (a) a new pure `select_unique_document_row`
+  reacquires the **unique** logical row by recognized identity (matching `artifact_type` + normalized label
+  with `logical_row_recognized_type_count == 1`; 0 or >1 matches, or a multi-identity row, means **no
+  download** with an honest `ambiguous_or_unresolved_row_reacquisition` blocker); (b) `_locate_row_download_
+  action` now requires the row-scoped download control to be **exactly one** (`count() == 1`) — a count > 1
+  means the matched "row" is actually a container spanning multiple rows, so it is skipped rather than grabbing
+  the first (never a page-global/first/Nth control); (c) new pure `classify_udf_document_type` /
+  `corroborate_native_document_type` deterministically detect the native source document type from **semantic
+  title/field tokens** (`artirma sonuc/uzatma tutanagi` and an explicit whole-word `İhale Bedeli` field ⇒
+  `auction_result`; `elektronik satis ortaminda`/`acik artirma ilani`/`satis ilani` ⇒ `sale_notice`; plus
+  `sale_spec`/`appraisal_report`/`unknown`) — **never from monetary values or verifier numbers** — and
+  `_collect_native_udf_download` promotes the artifact **only** when the detected type matches the requested
+  `artifact_type`; on the measured mismatch (`requested=auction_result` / `detected=sale_notice`) the artifact
+  is **not** appended, `document_source_artifact_collected` stays false, `auction_result` is **not** added to
+  `artifact_types_collected`, and the exact bytes are preserved only for local diagnostics; and (d)
+  `_ihale_bedeli_relation` now recognizes the `İhale Bedeli` field label as a **whole word** (`\bihale
+  bedeli\b`), so inflected prose (`ihale bedelini`/`bedelinin`) no longer sets `auction_price_field_label_
+  found`, while an explicit `İhale Bedeli : <money>` field still yields exactly one candidate; the auction
+  numerator semantics (explicit official `İhale Bedeli` field only) are unchanged. New privacy-safe diagnostics
+  (`native_requested_artifact_type`/`_normalized_label`, `native_row_reacquired`/`_artifact_type`/`_label_
+  match`, `native_action_owner_same_row`/`_semantic_revalidated`/`_fingerprint_match`, `native_detected_
+  document_type`, `native_document_type_corroborated`/`_mismatch`/`_corroboration_reason`) are surfaced in the
+  pilot report's `native_udf` block and carry no source text, personal data, full URLs, or opaque IDs. Added 30
+  offline tests. Full suite: **657 passed** (627 baseline + 30 tests). **Run 13 proved the native UDF download/
+  container/text path works live but downloaded the wrong document for the requested row; Fix 13 rejects that
+  misbinding and adds document-type corroboration, and is offline-tested only — no live correction and no pilot
+  `PASS` is claimed until the operator reruns.** Structural core, four SMM moments, `conditional_on_trade`,
+  `Θ_A`, TOKİ external status (5 observed / 0 SMM), and the numerical-search convention are unchanged; the
+  pilot remains non-mutating (genuine count stays 7).
