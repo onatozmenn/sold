@@ -33,6 +33,7 @@ from .models import (
     SourceArtifact,
     _ascii_lower,
 )
+from .udf import extract_udf_source_text, native_udf_supported
 
 BROWSER_PREREQUISITES = (
     "Browser-assisted collection requires the optional 'browser' extra (Playwright) AND a "
@@ -894,6 +895,12 @@ def classify_viewer_outcome(text: str, representation: str | None = None) -> str
 
 # Deterministik metin çıkarımı GERÇEKTEN desteklenen formatlar (ham UDF/PDF/ikili/GÖRÜNTÜ DEĞİL).
 EXTRACTABLE_ARTIFACT_EXTENSIONS = (".txt", ".html", ".htm")
+
+# Fix 12: satır-yerel resmî .udf indirmenin NATIVE konteyner çıkarımıyla TERCİH EDİLDİĞİ evidence türleri.
+# auction_result öncelik-1 (ölçülen native artifact); sale_notice viewer yolu KORUNUR (native opsiyonel/bloklayıcı DEĞİL).
+NATIVE_DOWNLOAD_TYPES = (ARTIFACT_AUCTION_RESULT,)
+# Native UDF konteyner uzantıları (destek YALNIZCA doğrulanmış yapı + content.xml ile; uzantı tek başına YETMEZ).
+NATIVE_UDF_EXTENSIONS = (".udf",)
 
 
 def extraction_supported_for(extension: str | None, mime_hint: str | None = None) -> bool:
@@ -2045,6 +2052,24 @@ class BrowserCollector:
                 "source_text_persisted": False,
                 "source_text_artifact_sha256": None,
                 "source_text_artifact_size": None,
+                "native_download_attempted": False,
+                "native_download_action_resolved": None,
+                "native_download_event_detected": False,
+                "native_artifact_collected": False,
+                "native_artifact_extension": None,
+                "native_artifact_size": None,
+                "native_artifact_sha256": None,
+                "native_container_kind": None,
+                "native_udf_zip_valid": None,
+                "native_udf_member_names_safe_summary": None,
+                "native_udf_content_xml_found": None,
+                "native_udf_content_xml_size": None,
+                "native_udf_xml_parse_succeeded": None,
+                "native_udf_content_element_found": None,
+                "native_udf_source_text_available": None,
+                "native_udf_text_extraction_supported": None,
+                "native_udf_source_relation": None,
+                "native_udf_blocking_reason": None,
                 "viewer_image_document_identity": None,
                 "viewer_image_cross_document_duplicate": False,
                 "viewer_image_duplicate_artifact_types": [],
@@ -2060,6 +2085,14 @@ class BrowserCollector:
                 "viewer_image_fingerprint_changed": False,
                 "viewer_stabilization_blocking_reason": None,
             }
+            # Fix 12: auction_result için ÖNCE satır-yerel resmî .udf indirme (NATIVE konteyner çıkarımı).
+            # Tetikleyici: POZİTİF çözülmüş AYNI-SATIR download eylemi + evidence DocumentRow + gerçek indirme
+            # olayı (viewer'ın image-backed/hata olması GEREKMEZ). Global/Nth download YOK. Başarılıysa
+            # viewer'a gerek kalmaz; başarısızsa mevcut viewer yoluna DÜŞER (KORUNUR).
+            if sel["artifact_type"] in NATIVE_DOWNLOAD_TYPES and resolution.get("download_action_resolved"):
+                if self._collect_native_udf_download(page, label, sel, resolution, attempt, diag, documents):
+                    diag["document_collection_attempts"].append(attempt)
+                    continue
             if not resolution.get("resolved") or resolution.get("view_action") is None:
                 attempt["blocking_reason"] = f"row_action_unresolved:{resolution.get('reason')}"
                 diag["document_collection_failures"] += 1
@@ -2394,6 +2427,78 @@ class BrowserCollector:
             except Exception:
                 continue
         return None
+
+    def _collect_native_udf_download(self, page, label, sel, resolution, attempt, diag, documents):  # pragma: no cover - canlı DOM
+        """Fix 12: AYNI-SATIR resmî ``.udf`` indirme → NATIVE konteyner çıkarımı → deterministik kaynak metin.
+
+        POZİTİF çözülmüş satır-yerel download eylemi (Fix 6 semantiği) tıklanır; gerçek indirme olayı beklenir;
+        KESİN baytlar gitignored depoya yazılır (mutasyon YOK); ``extract_udf_source_text`` ile ZIP doğrulanıp
+        ``content.xml`` metni çıkarılır ve MEVCUT alan çıkarıcıya (inline text) verilir. Global/Nth download YOK;
+        OCR/render YOK. Döner True (native kaynak toplandı) ya da False (uygulanamaz/başarısız → viewer'a düş).
+        """
+        attempt["native_download_attempted"] = True
+        dl_spec = resolution.get("download_action")
+        if not resolution.get("download_action_resolved") or dl_spec is None:
+            attempt["native_download_action_resolved"] = False
+            attempt["native_udf_blocking_reason"] = "no_resolved_same_row_download_action"
+            return False
+        attempt["native_download_action_resolved"] = True
+        dl = self._locate_row_download_action(page, label, dl_spec)
+        if dl is None:
+            attempt["native_udf_blocking_reason"] = "same_row_download_control_not_located"
+            return False
+        try:
+            with page.expect_download(timeout=8000) as dinfo:
+                dl.click(timeout=4000)
+            download = dinfo.value
+        except Exception as exc:
+            attempt["native_download_event_detected"] = False
+            attempt["native_udf_blocking_reason"] = "no_download_event_detected"
+            attempt["blocking_reason"] = str(exc)[:120] or "no_download_event_detected"
+            return False
+        attempt["native_download_event_detected"] = True
+        try:
+            fname = download.suggested_filename or ""
+        except Exception:
+            fname = ""
+        ext = (Path(fname).suffix.lower() or None) if fname else None
+        attempt["native_artifact_extension"] = ext
+        # KESİN baytlar gitignored artifact deposuna yazılır (mutasyona uğratılmaz; provenans için).
+        try:
+            dest_dir = Path(store.DEFAULT_STORE_DIR) / "artifacts" / "downloads"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / _safe_name(fname or "uyap_download.udf")
+            download.save_as(str(dest))
+            data = dest.read_bytes()
+        except Exception as exc:
+            attempt["native_udf_blocking_reason"] = "download_save_failed"
+            attempt["blocking_reason"] = str(exc)[:120]
+            return False
+        full_sha = _sha256_bytes(data)
+        attempt["native_artifact_collected"] = True
+        attempt["native_artifact_size"] = len(data)
+        attempt["native_artifact_sha256"] = full_sha[:16]
+        # NATIVE UDF konteyner çıkarımı (ZIP doğrula → content.xml → güvenli XML → content metni).
+        text, udiag = extract_udf_source_text(data)
+        attempt["native_container_kind"] = udiag.get("container_kind")
+        attempt["native_udf_zip_valid"] = udiag.get("zip_valid")
+        attempt["native_udf_member_names_safe_summary"] = udiag.get("member_names_safe_summary")
+        attempt["native_udf_content_xml_found"] = udiag.get("content_xml_found")
+        attempt["native_udf_content_xml_size"] = udiag.get("content_xml_size")
+        attempt["native_udf_xml_parse_succeeded"] = udiag.get("xml_parse_succeeded")
+        attempt["native_udf_content_element_found"] = udiag.get("content_element_found")
+        attempt["native_udf_source_text_available"] = udiag.get("source_text_available")
+        attempt["native_udf_text_extraction_supported"] = udiag.get("text_extraction_supported")
+        if text and native_udf_supported(udiag):
+            # Kaynak metin MEVCUT deterministik alan çıkarıcısına verilir (inline text; GÖVDE tanıya YAZILMAZ).
+            documents.append({"artifact_type": sel["artifact_type"], "text": text,
+                              "source_ref": f"native_udf:{ext or '.udf'}", "local_path": str(dest)})
+            attempt["artifact_collected"] = True
+            attempt["document_source_artifact_collected"] = True
+            attempt["native_udf_source_relation"] = "official_same_row_native_udf"
+            return True
+        attempt["native_udf_blocking_reason"] = udiag.get("blocking_reason") or "native_udf_source_unavailable"
+        return False
 
     def _same_row_download_fallback(self, page, label, sel, resolution, attempt, diag, documents):  # pragma: no cover - canlı DOM
         """Fix 6.1: görüntüleyici 'indirme-gerekli' dediğinde, AYNI satırın çözülmüş download eylemiyle

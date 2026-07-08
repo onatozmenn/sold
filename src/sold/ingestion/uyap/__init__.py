@@ -9,7 +9,7 @@ KORUR (pay = açık İhale Bedeli; ASLA Ödenmesi Gereken Bedel/depozito/hisse/m
 
 from __future__ import annotations
 
-from . import admit, audit, collect, discovery, extract, models, pilot, pipeline, reconcile, review, store
+from . import admit, audit, collect, discovery, extract, models, pilot, pipeline, reconcile, review, store, udf
 from .admit import INGESTION_BATCH, admit as admit_candidate, build_genuine_record, record_exclusion
 from .audit import audit_candidate
 from .collect import (
@@ -93,6 +93,7 @@ from .pilot import (
 )
 from .reconcile import reconcile
 from .review import needs_review, review_item, review_queue
+from .udf import MAX_UDF_DECOMPRESSED_BYTES, extract_udf_source_text, native_udf_supported
 
 __all__ = [
     "admit",
@@ -170,6 +171,11 @@ __all__ = [
     "classify_document_entry_path",
     "asset_descriptors",
     "INGESTION_BATCH",
+    # native UDF (Fix 12)
+    "udf",
+    "extract_udf_source_text",
+    "native_udf_supported",
+    "MAX_UDF_DECOMPRESSED_BYTES",
     # pilot (live browser verification)
     "pilot",
     "run_pilot",
