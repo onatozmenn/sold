@@ -339,8 +339,10 @@ def test_auction_result_is_native_priority_first():
     assert "auction_result" in NATIVE_DOWNLOAD_TYPES
 
 
-def test_sale_notice_not_native_download_type():
-    assert "sale_notice" not in NATIVE_DOWNLOAD_TYPES        # viewer yolu KORUNUR (bloklayıcı değil)
+def test_sale_notice_added_to_native_download_types_fix14():
+    # Fix 14: sale_notice canlı-kanıtlı native yola eklendi; appraisal_report/sale_spec EKLENMEZ.
+    assert "sale_notice" in NATIVE_DOWNLOAD_TYPES
+    assert "appraisal_report" not in NATIVE_DOWNLOAD_TYPES and "sale_spec" not in NATIVE_DOWNLOAD_TYPES
 
 
 def test_viewer_code_remains_available():
