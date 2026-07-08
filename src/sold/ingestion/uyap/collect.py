@@ -284,12 +284,14 @@ def _handler_tokens(el) -> list[str]:
     return sorted(set(toks))
 
 
-def _row_action_elements(el) -> list:
-    """Satır içindeki TIKLANABİLİR kontroller (iç içe düzleştirilmiş); yoksa ikon-yalnız kontroller."""
+def _row_actionable_controls(el) -> list:
+    """Fix 7: satır içindeki GERÇEK tıklanabilir kontroller (button / a / [role=button] / [onclick]),
+    iç içe düzleştirilmiş. Bare ``<i>``/``<svg>`` ikon descendant'ları DAHİL EDİLMEZ — bunlar sahip
+    (owning) actionable kontrolün metadata'sıdır, bağımsız ActionSpec DEĞİLdİr."""
     try:
         primary = el.select("a, button, [role=button], [onclick]")
     except Exception:
-        primary = []
+        return []
     pid = {id(x) for x in primary}
     tops: list = []
     for c in primary:
@@ -302,8 +304,14 @@ def _row_action_elements(el) -> list:
             p = getattr(p, "parent", None)
         if not nested:
             tops.append(c)
+    return _dedupe_by_id(tops)
+
+
+def _row_action_elements(el) -> list:
+    """Satır içindeki eylem kontrolleri: GERÇEK tıklanabilirler; yoksa ikon-yalnız kontroller (Fix 6)."""
+    tops = _row_actionable_controls(el)
     if tops:
-        return _dedupe_by_id(tops)
+        return tops
     try:  # ikon-yalnız satır (a/button/onclick yok): i/img/svg tıklanabilir kabul
         icons = [c for c in el.select("i, img, svg")
                  if (c.get("title") or c.get("aria-label") or c.get("class") or c.has_attr("onclick"))]
@@ -624,26 +632,70 @@ def detect_document_container(html: str) -> dict:
 
 
 def _semantic_row_for_label(label_el):
-    """Etiket elemanından, eyleme-sahip EN YAKIN kısıtlı atayı (satır) bulur (tr/li VARSAYMAZ)."""
+    """Fix 7: etiketten MANTIKSAL belge-satırı atasını bulur (tr/li VARSAYMAZ).
+
+    GERÇEK tıklanabilir kontrol (button/a) içeren, TEK-belge-etiketli EN KÜÇÜK atayı seçer ve
+    kardeş-actionable genişlemesiyle AYRI eye/view kontrolünü de kapsar (ikon descendant'lar ActionSpec
+    DEĞİL, sahip actionable kontrolün metadata'sıdır). Modal/body/html ya da birden çok belge etiketi
+    içeren ata SATIR SAYILMAZ. Döner: ``(row_el, [action_spec...], meta)``. OFFLINE testable.
+    """
+    label_kind = getattr(label_el, "name", None)
+    # tek-belge-etiketli ata zinciri (birden çok belge → çok geniş, dur)
+    chain: list = []
     cur = label_el
-    for _ in range(6):
+    for _ in range(8):
         if cur is None or not getattr(cur, "name", None):
             break
         if len(_distinct_doc_types(cur.get_text(" ", strip=True))) > 1:
-            break  # birden çok belgeyi kapsıyor → satır değil, dur
-        actions = _row_action_specs(cur)  # _row_action_elements zaten gerçek tıklanabilirleri süzer
-        if actions:
-            return cur, actions
-        cur = cur.parent
-    return label_el, _row_action_specs(label_el)
+            break
+        chain.append(cur)
+        cur = getattr(cur, "parent", None)
+
+    def _meta(strategy, row_el, controls, tags):
+        return {
+            "row_boundary_strategy": strategy,
+            "label_element_kind": label_kind,
+            "logical_row_ancestor_kind": (getattr(row_el, "name", None)),
+            "logical_row_recognized_type_count": len(_distinct_doc_types(row_el.get_text(" ", strip=True))),
+            "logical_row_actionable_control_count": controls,
+            "actionable_control_tags": tags[:8],
+        }
+
+    # (1) GERÇEK tıklanabilir kontrol içeren atalar; kardeş genişlemesiyle en uygun satır.
+    best_el = None
+    best_controls: list = []
+    expanded = False
+    for c in chain:
+        controls = _row_actionable_controls(c)
+        if not controls:
+            continue
+        if best_el is None:
+            best_el, best_controls = c, controls
+        elif len(controls) > len(best_controls):
+            best_el, best_controls, expanded = c, controls, True  # actionable-sibling expansion
+        else:
+            break  # daha fazla actionable kontrol eklemiyor → durma (fazla genişleme YOK)
+    if best_el is not None:
+        strategy = "actionable_sibling_expansion" if expanded else "label_actionable_ancestor"
+        specs = [_action_spec(x) for x in best_controls]
+        return best_el, specs, _meta(strategy, best_el, len(best_controls), [getattr(x, "name", "") or "" for x in best_controls])
+
+    # (2) tıklanabilir yoksa ikon-yalnız satır (Fix 6): eyleme sahip en küçük ata.
+    for c in chain:
+        specs = _row_action_specs(c)
+        if specs:
+            return c, specs, _meta("icon_only_ancestor", c, len(specs), [s.get("tag") or "" for s in specs])
+
+    fallback = _row_action_specs(label_el)
+    return label_el, fallback, _meta("unresolved", label_el, len(fallback), [s.get("tag") or "" for s in fallback])
 
 
 def extract_document_rows_semantic(html: str) -> list[dict]:
     """Sabit satır seçicisi OLMADAN, semantik etiket-anchoring ile belge satırlarını çıkarır.
 
-    Her tanınan GÖRÜNÜR etiket → eyleme-sahip en yakın kısıtlı ata (satır) → birleşik DocumentRow
-    (``{"label", "actions"}``). Gerçek UYAP overlay'i div/portal olabilir; tr/li/class*=row GEREKMEZ.
-    ``extract_panel_document_rows`` ile aynı soyutlamayı üretir (paylaşılan toplama yolu). OFFLINE testable.
+    Her tanınan GÖRÜNÜR etiket → MANTIKSAL satır atası (Fix 7: kardeş eye kontrolünü kapsar) → birleşik
+    DocumentRow (``{"label", "actions", "row_boundary"}``). Gerçek UYAP overlay'i div/portal olabilir;
+    tr/li/class*=row GEREKMEZ. ``extract_panel_document_rows`` ile aynı soyutlamayı üretir. OFFLINE testable.
     """
     rows: list[dict] = []
     seen: set = set()
@@ -652,8 +704,8 @@ def extract_document_rows_semantic(html: str) -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        _row_el, actions = _semantic_row_for_label(el)
-        rows.append({"label": text, "actions": actions})
+        _row_el, actions, meta = _semantic_row_for_label(el)
+        rows.append({"label": text, "actions": actions, "row_boundary": meta})
     return rows
 
 
@@ -698,6 +750,23 @@ def document_container_kind_for_entry(page_state: str) -> str:
     if page_state == "record_detail":
         return "same_page_tab_panel"
     return "not_opened"
+
+
+def preopened_document_list_reusable(html: str, url: str | None = None, target_file_id: str | None = None) -> bool:
+    """Fix 7: Kart-kontrolüne TIKLAMADAN önce, GEÇERLİ görünür bir belge-listesi zaten açık mı?
+
+    Katı koşullar (mevcut guard'lar zorunlu): (1) desteklenen belge-giriş sayfası (search_listing /
+    record_detail); (2) hedef dosya kimliği sayfada görünür (candidate scoping — stale/ilgisiz liste
+    yeniden KULLANILMAZ); (3) ``detect_document_list`` geçerli (başlık + ≥2 distinkt tür + sınırlı
+    ortak-ata konteyner; gizli şablon / ham-HTML-yalnız etiketler görünürlük guard'larıyla ELENİR).
+    Bağlanamıyorsa yeniden kullanılmaz. OFFLINE testable.
+    """
+    ps = classify_page_state(html, url)
+    if ps not in ("search_listing", "record_detail"):
+        return False
+    if target_file_id and not file_identity_matches(html, target_file_id):
+        return False  # bu sayfa hedef adaya ait değil → stale/ilgisiz liste kullanılmaz
+    return bool(detect_document_list(html).get("detected"))
 
 
 def resolve_row_view_action(actions: list[dict]) -> dict:
@@ -1298,6 +1367,8 @@ class BrowserCollector:
                 "document_container_strategy": "not_found",
                 "document_container_recognized_types": [],
                 "document_row_detection_strategy": None,
+                "document_entry_state": None,
+                "row_boundary_strategy": None,
                 "recognized_document_rows": [],
                 "action_resolution_strategy": None,
                 "document_collection_attempts": [],
@@ -1393,6 +1464,8 @@ class BrowserCollector:
             "document_container_strategy": "not_found",
             "document_container_recognized_types": [],
             "document_row_detection_strategy": None,
+            "document_entry_state": None,
+            "row_boundary_strategy": None,
             "recognized_document_rows": [],
             "action_resolution_strategy": None,
             "document_collection_attempts": [],
@@ -1461,6 +1534,29 @@ class BrowserCollector:
         except Exception:
             pre_html = ""
         diag["pre_click_visible_document_types"] = visible_document_types(pre_html)
+
+        # Fix 7: kart-kontrolüne TIKLAMADAN önce — GEÇERLİ görünür belge-listesi zaten açık mı? (pre-opened/
+        # stale UI). Aynı-bağlam (hedef kimlik + desteklenen sayfa + sınırlı konteyner) geçerli liste açıksa
+        # tekrar tıklanmaz; doğrudan satır toplamaya geçilir (gizli şablon / ham-HTML pre-opened SAYILMAZ).
+        if preopened_document_list_reusable(pre_html, page_url, target_file_id):
+            preopen_rows = extract_document_rows_semantic(pre_html) or extract_panel_document_rows(pre_html)
+            if preopen_rows:
+                det0 = detect_document_list(pre_html)
+                diag["document_entry_state"] = "preopened_document_list_reused"
+                diag["post_click_visible_document_types"] = det0.get("recognized_types", [])
+                diag["document_list_semantic_transition_detected"] = False  # zaten açıktı — geçiş GEREKMEZ
+                diag["document_container_strategy"] = det0.get("container_strategy", "not_found")
+                diag["document_container_recognized_types"] = det0.get("recognized_types", [])
+                diag["document_row_detection_strategy"] = "semantic_label_ancestor"
+                container_kind = document_container_kind_for_entry(page_state)
+                diag["document_list_container_kind"] = container_kind
+                diag["document_list_opened"] = True
+                diag["document_modal_opened"] = (container_kind == "listing_modal")
+                d0, p0 = self._collect_from_container(page, context, preopen_rows, container_kind, diag)
+                documents += d0
+                patterns += p0
+                return documents, patterns, diag
+        diag["document_entry_state"] = "entry_control_click"
 
         try:
             control.click(timeout=5000)
@@ -1562,6 +1658,7 @@ class BrowserCollector:
                 continue
             row_actions = row.get("actions") or []
             res = resolve_row_view_action(row_actions)
+            rb = row.get("row_boundary") or {}
             recognized.append({
                 "artifact_type": atype,
                 "normalized_label": _ascii_lower(_demojibake(row.get("label") or ""))[:60],
@@ -1570,11 +1667,17 @@ class BrowserCollector:
                 "download_action_detected": bool(res["download_action_detected"]),
                 "resolved_semantic": ("view" if res["resolved"] else None),
                 "action_resolution_reason": res.get("reason"),
+                "row_boundary_strategy": rb.get("row_boundary_strategy"),
+                "logical_row_ancestor_kind": rb.get("logical_row_ancestor_kind"),
+                "logical_row_recognized_type_count": rb.get("logical_row_recognized_type_count"),
+                "logical_row_actionable_control_count": rb.get("logical_row_actionable_control_count"),
+                "actionable_control_tags": rb.get("actionable_control_tags"),
                 "action_summaries": [_action_summary(a, k) for k, a in enumerate(row_actions)],
             })
             selected.append({"row_index": i, "label": row.get("label"), "artifact_type": atype, "resolution": res})
         diag["recognized_document_rows"] = recognized
         diag["action_resolution_strategy"] = "icon_accessibility_href_precedence"
+        diag["row_boundary_strategy"] = next((r.get("row_boundary_strategy") for r in recognized if r.get("row_boundary_strategy")), None)
         selected.sort(key=lambda s: _DOC_PRIORITY.get(s["artifact_type"], 9))  # öncelik: auction_result önce
 
         for sel in selected:
