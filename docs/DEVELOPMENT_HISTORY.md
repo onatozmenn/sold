@@ -463,3 +463,50 @@ milestones:
   rerun is required. Structural core, four SMM moments, `conditional_on_trade`, `Θ_A`, TOKİ external status
   (5 observed / 0 SMM), and the numerical-search convention are unchanged; the pilot remains non-mutating
   (genuine count stays 7).
+
+- **UYAP Live Browser Pilot 1 — Live Interoperability Fix 7 (measured seventh live result: `FAIL`)** —
+  chronology: runs 1–6 = **FAIL** → Fixes 1–6 → Fix 6.1 → run 7 = **FAIL** → Fix 7 → operator rerun
+  pending. Run 7 **live-proved** Fix 5's modal/document-row detection and, newly, **Fix 6's download
+  semantics**: `document_list_opened=true`, `document_modal_opened=true`, `document_list_container_kind=
+  listing_modal`, the four rows recognized, `document_actions_observed=8`, and for every row the real
+  `fa-arrow-down` icon was positively classified `download` (`download_action_detected=true`,
+  `download_action_resolved=true`). **But every row still reported `view_action_resolved=false` /
+  `row_action_unresolved:no_view_action` and `viewer_pages_opened=0`.** The Run-7 action summaries showed
+  **both** reported controls as bare `<i>` icons — the document icon (`icon-docs …`) and the `fa-arrow-down`
+  download arrow — with **no** eye/view control in the report. The mutation guard passed again (`uyap.json`
+  unchanged, count `7 -> 7`, SMM unchanged). Root cause: the logical **document-row boundary was too
+  narrow** and action introspection was operating on **icon descendants** inside the label/download control
+  rather than the owning **actionable controls**; the separate eye/view control is a sibling **outside** the
+  selected semantic-label ancestor. **Fix 7 (row boundary / actionable-control ownership only; no
+  page-state/card/modal/label/viewer/fallback/structural change):** `_semantic_row_for_label` now builds the
+  single-recognized-label ancestor chain (stopping before any ancestor that spans two document identities)
+  and selects the **smallest ancestor that contains actual actionable controls** via a new
+  `_row_actionable_controls` (`button`/`a`/`[role=button]`/`[onclick]`, nesting-flattened, **excluding** bare
+  `<i>`/`svg` descendants), with a constrained **actionable-sibling expansion** (`row_boundary_strategy` =
+  `label_actionable_ancestor` / `actionable_sibling_expansion` / `icon_only_ancestor` / `unresolved`) so the
+  adjacent eye/view button is captured without climbing into another row, `body`/`html`, or the whole modal
+  (guarded by `logical_row_recognized_type_count == 1`). An icon (`<i>`/SVG/`<use>`) is metadata of its
+  owning actionable control, never its own `ActionSpec`: two icons inside one button yield **one** actionable
+  control (with `fa-arrow-down` in its `icon_tokens`/`descendant_icon_tokens`), one download button + one view
+  button yield **two**, and `action_count` counts actionable controls (not icons/`<i>`/SVG/tokens). Fix-6's
+  positive precedence and Fix-6.1's same-row download fallback are reused unchanged — the corrected row now
+  exposes **both** the view and the row's **own** positively-resolved download action; an unknown/positional/
+  right-most sibling is never inferred as view. A separate non-clean rerun also showed a **pre-opened/stale
+  document list** already visible before the entry click (`pre_click_visible_document_types` already the four
+  types, then the card-local control click timed out); Fix 7 adds a narrow guard
+  `preopened_document_list_reusable(html, url, target_file_id)` that, **before** clicking, reuses an
+  already-open **valid** list only when the page is a supported doc-entry state, the target file identity is
+  visible (candidate scoping), and the strict `detect_document_list` container holds (hidden templates /
+  raw-HTML-only labels never qualify via the existing visibility/container guards), setting
+  `document_entry_state = preopened_document_list_reused` and flowing straight into the Fix-7 row-boundary
+  collection (no pre-click→post-click transition required when the list was already open). New privacy-safe
+  diagnostics: `row_boundary_strategy`, `logical_row_ancestor_kind`, `logical_row_recognized_type_count`,
+  `logical_row_actionable_control_count`, `actionable_control_tags`, `document_entry_state`. Result-card
+  `Satış Tutarı` is still never substituted for the explicit İhale Bedeli, and known truth remains
+  verifier-only. Added 26 offline tests. Full suite: **440 passed** (414 baseline + 26 tests). **No live
+  `PASS` is claimed: eye/view semantics have not been resolved live, the viewer has not been reached
+  programmatically, the Fix-6.1 download-required fallback has not run live, no official UDF has downloaded
+  live, raw-UDF extraction is not proven, and the İhale Bedeli was not extracted** — a post-Fix-7 operator
+  rerun is required. Structural core, four SMM moments, `conditional_on_trade`, `Θ_A`, TOKİ external status
+  (5 observed / 0 SMM), and the numerical-search convention are unchanged; the pilot remains non-mutating
+  (genuine count stays 7).
