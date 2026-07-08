@@ -666,3 +666,48 @@ milestones:
   post-Fix-10 operator rerun is required.** Structural core, four SMM moments, `conditional_on_trade`, `Θ_A`,
   TOKİ external status (5 observed / 0 SMM), and the numerical-search convention are unchanged; the pilot
   remains non-mutating (genuine count stays 7).
+
+- **UYAP Live Browser Pilot 1 — Live Interoperability Fix 11 (measured eleventh live result: `FAIL`)** —
+  chronology: runs 1–10 = **FAIL** → Fixes 1–10 → run 11 = **FAIL** → Fix 11 → operator rerun pending. Run 11
+  **live-proved Fix 10's appraisal fix**: `final_viewer_representation=dom_text`,
+  `final_viewer_text_available=true`, `document_source_artifact_collected=true` for both `auction_result` and
+  `sale_notice`, and appraisal extracted cleanly — `extracted_appraisal=6800000.0`,
+  `appraisal_candidate_count=1`, `appraisal_candidates=[6800000.0]`,
+  `appraisal_value_relation_strategies=[same_segment]` — so the earlier spurious `1.0` is **live-resolved**.
+  Same-asset reconciliation stayed `reconciled` (`ada=50984`, `floor=12`, `parsel=1`, `section_no=60`) and KDV
+  stayed `20.0`. The remaining required blocker is precise: `auction_price_field_label_found=true` but
+  `auction_price_candidate_count=0` and `extracted_auction_price=null` — the real stabilized source **contains
+  a recognized İhale Bedeli label but the current label→value relation does not reach a money value** — and on
+  the settlement side `settlement_field_label_found=false` / `alacaga_mahsuben_detected=false`, so the audit
+  stayed `PENDING_REVIEW` (the mutation guard passed again: `uyap.json` unchanged, count `7 → 7`, SMM
+  unchanged). Because the previous task never persisted the raw stabilized DOM text, the exact real
+  serialization could not be inspected — so **Fix 11 is a source-persistence + bounded field-layout adapter
+  task, not a layout guess. Fix 11 (no OCR, no ML, no known-truth injection; no
+  page-state/card/modal/view-action/viewer/reconciliation/audit/structural change):** (a) when a viewer
+  reaches `stable_text_representation` and a document-specific DOM-text source is collected, the **exact
+  source text is persisted locally** through the existing gitignored ingestion store
+  (`data/ingestion/uyap/artifacts/viewer_sources/`), and only privacy-safe provenance
+  (`source_text_persisted`, `source_text_artifact_sha256`, `source_text_artifact_size`) is recorded — the body
+  is **never** committed, copied into README/DEVELOPMENT_HISTORY, emitted into pilot JSON, printed in full, or
+  placed in test fixtures verbatim; (b) `extract.py` gains `_ihale_bedeli_relation`, a **bounded multi-segment
+  label→value relation** (`same_segment → adjacent_segment → bounded_following` over at most a few following
+  segments, **stopping immediately** at the next recognized field label or property identifier via
+  `_VALUE_BOUNDARY_RE`), still accepting only a Turkish monetary literal — no whole-document scan, no
+  first-money-anywhere, no `max()`, no threshold, no verifier value; (c) `_bounded_token_sequence` /
+  `_settlement_relation` add a **bounded token-sequence label matcher** requiring the complete
+  `odenmesi → gereken → bedel` identity within a small segment window (a generic `bedel`/`gereken` never
+  qualifies), then read `ALACAĞA MAHSUBEN` only from that field's bounded value region (including split
+  serializations), never inferring it from price/creditor/zero-balance/known truth; and (d) a new privacy-safe
+  `field_neighborhood` (auction-price and settlement) carries only structural counts, boundary-stop reasons,
+  and normalized field-label *types* — never segment text, money, personal data, or viewer URLs — and is
+  surfaced in the pilot report's `field_extraction` block alongside `source_text_persisted`/`_sha256`/`_size`,
+  so the next live report can explain the actual İhale Bedeli and settlement layout without exposing content.
+  Fix 10's live-proven appraisal (`6800000.0`, one candidate, bare `1` still excluded) and viewer
+  finalization, plus reconciliation and KDV `20.0`, are preserved unchanged (regression-tested), and the
+  explicit İhale Bedeli requirement is not weakened (`Satış Tutarı`/`Ödenmesi Gereken Bedel`/status-card
+  amounts are never the auction price). Added 33 offline tests. Full suite: **590 passed** (557 baseline + 33
+  tests). **No live `PASS` is claimed: the İhale Bedeli value has not been extracted from the real viewer, the
+  settlement field is not yet confirmed from the real source, no audit admission has occurred, and a
+  post-Fix-11 operator rerun — which will persist and reveal the real layout — is required.** Structural core,
+  four SMM moments, `conditional_on_trade`, `Θ_A`, TOKİ external status (5 observed / 0 SMM), and the
+  numerical-search convention are unchanged; the pilot remains non-mutating (genuine count stays 7).
