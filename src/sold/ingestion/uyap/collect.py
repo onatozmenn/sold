@@ -173,42 +173,282 @@ def _distinct_doc_types(text: str) -> set:
     return {atype for kw, atype in _DOC_KEYWORDS.items() if kw in fold}
 
 
-def _row_action_specs(el) -> list[dict]:
-    """Bir satır elemanının EYLEM kontrollerini (a/button/ikon/başlıklı) çıkarır (satır-yerel).
+# --- Fix 6: satır-yerel İKON eylem introspeksiyonu + deterministik download/view çözümü --- #
+# Genel ikon/erişilebilirlik token aileleri (gerçek UYAP ikon çerçevesi ÖNCEDEN varsayılmaz).
+_ACTION_VIEW_TOKENS = (
+    "goruntule", "goster", "incele", "onizleme", "onizle", "preview", "view", "eye",
+    "visibility", "goz", "buyutec", "search", "detay",
+)
+_ACTION_DOWNLOAD_TOKENS = (
+    "indir", "download", "kaydet", "arrow-down", "arrowdown", "file-download", "filedownload",
+    "cloud-download", "clouddownload", "save",
+)
 
-    Düz METİN etiketi (title/href/onclick olmayan span/div) EYLEM SAYILMAZ — aksi halde belge
-    etiketi yanlışlıkla görüntüleme eylemi olarak çözülebilir (Fix 5).
-    """
-    specs: list[dict] = []
-    try:
-        controls = el.select("a, button, [role=button], i, img, [title], [aria-label], [onclick]")
-    except Exception:
-        return specs
+
+def _text_has_view(s: str) -> bool:
+    s = _ascii_lower(_demojibake(str(s or "")))
+    return any(tok in s for tok in _ACTION_VIEW_TOKENS)
+
+
+def _text_has_download(s: str) -> bool:
+    s = _ascii_lower(_demojibake(str(s or "")))
+    if any(tok in s for tok in _ACTION_DOWNLOAD_TOKENS):
+        return True
+    return "down" in s.split()  # yalın 'down' YALNIZCA tam-token (dropdown vb. yanlış-eşleşmez)
+
+
+def _safe_class_tokens(classlist) -> list[str]:
+    """Kısıtlı, gizlilik-güvenli class token'ları (uzun/opak/sayısal hash'ler atılır)."""
+    out: list[str] = []
+    for c in (classlist or []):
+        t = _ascii_lower(str(c)).strip()
+        if not t or len(t) > 32 or t.isdigit():
+            continue
+        out.append(t)
+        if len(out) >= 12:
+            break
+    return out
+
+
+def _bounded_tokens(tokens, limit: int = 16) -> list[str]:
     seen: set = set()
-    for a in controls:
-        name = getattr(a, "name", "") or ""
-        title = a.get("title") or a.get("aria-label") or ""
+    out: list[str] = []
+    for t in tokens:
+        t = (str(t) if t is not None else "").strip()[:24]
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _href_kind(el) -> str | None:
+    """Href/download-attr'dan GÜVENLİ tür (opak sorgu/evrakId ASLA saklanmaz): javascript/viewer/download/same_page/unknown."""
+    if hasattr(el, "has_attr") and el.has_attr("download"):
+        return "download"
+    href = _ascii_lower(str(el.get("href") or "")).strip()
+    if not href:
+        return None
+    if href.startswith("javascript:") or href in ("#", "#/"):
+        return "javascript"
+    path = href.split("?", 1)[0]  # opak sorgu (evrakId vb.) DÜŞÜR
+    if "viewer.jsp" in path or "goruntule" in path or "/view" in path:
+        return "viewer"
+    if "indir" in path or "download" in path or path.endswith((".pdf", ".udf", ".zip", ".doc", ".docx", ".xls", ".xlsx")):
+        return "download"
+    if href.startswith("#"):
+        return "same_page"
+    return "unknown"
+
+
+def _icon_tokens(el) -> list[str]:
+    """Eylem elemanının KENDİ + torun ikon metadata token'ları (class / svg <title> / <use href=#frag> / alt/aria).
+
+    Ham SVG/markup SAKLANMAZ; yalnız kısa, güvenli semantik token'lar. Renk ASLA kullanılmaz.
+    """
+    toks: list[str] = list(_safe_class_tokens(el.get("class")))
+    try:
+        descendants = el.find_all(True)
+    except Exception:
+        descendants = []
+    for d in descendants[:24]:
         try:
-            txt = a.get_text(" ", strip=True)
+            toks += _safe_class_tokens(d.get("class"))
+            for k in ("title", "aria-label", "alt"):
+                v = d.get(k)
+                if v:
+                    toks.append(_ascii_lower(_demojibake(str(v)))[:24])
+            for hk in ("href", "xlink:href"):
+                hv = d.get(hk)
+                if hv and str(hv).startswith("#"):
+                    toks.append(_ascii_lower(str(hv).lstrip("#"))[:24])
+            if d.name == "title":  # SVG <title>Görüntüle</title>
+                tt = d.get_text(" ", strip=True)
+                if tt:
+                    toks.append(_ascii_lower(_demojibake(tt))[:24])
         except Exception:
-            txt = ""
-        cls = " ".join(a.get("class") or [])
-        alt = a.get("alt") or ""
-        href = a.get("href")
-        is_action = (
-            name in ("a", "button", "i", "img")
-            or _ascii_lower(a.get("role") or "") == "button"
-            or bool(title) or bool(href) or a.has_attr("onclick")
-        )
-        if not is_action:
             continue
-        if id(a) in seen:
+    return _bounded_tokens(toks)
+
+
+def _handler_tokens(el) -> list[str]:
+    """onclick gövdesinden/href YOLUNDAN yalnız GÜVENLİ semantik token'lar (gövde/sorgu ASLA saklanmaz)."""
+    toks: list[str] = []
+    blob = _ascii_lower(_demojibake(str(el.get("onclick") or "")))
+    href_path = _ascii_lower(str(el.get("href") or "")).split("?", 1)[0]
+    for w in ("goruntule", "goster", "onizle", "preview", "view", "viewer", "indir", "download", "kaydet"):
+        if w in blob or w in href_path:
+            toks.append(w)
+    return sorted(set(toks))
+
+
+def _row_action_elements(el) -> list:
+    """Satır içindeki TIKLANABİLİR kontroller (iç içe düzleştirilmiş); yoksa ikon-yalnız kontroller."""
+    try:
+        primary = el.select("a, button, [role=button], [onclick]")
+    except Exception:
+        primary = []
+    pid = {id(x) for x in primary}
+    tops: list = []
+    for c in primary:
+        p = getattr(c, "parent", None)
+        nested = False
+        while p is not None and p is not el:
+            if id(p) in pid:
+                nested = True
+                break
+            p = getattr(p, "parent", None)
+        if not nested:
+            tops.append(c)
+    if tops:
+        return _dedupe_by_id(tops)
+    try:  # ikon-yalnız satır (a/button/onclick yok): i/img/svg tıklanabilir kabul
+        icons = [c for c in el.select("i, img, svg")
+                 if (c.get("title") or c.get("aria-label") or c.get("class") or c.has_attr("onclick"))]
+    except Exception:
+        icons = []
+    return _dedupe_by_id(icons)
+
+
+def _dedupe_by_id(items: list) -> list:
+    seen: set = set()
+    out: list = []
+    for x in items:
+        if id(x) in seen:
             continue
-        seen.add(id(a))
-        blob = _ascii_lower(_demojibake(" ".join([title, txt, cls, alt])))
-        kind = "eye" if any(k in blob for k in _VIEW_ACTION_TOKENS) or "goz" in blob else "control"
-        specs.append({"kind": kind, "text": (title or txt or alt), "href": href, "css": cls})
-    return specs
+        seen.add(id(x))
+        out.append(x)
+    return out
+
+
+def _action_spec(el) -> dict:
+    """Bir tıklanabilir eylem için zengin, gizlilik-güvenli metadata + deterministik semantik."""
+    name = getattr(el, "name", "") or ""
+    role = _ascii_lower(el.get("role") or "") or None
+    title = (el.get("title") or "").strip()
+    aria = (el.get("aria-label") or "").strip()
+    alt = (el.get("alt") or "").strip()
+    try:
+        txt = el.get_text(" ", strip=True)
+    except Exception:
+        txt = ""
+    accessible = _demojibake(title or aria or alt or txt or "")
+    spec = {
+        "tag": name,
+        "role": role,
+        "title": (title[:40] or None),
+        "aria_label": (aria[:40] or None),
+        "text": ((title or aria or alt or txt)[:40] or None),
+        "accessible_name": (accessible[:40] or None),
+        "href": el.get("href"),  # İÇSEL (canlı locate için); tanı ÖZETİNE ham girmez
+        "href_kind": _href_kind(el),
+        "download_attr": bool(hasattr(el, "has_attr") and el.has_attr("download")),
+        "onclick_present": bool(hasattr(el, "has_attr") and el.has_attr("onclick")),
+        "class_tokens": _safe_class_tokens(el.get("class")),
+        "icon_tokens": _icon_tokens(el),
+        "handler_tokens": _handler_tokens(el),
+        "css": " ".join(el.get("class") or []),
+    }
+    spec["semantic"] = classify_action_semantic(spec)
+    spec["kind"] = ("eye" if spec["semantic"] == "view"
+                    else "download" if spec["semantic"] == "download" else "control")
+    return spec
+
+
+def classify_action_semantic(spec: dict) -> str:
+    """Bir eylem kontrolünü deterministik ÖNCELİKLE sınıflar: download / view / ambiguous / unknown.
+
+    Öncelik: (1) erişilebilirlik/title semantiği; (2) torun ikon token semantiği; (3) href/download
+    attribute semantiği; (4) güvenli onclick/handler token semantiği; aksi halde unknown. KONUM/Nth
+    KULLANMAZ; 'diğeri download olduğu için bu view' ÇIKARIMI YOK; yalnız POZİTİF kanıtla (Fix 6).
+    """
+    # (1) erişilebilirlik/title
+    name = spec.get("accessible_name") or spec.get("title") or spec.get("aria_label") or spec.get("text") or ""
+    v, d = _text_has_view(name), _text_has_download(name)
+    if v and d:
+        return "ambiguous"
+    if v:
+        return "view"
+    if d:
+        return "download"
+    # (2) torun ikon token'ları (kendi class + torun ikon metadata)
+    icon_blob = " ".join(list(spec.get("icon_tokens") or []) + list(spec.get("class_tokens") or [])
+                         + [_ascii_lower(str(spec.get("css") or ""))])
+    v, d = _text_has_view(icon_blob), _text_has_download(icon_blob)
+    if v and d:
+        return "ambiguous"
+    if v:
+        return "view"
+    if d:
+        return "download"
+    # (3) href / download attribute
+    if spec.get("download_attr"):
+        return "download"
+    hk = spec.get("href_kind")
+    if hk == "viewer":
+        return "view"
+    if hk == "download":
+        return "download"
+    # (4) güvenli onclick/handler token'ları
+    hblob = " ".join(spec.get("handler_tokens") or [])
+    v, d = _text_has_view(hblob), _text_has_download(hblob)
+    if v and d:
+        return "ambiguous"
+    if v:
+        return "view"
+    if d:
+        return "download"
+    return "unknown"
+
+
+def _semantic_candidates(spec: dict) -> list[str]:
+    """Tanı için: bu eylemde gözlenen (view/download) POZİTİF sinyaller (kesin çözüm değil)."""
+    blob = " ".join([
+        str(spec.get("accessible_name") or ""),
+        " ".join(spec.get("icon_tokens") or []),
+        " ".join(spec.get("class_tokens") or []),
+        " ".join(spec.get("handler_tokens") or []),
+        _ascii_lower(str(spec.get("css") or "")),
+    ])
+    cands: list[str] = []
+    if _text_has_view(blob) or spec.get("href_kind") == "viewer":
+        cands.append("view")
+    if _text_has_download(blob) or spec.get("download_attr") or spec.get("href_kind") == "download":
+        cands.append("download")
+    return cands
+
+
+def _action_summary(spec: dict, index: int) -> dict:
+    """Gizlilik-güvenli, sınırlı per-action tanı özeti (ham href/onclick/evrakId/DOM ASLA)."""
+    nm = spec.get("accessible_name")
+    return {
+        "local_index": index,
+        "tag": spec.get("tag"),
+        "role": spec.get("role"),
+        "accessible_name_present": bool(nm),
+        "accessible_name": (nm if nm and len(nm) <= 40 else None),
+        "title": spec.get("title"),
+        "aria_label": spec.get("aria_label"),
+        "href_kind": spec.get("href_kind"),
+        "download_attribute_present": bool(spec.get("download_attr")),
+        "onclick_present": bool(spec.get("onclick_present")),
+        "safe_class_tokens": (spec.get("class_tokens") or [])[:12],
+        "descendant_icon_tokens": (spec.get("icon_tokens") or [])[:16],
+        "semantic_candidates": _semantic_candidates(spec),
+        "resolved_semantic": spec.get("semantic"),
+    }
+
+
+def _row_action_specs(el) -> list[dict]:
+    """Bir satır elemanının EYLEM kontrollerini (tıklanabilir + ikon metadata) çıkarır (satır-yerel).
+
+    İç içe tıklanabilirler DÜZLEŞTİRİLİR (``<a><i></i></a>`` → tek eylem; ``<i>`` ikon-metadata olur).
+    Düz METİN etiketi EYLEM SAYILMAZ. Her spec zengin, gizlilik-güvenli aksiyon metadata taşır ve
+    ``classify_action_semantic`` ile download/view/ambiguous/unknown olarak sınıflanır (Fix 6).
+    """
+    return [_action_spec(c) for c in _row_action_elements(el)]
 
 
 def extract_panel_document_rows(html: str) -> list[dict]:
@@ -391,7 +631,7 @@ def _semantic_row_for_label(label_el):
             break
         if len(_distinct_doc_types(cur.get_text(" ", strip=True))) > 1:
             break  # birden çok belgeyi kapsıyor → satır değil, dur
-        actions = [a for a in _row_action_specs(cur) if (a.get("text") or a.get("href") or a.get("css"))]
+        actions = _row_action_specs(cur)  # _row_action_elements zaten gerçek tıklanabilirleri süzer
         if actions:
             return cur, actions
         cur = cur.parent
@@ -461,32 +701,30 @@ def document_container_kind_for_entry(page_state: str) -> str:
 
 
 def resolve_row_view_action(actions: list[dict]) -> dict:
-    """Satır-yerel GÖRÜNTÜLE/eye eylemini çözer (indirme ile karıştırmaz). Belirsizse KEYFİ tıklama YOK.
+    """Satır-yerel GÖRÜNTÜLE/view eylemini POZİTİF semantikle çözer (Fix 6). KEYFİ tıklama YOK.
 
-    İki-eylemli gerçek UYAP satırı (indirme + eye) → eye çözülür. Yalnız indirme / net görüntüleme
-    yok / birden çok eye adayı → ``resolved=False`` (satır çözülemez; keyfi eylem seçilmez). OFFLINE testable.
+    Her eylem ``classify_action_semantic`` ile download/view/ambiguous/unknown olur. YALNIZCA tam
+    olarak BİR eylem pozitif 'view' ise çözülür. 'Diğeri download olduğu için bu view' ÇIKARIMI YOK;
+    konum/Nth/sağdaki KULLANILMAZ. Sıfır/çok view adayı ya da belirsizlik → çözülemez. OFFLINE testable.
     """
     acts = list(actions or [])
-    downloads = [a for a in acts if _is_download_action(a)]
-    eyes = []
-    for a in acts:
-        if _is_download_action(a):
-            continue
-        blob = _ascii_lower(_demojibake(" ".join([str(a.get("text", "")), str(a.get("css", ""))])))
-        if a.get("kind") == "eye" or any(k in blob for k in _VIEW_ACTION_TOKENS):
-            eyes.append(a)
-    if len(eyes) == 1:
-        return {"view_action": eyes[0], "resolved": True, "download_action_detected": bool(downloads), "reason": "eye"}
-    non_dl = [a for a in acts if not _is_download_action(a)]
-    if not eyes and downloads and len(non_dl) == 1:
-        return {"view_action": non_dl[0], "resolved": True, "download_action_detected": True,
-                "reason": "single_non_download_beside_download"}
-    if not eyes and not non_dl:
-        return {"view_action": None, "resolved": False, "download_action_detected": bool(downloads), "reason": "download_only"}
-    if not eyes:
-        return {"view_action": None, "resolved": False, "download_action_detected": bool(downloads), "reason": "no_view_action"}
-    return {"view_action": None, "resolved": False, "download_action_detected": bool(downloads),
-            "reason": "ambiguous_multiple_view_candidates"}
+    classified = [(a, a.get("semantic") or classify_action_semantic(a)) for a in acts]
+    views = [a for a, s in classified if s == "view"]
+    downloads = [a for a, s in classified if s == "download"]
+    ambiguous = [a for a, s in classified if s == "ambiguous"]
+    dl_detected = bool(downloads)
+    if len(views) == 1:
+        return {"view_action": views[0], "resolved": True, "download_action_detected": dl_detected,
+                "reason": "positive_view", "view_semantic": "view"}
+    if len(views) > 1:
+        return {"view_action": None, "resolved": False, "download_action_detected": dl_detected,
+                "reason": "ambiguous_multiple_view_candidates"}
+    if acts and downloads and len(downloads) == len(acts):
+        return {"view_action": None, "resolved": False, "download_action_detected": True, "reason": "download_only"}
+    if ambiguous:
+        return {"view_action": None, "resolved": False, "download_action_detected": dl_detected,
+                "reason": "ambiguous_action_semantics"}
+    return {"view_action": None, "resolved": False, "download_action_detected": dl_detected, "reason": "no_view_action"}
 
 
 def classify_document_list_container(observed: dict) -> str:
@@ -1011,6 +1249,7 @@ class BrowserCollector:
                 "document_container_recognized_types": [],
                 "document_row_detection_strategy": None,
                 "recognized_document_rows": [],
+                "action_resolution_strategy": None,
                 "document_collection_attempts": [],
                 "document_collection_failures": 0,
                 "viewer_pages_opened": 0,
@@ -1105,6 +1344,7 @@ class BrowserCollector:
             "document_container_recognized_types": [],
             "document_row_detection_strategy": None,
             "recognized_document_rows": [],
+            "action_resolution_strategy": None,
             "document_collection_attempts": [],
             "document_collection_failures": 0,
             "viewer_pages_opened": 0,
@@ -1270,16 +1510,21 @@ class BrowserCollector:
             atype = classify_document_label(row.get("label", ""))
             if not atype:
                 continue
-            res = resolve_row_view_action(row.get("actions"))
+            row_actions = row.get("actions") or []
+            res = resolve_row_view_action(row_actions)
             recognized.append({
                 "artifact_type": atype,
                 "normalized_label": _ascii_lower(_demojibake(row.get("label") or ""))[:60],
-                "action_count": len(row.get("actions") or []),
+                "action_count": len(row_actions),
                 "view_action_resolved": bool(res["resolved"]),
                 "download_action_detected": bool(res["download_action_detected"]),
+                "resolved_semantic": ("view" if res["resolved"] else None),
+                "action_resolution_reason": res.get("reason"),
+                "action_summaries": [_action_summary(a, k) for k, a in enumerate(row_actions)],
             })
             selected.append({"row_index": i, "label": row.get("label"), "artifact_type": atype, "resolution": res})
         diag["recognized_document_rows"] = recognized
+        diag["action_resolution_strategy"] = "icon_accessibility_href_precedence"
         selected.sort(key=lambda s: _DOC_PRIORITY.get(s["artifact_type"], 9))  # öncelik: auction_result önce
 
         for sel in selected:
@@ -1306,7 +1551,8 @@ class BrowserCollector:
                 diag["document_collection_failures"] += 1
                 diag["document_collection_attempts"].append(attempt)
                 continue
-            eye = self._locate_row_eye(page, label)
+            # Fix 6: POZİTİF çözülmüş view eylemini canlı DOM'da bul (satır-yerel; global Nth DEĞİL).
+            eye = self._locate_row_view_action(page, label, resolution.get("view_action")) or self._locate_row_eye(page, label)
             if eye is None:
                 attempt["blocking_reason"] = "row_local_eye_control_not_located"
                 diag["document_collection_failures"] += 1
@@ -1373,6 +1619,55 @@ class BrowserCollector:
                 diag["document_collection_failures"] += 1
             diag["document_collection_attempts"].append(attempt)
         return documents, patterns
+
+    def _locate_row_view_action(self, page, label, view_spec):  # pragma: no cover - canlı DOM
+        """Fix 6: POZİTİF çözülmüş view eylemini, çözümü üreten semantikle CANLI DOM'da bulur.
+
+        Ayırt edici seçiciler yalnız çözülen view metadata'sından türetilir (erişilebilir ad /
+        view ikon token'ı / viewer href). Bulunamazsa None döner (keyfi/sağdaki eylem TIKLANMAZ).
+        """
+        import re as _re
+
+        if not view_spec:
+            return None
+        key = _re.escape(_demojibake(label or "").split("/")[0].strip()[:24])
+        if not key:
+            return None
+        selectors: list[str] = []
+        nm = view_spec.get("accessible_name")
+        if nm:
+            safe = _re.sub(r'["\\]', "", str(nm))[:20]
+            if safe:
+                selectors.append(f'[title*="{safe}" i]')
+                selectors.append(f'[aria-label*="{safe}" i]')
+        for tok in (view_spec.get("icon_tokens") or [])[:8]:
+            if _text_has_view(tok):
+                safe = _re.sub(r'["\\]', "", str(tok))[:24]
+                if safe:
+                    selectors.append(f'[class*="{safe}" i]')
+                    selectors.append(f'a:has([class*="{safe}" i])')
+                    selectors.append(f'button:has([class*="{safe}" i])')
+        if view_spec.get("href_kind") == "viewer":
+            selectors.append('a[href*="viewer.jsp" i]')
+            selectors.append('a[href*="goruntule" i]')
+        if not selectors:
+            return None
+        for rsel in ("[class*=doc]", "tr", "li", "[class*=evrak]", "[class*=row]", "div", "section"):
+            try:
+                row = page.locator(rsel).filter(has_text=_re.compile(key, _re.I))
+                if row.count() == 0:
+                    continue
+                r = row.last if rsel in ("div", "section") else row.first
+                for s in selectors:
+                    try:
+                        act = r.locator(s)
+                        if act.count() > 0:
+                            return act.first  # satır-yerel, POZİTİF view eylemi
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        return None
 
     def _locate_row_eye(self, page, label):  # pragma: no cover - canlı DOM
         import re as _re
