@@ -2006,6 +2006,12 @@ class BrowserCollector:
                 "artifact_collected": False,
                 "blocking_reason": None,
                 "viewer_outcome": None,
+                "initial_viewer_representation": None,
+                "final_viewer_representation": None,
+                "initial_viewer_text_available": False,
+                "final_viewer_text_available": False,
+                "initial_viewer_outcome": None,
+                "final_viewer_outcome": None,
                 "viewer_download_instruction_detected": False,
                 "download_fallback_attempted": False,
                 "download_fallback_resolved_same_row": False,
@@ -2098,6 +2104,11 @@ class BrowserCollector:
                     })
                     representation = classify_viewer_representation(counts)
                     attempt["viewer_representation"] = representation
+                    # Fix 10: ilk (kararlılık-öncesi) anlık gözlem — SONRAKİ kararlı durumla KARIŞTIRILMAZ.
+                    attempt["initial_viewer_representation"] = representation
+                    attempt["initial_viewer_text_available"] = bool(counts.get("text_available"))
+                    attempt["final_viewer_representation"] = representation
+                    attempt["final_viewer_text_available"] = bool(counts.get("text_available"))
                     attempt["access_pattern"] = classify_view_access_pattern(
                         container_kind,
                         {"new_page": True, "is_udf": attempt["viewer_url_kind"] == "udf_viewer",
@@ -2107,8 +2118,11 @@ class BrowserCollector:
                     vtext = self._viewer_body_text(newp)
                     outcome = classify_viewer_outcome(vtext, representation)
                     attempt["viewer_outcome"] = outcome
+                    attempt["initial_viewer_outcome"] = outcome
+                    attempt["final_viewer_outcome"] = outcome
                     attempt["viewer_download_instruction_detected"] = viewer_download_instruction_detected(vtext)
                     if outcome == "download_required":
+                        attempt["final_viewer_outcome"] = "download_required"
                         try:
                             newp.close()  # başarısız görüntüleyici sekmesi kapatılır (orijinal sayfa KORUNUR)
                         except Exception:
@@ -2120,6 +2134,8 @@ class BrowserCollector:
                             documents.append({"artifact_type": sel["artifact_type"], "text": content,
                                               "source_ref": f"viewer:{attempt['viewer_url_kind']}"})
                             attempt["artifact_collected"] = True
+                            attempt["document_source_artifact_collected"] = True  # dom_text = belge-özgü kaynak
+                            attempt["final_viewer_text_available"] = True
                         else:
                             attempt["blocking_reason"] = f"viewer_representation_unsupported:{representation}"
                             diag["document_collection_failures"] += 1
@@ -2145,12 +2161,21 @@ class BrowserCollector:
                         if rs == "download_required":
                             # Fix 6.1 önceliği: kararlılık sırasında indirme-gerekli belirdi → aynı-satır fallback.
                             attempt["viewer_download_instruction_detected"] = True
+                            attempt["final_viewer_outcome"] = "download_required"
                             try:
                                 newp.close()
                             except Exception:
                                 pass
                             self._same_row_download_fallback(page, label, sel, resolution, attempt, diag, documents)
                         elif rs == "stable_text_representation":
+                            # Fix 10: görüntüleyici image_only → dom_text KARARLILAŞTI. Sıradan alanlar SONUÇ
+                            # (kararlı) durumu yansıtır; ilk anlık gözlem initial_* olarak KORUNUR.
+                            attempt["viewer_representation"] = "dom_text"
+                            attempt["viewer_text_available"] = True
+                            attempt["viewer_outcome"] = "content_available"
+                            attempt["final_viewer_representation"] = "dom_text"
+                            attempt["final_viewer_text_available"] = True
+                            attempt["final_viewer_outcome"] = "content_available"
                             content = self._viewer_source_text(newp, "dom_text")
                             if content:
                                 documents.append({"artifact_type": sel["artifact_type"], "text": content,
@@ -2167,6 +2192,8 @@ class BrowserCollector:
                         elif rs == "stable_image_representation":
                             # KESİN kaynak baytlarını yakala + görüntüleyici-asset olarak sakla (Fix 8).
                             # Promosyon YAPILMAZ: cross-document kimlik döngü sonrası çözülür (Fix 9).
+                            attempt["final_viewer_representation"] = attempt.get("initial_viewer_representation")
+                            attempt["final_viewer_outcome"] = "image_backed"
                             capture = self._collect_viewer_image(newp, attempt, sel, diag)
                             if capture is not None:
                                 pending_image_captures.append((attempt, capture))
@@ -2176,6 +2203,7 @@ class BrowserCollector:
                                 pass
                         elif rs == "viewer_error":
                             attempt["blocking_reason"] = "viewer_error"
+                            attempt["final_viewer_outcome"] = "viewer_error"
                             diag["document_collection_failures"] += 1
                             try:
                                 newp.close()
@@ -2183,6 +2211,7 @@ class BrowserCollector:
                                 pass
                         else:  # timeout_unstable — ilk görüntüyü belge kanıtı sayma (dürüst)
                             attempt["blocking_reason"] = ready.get("blocking_reason") or "viewer_stabilization_timeout_unstable"
+                            attempt["final_viewer_outcome"] = "timeout_unstable"
                             diag["document_collection_failures"] += 1
                             try:
                                 newp.close()

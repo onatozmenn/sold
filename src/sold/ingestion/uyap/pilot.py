@@ -75,6 +75,20 @@ def _field(expected, actual, match: bool) -> dict:
             "missing": actual is None, "wrong": (actual is not None and not match)}
 
 
+def _final_viewer_state(collection_diagnostics: dict | None, key: str):
+    """Fix 10: SON (kararlı) görüntüleyici durumunu attempt tanılarından okur (auction_result öncelikli).
+
+    İlk (kararlılık-öncesi) anlık gözlem yerine, kaynağın gerçekten toplandığı KARARLI durumu döndürür.
+    """
+    attempts = (collection_diagnostics or {}).get("document_collection_attempts") or []
+    ranked = sorted(
+        (a for a in attempts if isinstance(a, dict) and key in a),
+        key=lambda a: (0 if a.get("artifact_type") == "auction_result" else 1,
+                       0 if a.get("document_source_artifact_collected") else 1),
+    )
+    return ranked[0].get(key) if ranked else None
+
+
 def compare_to_truth(extracted: ExtractedEvidence, audit, file_id: str, truth: dict = None) -> dict:
     """Canlı çıkarım/denetim çıktısını elle-denetlenmiş gerçekle karşılaştırır (mutasyon YOK).
 
@@ -169,6 +183,21 @@ def verify_pilot(
         "extracted_appraisal": ev.appraisal_value,
         "extracted_auction_price": audit.auction_price,
         "terminal_evidence": ev.terminal_status_text,
+        "field_extraction": {
+            "final_viewer_representation": _final_viewer_state(collection_diagnostics, "final_viewer_representation"),
+            "final_viewer_text_available": _final_viewer_state(collection_diagnostics, "final_viewer_text_available"),
+            "final_viewer_outcome": _final_viewer_state(collection_diagnostics, "final_viewer_outcome"),
+            "auction_price_field_label_found": ev.auction_price_field_label_found,
+            "auction_price_candidate_count": ev.auction_price_candidate_count,
+            "auction_price_value_relation_strategy": ev.auction_price_value_relation_strategy,
+            "appraisal_field_label_found": ev.appraisal_field_label_found,
+            "appraisal_candidate_count": ev.appraisal_candidate_count,
+            "appraisal_candidates": ev.appraisal_candidates,
+            "appraisal_value_relation_strategies": ev.appraisal_value_relation_strategies,
+            "settlement_field_label_found": ev.settlement_field_label_found,
+            "alacaga_mahsuben_detected": ev.alacaga_mahsuben_detected,
+            "settlement_value_relation_strategy": ev.settlement_value_relation_strategy,
+        },
         "reconciliation_status": recon.status,
         "reconciliation_matched_on": recon.matched_on,
         "audit_decision": audit.decision,

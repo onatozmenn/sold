@@ -20,30 +20,114 @@ from .models import (
     ARTIFACT_SALE_NOTICE,
     ARTIFACT_STATUS_CARD,
     IHALE_LABELS,
+    MONEY_LITERAL_RE,
     NON_TERMINAL_STATUS_TOKENS,
     TERMINAL_SALE_TOKENS,
     ExtractedEvidence,
     _ascii_lower,
+    demojibake,
     parse_tl_amount,
 )
 
 
-def _artifact_text(artifact: dict) -> str:
-    """Artifact'ın metnini döndürür: inline ``text`` ya da ``local_path`` (HTML → düz metin)."""
+def _artifact_raw(artifact: dict) -> str:
+    """Artifact ham metni: inline ``text`` ya da ``local_path`` (dosya)."""
     text = artifact.get("text")
     if text is None and artifact.get("local_path"):
         p = Path(artifact["local_path"])
         if p.exists():
             text = p.read_text(encoding="utf-8", errors="ignore")
-    text = text or ""
-    if "<" in text and ">" in text:  # HTML → düz metin (bs4 varsa)
+    return text or ""
+
+
+def _html_to_text(raw: str, sep: str) -> str:
+    """HTML → düz metin (bs4 varsa ``separator=sep``; yoksa kaba etiket temizliği). Düz metin AYNEN döner."""
+    if "<" in raw and ">" in raw:
         try:
             from bs4 import BeautifulSoup
 
-            text = BeautifulSoup(text, "html.parser").get_text(separator=" ")
-        except Exception:  # bs4 yoksa kaba etiket temizliği
-            text = re.sub(r"<[^>]+>", " ", text)
-    return re.sub(r"\s+", " ", text)
+            return BeautifulSoup(raw, "html.parser").get_text(separator=sep)
+        except Exception:
+            return re.sub(r"<[^>]+>", sep, raw)
+    return raw
+
+
+def _artifact_text(artifact: dict) -> str:
+    """Artifact metnini TEK-SATIR (collapsed) döndürür — mojibake onarılır (Fix 10). Geriye-uyumlu."""
+    return re.sub(r"\s+", " ", demojibake(_html_to_text(_artifact_raw(artifact), " ")))
+
+
+def _segments(text: str) -> list[str]:
+    """Kaynak metni satır/blok sınırlarına böler (inner_text/HTML newline'ları KORUNUR).
+
+    Alan-etiketi/değer düzenini (aynı-satır / sonraki-satır / bitişik-blok) ayırt edebilmek için
+    newline'lar sınır sayılır; satır-içi boşluk (nbsp dahil) sadeleştirilir. Boş segmentler atılır.
+    """
+    raw = re.split(r"[\r\n]+", str(text or ""))
+    return [re.sub(r"[ \t\u00a0]+", " ", s).strip() for s in raw if s and s.strip()]
+
+
+def _artifact_segments(artifact: dict) -> list[str]:
+    """Artifact'ı newline-KORUYAN segmentlere böler (mojibake onarılır). Alan-sınırlı çıkarım için."""
+    return _segments(demojibake(_html_to_text(_artifact_raw(artifact), "\n")))
+
+
+# Fix 10: bir alanın DEĞER bölgesi, bir SONRAKİ alan/kimlik etiketiyle SINIRLANIR (label-bounded).
+# Böylece bir alanın penceresi komşu alanın sayısını / taşınmaz kimliğini (ada/parsel/no/kat) YUTMAZ.
+_VALUE_BOUNDARY_RE = re.compile(
+    r"\b(?:muhammen\s+bedel|muhammen\s+kiymet|kiymeti|takdir\s+olunan\s+deger|tasinmazin\s+degeri|"
+    r"ihale\s+bedeli|satis\s+tutari|odenmesi\s+gereken\s+bedel|teminat|kdv|"
+    r"ada|parsel|blok|hisse|bagimsiz\s+bolum|no\.?\s*lu|nolu|kat)\b"
+)
+
+
+def _bounded_region(seg: str, fold: str, start: int) -> str:
+    """``seg[start:]`` içinde, bir SONRAKİ alan/kimlik sınır etiketine kadar olan DEĞER bölgesi.
+
+    ``fold`` uzunluk-korumalı ASCII-fold'dur (``seg`` ile hizalı) → sınır folded'da bulunur, dilim
+    orijinal ``seg``'den alınır. Çıplak sayılar (parsel/sıra/ada) böylece değer bölgesine GİRMEZ.
+    """
+    rest_fold = fold[start:]
+    m = _VALUE_BOUNDARY_RE.search(rest_fold)
+    cut = m.start() if m else len(rest_fold)
+    return seg[start:start + cut]
+
+
+def _money_ok(region: str, m: "re.Match") -> bool:
+    """``mahsuben`` parasal token'dan ÖNCE ise gerçek nakit değil (ALACAĞA MAHSUBEN) → reddet."""
+    mahs = _ascii_lower(region).find("mahsuben")
+    return not (0 <= mahs < m.start())
+
+
+def _field_money_candidates(segments: list[str], label_variants: tuple) -> list[tuple]:
+    """LABEL-BOUNDED parasal alan adayları: ``(value, matched_variant, strategy)``.
+
+    YALNIZCA Türk parasal literali (gruplama '.'/ondalık ',') kabul edilir — çıplak tamsayı (ada/
+    parsel/sıra/bölüm no) ADMİT EDİLMEZ (Fix 10 yapısal sınır; değer/eşik/max sezgisi YOK). Düzenler:
+    aynı-segment (label sonrası bounded bölge) ya da bitişik-segment (``LABEL`` \\n ``VALUE``).
+    """
+    out: list[tuple] = []
+    for i, seg in enumerate(segments):
+        fold = _ascii_lower(seg)
+        for lbl in label_variants:
+            pos = fold.find(lbl)
+            if pos < 0:
+                continue
+            end = pos + len(lbl)
+            region = _bounded_region(seg, fold, end)
+            m = MONEY_LITERAL_RE.search(region)
+            if m and _money_ok(region, m):
+                out.append((parse_tl_amount(m.group(0)), lbl, "same_segment"))
+                continue
+            # ``LABEL`` segment sonunda (yalnız sözcük-tamamlama harfi + ':'/'-' kalıntısı) → değer
+            # BİR SONRAKİ segmentte (ör. "Muhammen Bedeli" \n "6.800.000,00 TL"; "bedel"→"bedeli").
+            if re.fullmatch(r"[a-z]*[\s:\u2013-]*", fold[end:]) and i + 1 < len(segments):
+                nxt = segments[i + 1]
+                head = _bounded_region(nxt, _ascii_lower(nxt), 0)
+                m2 = MONEY_LITERAL_RE.search(head)
+                if m2 and _money_ok(head, m2):
+                    out.append((parse_tl_amount(m2.group(0)), lbl, "adjacent_segment"))
+    return out
 
 
 def _amount_after(text: str, folded: str, label: str, window: int = 60) -> tuple[float | None, str | None]:
@@ -53,21 +137,6 @@ def _amount_after(text: str, folded: str, label: str, window: int = 60) -> tuple
         return None, None
     seg = text[idx + len(label): idx + len(label) + window]
     return parse_tl_amount(seg), seg.strip()
-
-
-def _all_amounts_after(text: str, folded: str, label: str, window: int = 60) -> list[float]:
-    """Metindeki TÜM ``label`` konumlarından tutarları toplar (çoklu/çelişkili değer tespiti)."""
-    out: list[float] = []
-    start = 0
-    while True:
-        idx = folded.find(label, start)
-        if idx < 0:
-            break
-        val = parse_tl_amount(text[idx + len(label): idx + len(label) + window])
-        if val is not None:
-            out.append(val)
-        start = idx + len(label)
-    return out
 
 
 def asset_descriptors(fold: str) -> dict:
@@ -104,49 +173,58 @@ def extract_evidence(
     ev = ExtractedEvidence(institution=institution, file_id=file_id)
     ambiguities: list[str] = []
 
-    # Artifact türüne göre metinler + tümü
+    # Artifact türüne göre metinler (collapsed) + segmentler (newline-koruyan) — mojibake onarılır
     per_type: dict[str, str] = {}
+    per_type_segments: dict[str, list] = {}
     for a in artifacts:
-        t = _artifact_text(a)
-        per_type[a.get("artifact_type", "unknown")] = per_type.get(a.get("artifact_type", "unknown"), "") + " " + t
+        atype = a.get("artifact_type", "unknown")
+        per_type[atype] = per_type.get(atype, "") + " " + _artifact_text(a)
+        per_type_segments.setdefault(atype, []).extend(_artifact_segments(a))
     all_text = " ".join(per_type.values())
     all_fold = _ascii_lower(all_text)
 
-    # --- Ekspertiz (Q) — birden çok etiket; çelişki → belirsizlik ---
-    appraisal_vals: list[float] = []
-    appraisal_src: str | None = None
-    for atype, txt in per_type.items():
-        fold = _ascii_lower(txt)
-        for lbl in APPRAISAL_LABELS:
-            for v in _all_amounts_after(txt, fold, lbl):
-                appraisal_vals.append(v)
-                if appraisal_src is None:
-                    appraisal_src = atype
-    distinct_appraisal = sorted({round(v, 2) for v in appraisal_vals})
+    # --- Ekspertiz (Q) — LABEL-BOUNDED parasal alan (Fix 10): çıplak sayı (parsel/sıra/ada) ADMİT EDİLMEZ ---
+    appraisal_cands: list[tuple] = []  # (value, variant, strategy, atype)
+    for atype, segs in per_type_segments.items():
+        for val, lbl, strat in _field_money_candidates(segs, APPRAISAL_LABELS):
+            if val is not None:
+                appraisal_cands.append((val, lbl, strat, atype))
+    distinct_appraisal = sorted({round(v, 2) for (v, _, _, _) in appraisal_cands})
     ev.appraisal_candidates = distinct_appraisal
+    ev.appraisal_field_label_found = bool(appraisal_cands) or any(
+        lbl in _ascii_lower(" ".join(segs)) for segs in per_type_segments.values() for lbl in APPRAISAL_LABELS)
+    ev.appraisal_candidate_count = len(distinct_appraisal)
+    ev.appraisal_value_relation_strategies = sorted({s for (_, _, s, _) in appraisal_cands})
     if len(distinct_appraisal) == 1:
         ev.appraisal_value = distinct_appraisal[0]
-        ev.appraisal_source = appraisal_src or ARTIFACT_APPRAISAL_REPORT
+        ev.appraisal_source = next((at for (_, _, _, at) in appraisal_cands), ARTIFACT_APPRAISAL_REPORT)
     elif len(distinct_appraisal) > 1:
         ambiguities.append(f"two possible appraisal values found: {distinct_appraisal}")
         ev.appraisal_value = None  # belirsiz → admisyon değil, insan incelemesi
 
-    # --- İhale Bedeli (pay) — açık resmî ihale fiyatı; auction result / status card ---
+    # --- İhale Bedeli (pay) — AÇIK resmî ihale fiyatı; LABEL-BOUNDED (Satış Tutarı/Ödenmesi Gereken DEĞİL) ---
     ihale_val: float | None = None
     ihale_src: str | None = None
+    ihale_strat: str | None = None
+    ihale_label_found = False
     for atype in (ARTIFACT_AUCTION_RESULT, ARTIFACT_STATUS_CARD, ARTIFACT_SALE_NOTICE):
-        txt = per_type.get(atype)
-        if not txt:
+        segs = per_type_segments.get(atype)
+        if not segs:
             continue
-        fold = _ascii_lower(txt)
-        v, _seg = _amount_after(txt, fold, "ihale bedeli")
-        if v is not None:
-            ihale_val, ihale_src = v, atype
+        if any("ihale bedeli" in _ascii_lower(s) for s in segs):
+            ihale_label_found = True
+        cands = _field_money_candidates(segs, ("ihale bedeli",))
+        if cands:
+            ihale_val, _lbl, ihale_strat = cands[0]
+            ihale_src = atype
             break
     ev.ihale_bedeli = ihale_val
     ev.ihale_bedeli_source = ihale_src
+    ev.auction_price_field_label_found = ihale_label_found
+    ev.auction_price_candidate_count = 1 if ihale_val is not None else 0
+    ev.auction_price_value_relation_strategy = ihale_strat
 
-    # Sonuç kartı "Satış Tutarı" (İhale Bedeli ile mutabakat/corroboration)
+    # Sonuç kartı "Satış Tutarı" (İhale Bedeli ile mutabakat/corroboration) — auction price OLARAK KULLANILMAZ
     card_txt = per_type.get(ARTIFACT_STATUS_CARD) or all_text
     card_amt, _ = _amount_after(card_txt, _ascii_lower(card_txt), "satis tutari")
     ev.result_card_amount = card_amt
@@ -164,13 +242,20 @@ def extract_evidence(
     if non_terminal:
         ev.terminal_status_text = ev.terminal_status_text or non_terminal
 
-    # --- Uzlaşı desenleri: Ödenmesi Gereken Bedel / Teminat / hisse / ALACAĞA MAHSUBEN / KDV ---
+    # --- Uzlaşı: Ödenmesi Gereken Bedel / ALACAĞA MAHSUBEN (bölünmüş-blok dahil) / Teminat / hisse / KDV ---
     og_val, og_seg = _amount_after(all_text, all_fold, "odenmesi gereken bedel", window=48)
     ev.odenmesi_gereken_bedel = og_val
+    ev.settlement_field_label_found = "odenmesi gereken bedel" in all_fold
+    settlement_strategy: str | None = None
     if og_seg is not None and "mahsuben" in _ascii_lower(og_seg):
         ev.alacaga_mahsuben = True
+        settlement_strategy = "odenmesi_gereken_bedel_segment"
+    # Bölünmüş-blok "ALACAĞA \n MAHSUBEN" → collapsed all_fold tek boşlukla birleştirir (yakalanır).
     if "alacaga mahsuben" in all_fold:
         ev.alacaga_mahsuben = True
+        settlement_strategy = settlement_strategy or "alacaga_mahsuben_phrase"
+    ev.alacaga_mahsuben_detected = ev.alacaga_mahsuben
+    ev.settlement_value_relation_strategy = settlement_strategy
     dep_val, _ = _amount_after(all_text, all_fold, "teminat", window=40)
     ev.deposit_amount = dep_val
     ev.share_settlement = ("hisse orani" in all_fold) or ("satilan hisse" in all_fold) or ("hisse" in all_fold and "orani" in all_fold)

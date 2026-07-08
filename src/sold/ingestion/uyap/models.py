@@ -77,7 +77,7 @@ NON_AUCTION_PRICE_LABELS = (
 )
 
 # Ekspertiz/Q etiketleri (payda).
-APPRAISAL_LABELS = ("muhammen bedel", "kiymeti", "takdir olunan deger", "tasinmazin degeri")
+APPRAISAL_LABELS = ("muhammen bedel", "muhammen kiymet", "kiymeti", "takdir olunan deger", "tasinmazin degeri")
 # Açık resmî ihale fiyatı etiketleri (pay).
 IHALE_LABELS = ("ihale bedeli", "satis tutari")
 
@@ -87,6 +87,36 @@ def _ascii_lower(text: object) -> str:
     s = str(text or "")
     table = str.maketrans("İıŞşĞğÜüÖöÇçÂâÎîÛû", "IiSsGgUuOoCcAaIiUu")
     return s.translate(table).lower()
+
+
+def _looks_mojibake(text: object) -> bool:
+    """Bilinen UTF-8-as-Latin-1/cp1252 mojibake öncü karakterleri (Ã/Ä/Å) var mı."""
+    return any(lead in str(text or "") for lead in ("Ã", "Ä", "Å"))
+
+
+def demojibake(text: object) -> str:
+    """Bilinen UTF-8-as-Latin-1/cp1252 mojibake'i onarır (İhale/Satış/Bilirkişi/Alacağa/Kıymet...).
+
+    YALNIZCA bilinen imza (Ã/Ä/Å) varsa uygulanır; doğru Türkçe Unicode latin-1/cp1252'ye
+    kodlanamaz → olduğu gibi döner. collect.py'deki ``_demojibake`` ile AYNI mantık (paylaşımlı).
+    Uzunluk değişebilir → çağıran, folding'i ONARILMIŞ metin üzerinde yapmalı (ofset hizası korunur).
+    """
+    s = str(text or "")
+    if not s or not _looks_mojibake(s):
+        return s
+    for enc in ("latin-1", "cp1252"):
+        try:
+            repaired = s.encode(enc, "strict").decode("utf-8", "strict")
+        except UnicodeError:
+            continue
+        if repaired and repaired != s:
+            return repaired
+    return s
+
+
+# Türk PARASAL literal: gruplama noktası ve/veya ondalık virgül GEREKİR — çıplak tamsayı (ada/parsel/
+# sıra/bölüm no) para DEĞİLdir. Alan-sınırlı (label-bounded) para çıkarımında kullanılır (Fix 10).
+MONEY_LITERAL_RE = re.compile(r"\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d+,\d{2}")
 
 
 def parse_tl_amount(text: object) -> float | None:
@@ -196,6 +226,16 @@ class ExtractedEvidence:
     extraction_status: str = "deterministic"   # "deterministic" | "ambiguous"
     ambiguities: list = field(default_factory=list)
     appraisal_candidates: list = field(default_factory=list)
+    # Fix 10: gizlilik-güvenli ALAN-DÜZEYİ çıkarım provenansı (tam kaynak metin ASLA)
+    auction_price_field_label_found: bool = False
+    auction_price_candidate_count: int = 0
+    auction_price_value_relation_strategy: str | None = None
+    appraisal_field_label_found: bool = False
+    appraisal_candidate_count: int = 0
+    appraisal_value_relation_strategies: list = field(default_factory=list)
+    settlement_field_label_found: bool = False
+    alacaga_mahsuben_detected: bool = False
+    settlement_value_relation_strategy: str | None = None
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
