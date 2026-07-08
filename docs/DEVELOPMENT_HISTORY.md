@@ -419,3 +419,47 @@ milestones:
   Structural core, four SMM moments, `conditional_on_trade`, `Θ_A`, TOKİ external status (5 observed / 0
   SMM), and the numerical-search convention are unchanged; the pilot remains non-mutating (genuine count
   stays 7).
+
+- **UYAP Live Browser Pilot 1 — Live Interoperability Fix 6.1 (additional real viewer observation;
+  viewer download-required same-row fallback)** — recorded as a **direct live viewer observation**, not a
+  formal seventh pilot rerun. Between Fix 6 and the post-Fix-6 rerun the operator manually clicked a
+  row-local eye/view action: a real UYAP viewer tab opened at `/pp/viewer.jsp?mimeType=Udf&evrakId=...`, but
+  the document did **not** render — the viewer visibly displayed **"Evrak Görüntülenemedi, Evrağı indirerek
+  Görüntüleyebilirsiniz."**. So reaching the viewer does not guarantee content availability; a positively
+  resolved view action has at least two real outcomes (content available, or download required). **Fix 6.1
+  (narrow follow-up; Fix-6 action architecture reused, not reopened):** a deterministic viewer-outcome
+  classifier `classify_viewer_outcome(text, representation) → content_available / download_required /
+  unsupported_representation / viewer_error / unknown`, where `download_required` requires the **combined**
+  viewer-failure + download-instruction semantics via `viewer_download_instruction_detected` (Turkish fold +
+  constrained mojibake repair; a bare `indir`, a generic "program indir" instruction, a failure message
+  without the download instruction, or the instruction without the failure are all **not** sufficient).
+  `resolve_row_view_action` now also exposes the row's **positively resolved single** download action
+  (`download_action`, `download_action_resolved`) reusing the Fix-6 `classify_action_semantic` — never a
+  positional/Nth/"the other one" inference. The live collector branches on the viewer outcome: on
+  `content_available` it uses the existing viewer-backed source collection; on `download_required` it closes
+  the failed viewer tab (preserving the operator's original listing/detail page), then falls back to the
+  **same** `DocumentRow`'s resolved download action via `_locate_row_download_action` (selectors derived
+  only from the resolved download spec — never a global/first/Nth/other-row download; if the row has no
+  positively resolved download action it reports `download_required_but_download_action_unresolved` rather
+  than clicking arbitrarily), captures the official artifact with a bounded `page.expect_download`, and
+  preserves it in the existing gitignored artifact store (type + extension + size + short sha). View-first
+  is preserved — documents are not downloaded unless the viewer says so. Deterministic extraction runs
+  **only** for genuinely supported formats (`extraction_supported_for` / `EXTRACTABLE_ARTIFACT_EXTENSIONS`
+  = `.txt`/`.html`/`.htm`); a raw `.udf`/`.pdf` download is preserved but reported unsupported
+  (`downloaded_artifact_extraction_supported=false`) and is **not** fed to the extractor (no garbage/UDF
+  fabrication) — a `mimeType=Udf` URL hint alone never implies support, and **no** raw-UDF parser, OCR, or
+  known-truth injection is added (this task deliberately does not build a speculative UDF parser). New
+  privacy-safe per-attempt diagnostics: `viewer_outcome`, `viewer_download_instruction_detected`,
+  `download_fallback_attempted`, `download_fallback_resolved_same_row`, `download_action_resolved`,
+  `download_event_detected`, `downloaded_artifact_extension`/`_mime_hint`/`_size`/`_sha256`,
+  `downloaded_artifact_collected`, `downloaded_artifact_extraction_supported`,
+  `download_fallback_blocking_reason` — with **no** opaque `evrakId`, full URLs, cookies/tokens, onclick
+  bodies, or document text. The auction numerator remains the explicit İhale Bedeli (result-card `Satış
+  Tutarı` / `Ödenmesi Gereken Bedel` / deposit / share / setoff / KDV never substituted); if a downloaded
+  official artifact cannot yet be parsed, the official auction price simply stays missing. Added 22 offline
+  tests. Full suite: **414 passed** (392 baseline + 22 tests). **No live `PASS` is claimed: the same-row
+  download fallback has not been exercised live, no official UDF download has been captured live, raw-UDF
+  parsing is not proven, and the İhale Bedeli was not programmatically extracted** — a post-Fix-6.1 operator
+  rerun is required. Structural core, four SMM moments, `conditional_on_trade`, `Θ_A`, TOKİ external status
+  (5 observed / 0 SMM), and the numerical-search convention are unchanged; the pilot remains non-mutating
+  (genuine count stays 7).
