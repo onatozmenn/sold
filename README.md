@@ -474,19 +474,21 @@ The methodology is a **structural econometric** one; the following foundations d
 
 ## Roadmap
 
-The structural and prediction-semantics core is frozen. Current work focuses on expanding genuine evidence and testing how sensitive the structural conclusions are to data and assumptions.
+The structural and prediction-semantics core is frozen. After the first single-record live UYAP verification (`PASS` on `2026/263 Esas`), the next work is a **bounded, reviewed evidence-expansion sequence** and its structural re-audit, not unattended ingestion.
 
-- [ ] Expand the genuine, provenance-audited UYAP completed-auction evidence set
-- [ ] Expand the genuine KAP negotiated-disposal evidence set
-- [ ] Recompute observed moments, Jacobian diagnostics, and `Theta_A` after each evidence expansion batch
-- [ ] Re-audit `near_fit_search_stability` (currently `STABLE`) after each evidence-expansion batch, keeping it separate from identification
+- [ ] Run a **bounded, non-mutating multi-record UYAP validation batch** through the live-proven browser / native-UDF path, and measure target-card and document-discovery coverage, supported native-UDF layout coverage, document-type corroboration outcomes, deterministic extraction success, same-asset reconciliation outcomes, completed-sale audit decisions, and the exact blocking reasons (not continuous ingestion, not bulk scraping, not a production-readiness claim)
+- [ ] Human-review the resulting UYAP candidates and **explicitly admit** only fully provenance-complete `ADMISSIBLE_COMPLETED_SALE` records through the existing admission workflow (audit is not admission; the browser pilot never writes `uyap.json` itself)
+- [ ] Expand the genuine, provenance-audited **UYAP completed-sale auction** evidence set
+- [ ] Expand the genuine **KAP negotiated-disposal** evidence set (manual audit; KAP does not use the UYAP browser / native-UDF path)
+- [ ] Recompute the observed four-moment SMM vector, Jacobian diagnostics (rank, singular values, condition, weak directions), and `Theta_A` after each **explicit evidence-admission batch** (more records do not automatically raise `rank(J)`; the fit stays `STRUCTURALLY_UNDERIDENTIFIED` unless the diagnostics actually change)
+- [ ] Re-audit whether `near_fit_search_stability` remains `STABLE` after each admission batch, kept **separate from** econometric identification
 - [ ] Run UYAP and KAP leave-one-out and source-removal robustness analyses
 - [ ] Run structural-assumption sensitivity analyses for the asking-to-seller-signal specification, parameter bounds, distributional assumptions, and TCMB anchor perturbations
-- [ ] Compare structural behavior with transparent baselines: asking price, fixed-markdown rules, and the TCMB fair-value anchor, without making unsupported accuracy claims
-- [ ] Track how genuine evidence changes structural moments, Jacobian rank, near-fit parameter ranges, simulated trade-share behavior, and the structural sensitivity range
-- [ ] Produce a reproducible research report documenting the model, public evidence, identification limits, numerical search diagnostics, robustness results, and limitations
+- [ ] Compare structural behavior with transparent baselines (asking price, fixed-markdown rules, the TCMB fair-value anchor) without making unsupported accuracy claims
+- [ ] Track how genuine evidence changes the structural moments, Jacobian rank, near-fit parameter ranges, simulated trade-share behavior (`simulated_trade_share_band`, never a sale probability), and the structural sensitivity range
+- [ ] Produce a reproducible research report documenting the structural model, source-specific public evidence, identification limits, numerical search diagnostics, live UYAP interoperability scope, robustness results, and limitations
 
-_Completed pre-pivot and structural milestones are preserved in [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md); the structural and prediction-semantics core and the numerical search-approximation layer are frozen._
+_Detailed pre-pivot, structural, and UYAP interoperability history is preserved in [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md); the structural and prediction-semantics core and the numerical search-approximation layer remain frozen._
 
 ## Legal & Ethics
 
