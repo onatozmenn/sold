@@ -614,3 +614,55 @@ milestones:
   measure** — a post-Fix-9 operator rerun is required. Structural core, four SMM moments,
   `conditional_on_trade`, `Θ_A`, TOKİ external status (5 observed / 0 SMM), and the numerical-search convention
   are unchanged; the pilot remains non-mutating (genuine count stays 7).
+
+- **UYAP Live Browser Pilot 1 — Live Interoperability Fix 10 (measured tenth live result: `FAIL`)** —
+  chronology: runs 1–9 = **FAIL** → Fixes 1–9 → run 10 = **FAIL** → Fix 10 → operator rerun pending. Run 10
+  **crossed the viewer representation barrier**: `auction_result` transitioned `image_only → dom_text →
+  dom_text` and `sale_notice` reached `dom_text`, both `viewer_ready_state=stable_text_representation`,
+  `viewer_asset_captured=false`, `document_source_artifact_collected=true` — the byte-identical 298×298 PNG
+  was **transitional**, and `artifact_types_collected` became `[auction_result, sale_notice, status_card]`.
+  Same-asset **reconciliation succeeded** (`ada=50984`, `parsel=1`, `section_no=60`, `floor=12`) and **KDV
+  `20.0` was deterministically extracted**, proving the collected source is real, structured official text.
+  But extraction failed at the field level: appraisal was **ambiguous** (`[1.0, 6800000.0]`), the explicit
+  **İhale Bedeli was missing**, **ALACAĞA MAHSUBEN** was not recognized, and the audit stayed
+  `PENDING_REVIEW`. The mutation guard passed again (`uyap.json` unchanged, count `7 → 7`, SMM unchanged).
+  Two structural, code-evident root causes: (1) appraisal/İhale extraction took the **first number in a wide
+  60-char window** (`_all_amounts_after`/`_amount_after`) with no monetary-format or field-boundary
+  constraint, so a bare `1` (a parcel/row identifier) was admitted as an appraisal candidate alongside the
+  genuine `6.800.000,00`; and (2) `extract.py` applied **no mojibake repair** while `collect.py` did, so
+  Turkish-special-character labels (`İhale Bedeli`, `ALACAĞA`) silently failed to fold/match whereas
+  pure-ASCII labels (`Muhammen Bedel`, `KDV`, `ada`, `parsel`) matched — precisely the observed
+  success/failure split (the raw stabilized DOM text is not persisted to disk, so the code, the Run-10
+  diagnostics, and the known document label structure are the source of truth). **Fix 10 (stabilized-source
+  finalization + label-bounded official field extraction only; no OCR, no ML, no known-truth fallback, and no
+  page-state/card/modal/view-action/Fix-8-9-image-promotion or structural change):** (a) the ordinary
+  per-attempt viewer diagnostics now report the **final stabilized** state — when stabilization reaches
+  `stable_text_representation` the collector sets `viewer_representation=dom_text`,
+  `viewer_text_available=true`, `viewer_outcome=content_available`, and explicit
+  `final_viewer_representation`/`final_viewer_text_available`/`final_viewer_outcome`, while retaining the
+  pre-stabilization snapshot as `initial_viewer_representation`/`initial_viewer_text_available`/
+  `initial_viewer_outcome` and preserving the `image_only → dom_text → dom_text` sequence; (b) new
+  label-bounded extraction in `extract.py` splits the source into newline-preserving segments and, for each
+  recognized field label, reads the value **only** from a bounded region (the same segment after the label,
+  cut at the next field/identifier label, or the adjacent segment for a `LABEL`/`VALUE` block split), and a
+  value must be a **Turkish monetary literal** (`MONEY_LITERAL_RE`: grouping dots and/or a decimal comma) — a
+  bare integer such as a parcel, row, section, or `ada` number is **structurally excluded** (no amount
+  threshold, no `max()`, no verifier value, no magnitude heuristic), which removes the spurious `1.0`; (c) the
+  explicit **İhale Bedeli** is recovered from its own label/value relation (never `Satış Tutarı`, `Ödenmesi
+  Gereken Bedel`, or an `ALACAĞA MAHSUBEN` phrase, and never a bare number); (d) **ALACAĞA MAHSUBEN** is
+  recognized from the actual `Ödenmesi Gereken Bedel` settlement field or the standalone phrase, including
+  block-split forms, and a generic `mahsuben` elsewhere does not set the flag; and (e) a shared
+  `demojibake`/`_looks_mojibake` helper (moved into `models.py`) is applied at ingestion in `extract.py`
+  before length-preserving folding, so mojibaked Turkish labels match while offsets stay aligned. New
+  privacy-safe field-level provenance (`auction_price_field_label_found`, `auction_price_candidate_count`,
+  `auction_price_value_relation_strategy`, `appraisal_field_label_found`, `appraisal_candidate_count`,
+  `appraisal_value_relation_strategies`, `settlement_field_label_found`, `alacaga_mahsuben_detected`,
+  `settlement_value_relation_strategy`) is surfaced in the pilot report’s `field_extraction` block and carries
+  no full source text or personal data. Reconciliation and KDV extraction are preserved (regression-tested on
+  a sanitized Run-10-style fixture), `auction_result` remains the İhale-Bedeli source, and `sale_notice`
+  remains an accepted appraisal-side source. Added 39 offline tests. Full suite: **557 passed** (518 baseline
+  + 39 tests). **No live `PASS` is claimed: the parser has not been proven live after Fix 10 — the İhale
+  Bedeli and appraisal have not been extracted from the real viewer, no audit admission has occurred, and a
+  post-Fix-10 operator rerun is required.** Structural core, four SMM moments, `conditional_on_trade`, `Θ_A`,
+  TOKİ external status (5 observed / 0 SMM), and the numerical-search convention are unchanged; the pilot
+  remains non-mutating (genuine count stays 7).
