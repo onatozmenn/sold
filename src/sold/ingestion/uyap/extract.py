@@ -130,6 +130,119 @@ def _field_money_candidates(segments: list[str], label_variants: tuple) -> list[
     return out
 
 
+def _tokens_in_order(text: str, tokens: tuple) -> bool:
+    """``text`` içinde ``tokens`` SIRAYLA (araya başka içerik girebilir) geçiyor mu (tam kimlik için)."""
+    pos = 0
+    for t in tokens:
+        j = text.find(t, pos)
+        if j < 0:
+            return False
+        pos = j + len(t)
+    return True
+
+
+def _bounded_token_sequence(segments: list, tokens: tuple, max_span: int = 3):
+    """Fix 11: ``tokens`` alan-etiketi dizisini EN ÇOK ``max_span`` ARDIŞIK segmentte SIRAYLA bulur.
+
+    Bölünmüş serileştirmeyi (ör. 'Ödenmesi' / 'Gereken' / 'Bedel' ayrı segmentlerde) yakalar; TAM kimlik
+    gerekir (eksik dizi eşleşmez; tüm-belge birleştirme YOK). Döner: en küçük ``(start, end)`` ya da None.
+    """
+    n = len(segments)
+    for start in range(n):
+        window = ""
+        for end in range(start, min(n, start + max_span)):
+            window = (window + " " + _ascii_lower(segments[end])).strip()
+            if _tokens_in_order(window, tokens):
+                return start, end
+    return None
+
+
+def _ihale_bedeli_relation(segments: list, label: str = "ihale bedeli", max_following: int = 3):
+    """Fix 11: AÇIK İhale Bedeli için LABEL→VALUE ilişkisi + gizlilik-güvenli komşuluk tanısı.
+
+    same_segment → adjacent_segment (i+1) → bounded_following (i+2..i+max_following). Değer bölgesi bir
+    SONRAKİ alan/kimlik etiketinde DURUR; yalnız Türk parasal literali kabul edilir; tüm-belge taraması /
+    ilk-herhangi-sayı / max / eşik / known-truth YOK. Döner: ``(value, strategy, neighborhood)`` — neighborhood
+    yalnız yapısal sayaç + normalize etiket-TÜRÜ (SEGMENT METNİ / DEĞER İÇERİĞİ ASLA).
+    """
+    nb = {
+        "label_segment_found": False, "label_segment_index": None,
+        "same_segment_money_count": 0, "adjacent_segment_money_count": 0,
+        "bounded_following_segments_inspected": 0, "bounded_following_money_count": 0,
+        "boundary_stop_reason": None, "intervening_field_label_types": [], "relation_candidates": [],
+    }
+    for i, seg in enumerate(segments):
+        fold = _ascii_lower(seg)
+        pos = fold.find(label)
+        if pos < 0:
+            continue
+        nb["label_segment_found"] = True
+        if nb["label_segment_index"] is None:
+            nb["label_segment_index"] = i
+        end = pos + len(label)
+        # 1. same segment (label sonrası bounded bölge)
+        region = _bounded_region(seg, fold, end)
+        same_hits = [m for m in MONEY_LITERAL_RE.finditer(region) if _money_ok(region, m)]
+        nb["same_segment_money_count"] = len(same_hits)
+        if same_hits:
+            nb["relation_candidates"].append("same_segment")
+            nb["boundary_stop_reason"] = "money_found"
+            return parse_tl_amount(same_hits[0].group(0)), "same_segment", nb
+        # 2..N sonraki segmentler (bounded; başka alan/kimlik etiketinde DUR)
+        for j in range(i + 1, min(len(segments), i + 1 + max_following)):
+            nxt_fold = _ascii_lower(segments[j])
+            bm = _VALUE_BOUNDARY_RE.search(nxt_fold)
+            if bm and bm.start() == 0:      # segment BAŞKA bir alan/kimlik etiketiyle başlıyor → DUR
+                nb["boundary_stop_reason"] = f"field_or_identifier_label:{bm.group(0).strip()}"
+                nb["intervening_field_label_types"].append(bm.group(0).strip())
+                break
+            nb["bounded_following_segments_inspected"] += 1
+            head = _bounded_region(segments[j], nxt_fold, 0)
+            mh = MONEY_LITERAL_RE.search(head)
+            if mh and _money_ok(head, mh):
+                strat = "adjacent_segment" if j == i + 1 else "bounded_following"
+                nb["adjacent_segment_money_count" if j == i + 1 else "bounded_following_money_count"] += 1
+                nb["relation_candidates"].append(strat)
+                nb["boundary_stop_reason"] = "money_found"
+                return parse_tl_amount(mh.group(0)), strat, nb
+            if bm:                          # segment ORTASINDA sınır etiketi (değer öncesi) → DUR
+                nb["boundary_stop_reason"] = f"field_or_identifier_label:{bm.group(0).strip()}"
+                nb["intervening_field_label_types"].append(bm.group(0).strip())
+                break
+        if nb["boundary_stop_reason"] is None:
+            nb["boundary_stop_reason"] = ("max_segments" if nb["bounded_following_segments_inspected"]
+                                          else "no_following_segment")
+        return None, None, nb              # yalnız İLK açık-etiket oluşumunun ilişkisi
+    return None, None, nb
+
+
+def _settlement_relation(segments: list, max_following: int = 3) -> dict:
+    """Fix 11: Ödenmesi Gereken Bedel alan-etiketi (bölünmüş dizi dahil) + bounded ALACAĞA MAHSUBEN değeri.
+
+    TAM etiket kimliği (odenmesi→gereken→bedel) gerekir; genel 'bedel'/'gereken' YETMEZ. Değer yalnız
+    etiketin bounded takip bölgesinden okunur (fiyat/alacaklı/sıfır/known-truth'tan ÇIKARILMAZ). Yalnız
+    yapısal tanı döner (segment metni YOK).
+    """
+    out = {
+        "settlement_label_token_sequence_found": False, "settlement_label_segment_span": 0,
+        "settlement_bounded_following_segments_inspected": 0, "settlement_alacaga_token_found": False,
+        "settlement_mahsuben_token_found": False, "settlement_value_sequence_found": False,
+    }
+    span = _bounded_token_sequence(segments, ("odenmesi", "gereken", "bedel"), max_span=3)
+    if span is None:
+        return out
+    start, end = span
+    out["settlement_label_token_sequence_found"] = True
+    out["settlement_label_segment_span"] = end - start + 1
+    stop = min(len(segments), end + 1 + max_following)
+    out["settlement_bounded_following_segments_inspected"] = max(0, stop - (end + 1))
+    region = " ".join(_ascii_lower(segments[j]) for j in range(start, stop))
+    out["settlement_alacaga_token_found"] = "alacaga" in region
+    out["settlement_mahsuben_token_found"] = "mahsuben" in region
+    out["settlement_value_sequence_found"] = _tokens_in_order(region, ("alacaga", "mahsuben"))
+    return out
+
+
 def _amount_after(text: str, folded: str, label: str, window: int = 60) -> tuple[float | None, str | None]:
     """``label``'dan sonraki pencerede ilk Türk-sayı tutarını döndürür (deterministik)."""
     idx = folded.find(label)
@@ -202,21 +315,23 @@ def extract_evidence(
         ambiguities.append(f"two possible appraisal values found: {distinct_appraisal}")
         ev.appraisal_value = None  # belirsiz → admisyon değil, insan incelemesi
 
-    # --- İhale Bedeli (pay) — AÇIK resmî ihale fiyatı; LABEL-BOUNDED (Satış Tutarı/Ödenmesi Gereken DEĞİL) ---
+    # --- İhale Bedeli (pay) — AÇIK resmî ihale fiyatı; LABEL-BOUNDED bounded-following (Fix 11) ---
     ihale_val: float | None = None
     ihale_src: str | None = None
     ihale_strat: str | None = None
     ihale_label_found = False
+    ihale_nb: dict | None = None
     for atype in (ARTIFACT_AUCTION_RESULT, ARTIFACT_STATUS_CARD, ARTIFACT_SALE_NOTICE):
         segs = per_type_segments.get(atype)
         if not segs:
             continue
-        if any("ihale bedeli" in _ascii_lower(s) for s in segs):
+        val, strat, nb = _ihale_bedeli_relation(segs)
+        if nb.get("label_segment_found"):
             ihale_label_found = True
-        cands = _field_money_candidates(segs, ("ihale bedeli",))
-        if cands:
-            ihale_val, _lbl, ihale_strat = cands[0]
-            ihale_src = atype
+            if ihale_nb is None:
+                ihale_nb = nb
+        if val is not None:
+            ihale_val, ihale_strat, ihale_nb, ihale_src = val, strat, nb, atype
             break
     ev.ihale_bedeli = ihale_val
     ev.ihale_bedeli_source = ihale_src
@@ -245,7 +360,17 @@ def extract_evidence(
     # --- Uzlaşı: Ödenmesi Gereken Bedel / ALACAĞA MAHSUBEN (bölünmüş-blok dahil) / Teminat / hisse / KDV ---
     og_val, og_seg = _amount_after(all_text, all_fold, "odenmesi gereken bedel", window=48)
     ev.odenmesi_gereken_bedel = og_val
-    ev.settlement_field_label_found = "odenmesi gereken bedel" in all_fold
+    # Fix 11: bölünmüş serileştirme için TOKEN-DİZİSİ etiket eşleştirme (auction_result öncelikli).
+    settle_nb: dict = _settlement_relation([])
+    for atype in (ARTIFACT_AUCTION_RESULT, ARTIFACT_STATUS_CARD, ARTIFACT_SALE_NOTICE):
+        segs = per_type_segments.get(atype)
+        if not segs:
+            continue
+        r = _settlement_relation(segs)
+        if r["settlement_label_token_sequence_found"]:
+            settle_nb = r
+            break
+    ev.settlement_field_label_found = ("odenmesi gereken bedel" in all_fold) or settle_nb["settlement_label_token_sequence_found"]
     settlement_strategy: str | None = None
     if og_seg is not None and "mahsuben" in _ascii_lower(og_seg):
         ev.alacaga_mahsuben = True
@@ -254,6 +379,10 @@ def extract_evidence(
     if "alacaga mahsuben" in all_fold:
         ev.alacaga_mahsuben = True
         settlement_strategy = settlement_strategy or "alacaga_mahsuben_phrase"
+    # Fix 11: settlement etiketinin BOUNDED değer bölgesinde alacaga→mahsuben dizisi (segment-bölünmüş).
+    if settle_nb["settlement_value_sequence_found"]:
+        ev.alacaga_mahsuben = True
+        settlement_strategy = settlement_strategy or "bounded_token_sequence"
     ev.alacaga_mahsuben_detected = ev.alacaga_mahsuben
     ev.settlement_value_relation_strategy = settlement_strategy
     dep_val, _ = _amount_after(all_text, all_fold, "teminat", window=40)
@@ -279,6 +408,23 @@ def extract_evidence(
             ev.property_type = pt
             break
     ev.address_text = None  # kişisel adres taşınmaz; ham adres analitik kayda GEÇMEZ
+
+    # Fix 11: gizlilik-güvenli ALAN-KOMŞULUĞU tanısı (yalnız yapısal sayaç + normalize etiket-TÜRÜ; METİN YOK).
+    _inb = ihale_nb or {}
+    ev.field_neighborhood = {
+        "auction_price": {
+            "label_segment_found": bool(_inb.get("label_segment_found", ihale_label_found)),
+            "label_segment_index": _inb.get("label_segment_index"),
+            "same_segment_money_count": _inb.get("same_segment_money_count", 0),
+            "adjacent_segment_money_count": _inb.get("adjacent_segment_money_count", 0),
+            "bounded_following_segments_inspected": _inb.get("bounded_following_segments_inspected", 0),
+            "bounded_following_money_count": _inb.get("bounded_following_money_count", 0),
+            "boundary_stop_reason": _inb.get("boundary_stop_reason"),
+            "intervening_field_label_types": _inb.get("intervening_field_label_types", []),
+            "relation_candidates": _inb.get("relation_candidates", []),
+        },
+        "settlement": settle_nb,
+    }
 
     ev.ambiguities = ambiguities
     ev.extraction_status = "ambiguous" if ambiguities else "deterministic"

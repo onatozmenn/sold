@@ -2042,6 +2042,9 @@ class BrowserCollector:
                 "viewer_image_capture_blocking_reason": None,
                 "viewer_asset_captured": False,
                 "document_source_artifact_collected": False,
+                "source_text_persisted": False,
+                "source_text_artifact_sha256": None,
+                "source_text_artifact_size": None,
                 "viewer_image_document_identity": None,
                 "viewer_image_cross_document_duplicate": False,
                 "viewer_image_duplicate_artifact_types": [],
@@ -2136,6 +2139,7 @@ class BrowserCollector:
                             attempt["artifact_collected"] = True
                             attempt["document_source_artifact_collected"] = True  # dom_text = belge-özgü kaynak
                             attempt["final_viewer_text_available"] = True
+                            self._persist_viewer_source(sel["artifact_type"], content, attempt)  # Fix 11: gitignored yerel kalıcılık
                         else:
                             attempt["blocking_reason"] = f"viewer_representation_unsupported:{representation}"
                             diag["document_collection_failures"] += 1
@@ -2182,6 +2186,7 @@ class BrowserCollector:
                                                   "source_ref": f"viewer:{attempt['viewer_url_kind']}"})
                                 attempt["artifact_collected"] = True
                                 attempt["document_source_artifact_collected"] = True
+                                self._persist_viewer_source(sel["artifact_type"], content, attempt)  # Fix 11: gitignored yerel kalıcılık
                             else:
                                 attempt["blocking_reason"] = "viewer_stable_text_but_no_source_text"
                                 diag["document_collection_failures"] += 1
@@ -2715,5 +2720,32 @@ class BrowserCollector:
             except Exception:
                 return None
         return None  # embed/object/canvas/image/unknown → deterministik kaynak yok
+
+    def _persist_viewer_source(self, artifact_type, content, attempt):
+        """Fix 11: kararlı DOM-metin kaynağını YALNIZCA gitignored yerel artifact deposuna kalıcılaştırır.
+
+        Ham resmî belge içeriği HASSAS olabilir → repoya COMMİT EDİLMEZ, README/DEVELOPMENT_HISTORY/pilot-JSON/
+        log/test'e KOPYALANMAZ. Yalnız gizlilik-güvenli provenans (tür/boyut/sha256) attempt tanısına yazılır;
+        GÖVDE (kaynak metni) hiçbir tanıya/JSON'a YAZILMAZ. Sonraki gerçek çalıştırmada operatör gerçek
+        düzeni bu yerel dosyadan güvenle inceleyebilir. Döner: yerel yol (str) ya da None.
+        """
+        if not content:
+            attempt["source_text_persisted"] = False
+            return None
+        try:
+            data = content.encode("utf-8")
+            sha = _sha256_bytes(data)
+            dest_dir = Path(store.DEFAULT_STORE_DIR) / "artifacts" / "viewer_sources"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / _safe_name(f"{artifact_type}_{sha[:16]}.txt")
+            dest.write_bytes(data)
+        except Exception:
+            attempt["source_text_persisted"] = False
+            return None
+        # Yalnız provenans (GÖVDE değil) tanıya yazılır.
+        attempt["source_text_persisted"] = True
+        attempt["source_text_artifact_sha256"] = sha[:16]
+        attempt["source_text_artifact_size"] = len(data)
+        return str(dest)
 
 

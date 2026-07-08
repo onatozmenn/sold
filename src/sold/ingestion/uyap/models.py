@@ -236,6 +236,7 @@ class ExtractedEvidence:
     settlement_field_label_found: bool = False
     alacaga_mahsuben_detected: bool = False
     settlement_value_relation_strategy: str | None = None
+    field_neighborhood: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
