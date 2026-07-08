@@ -713,18 +713,18 @@ def resolve_row_view_action(actions: list[dict]) -> dict:
     downloads = [a for a, s in classified if s == "download"]
     ambiguous = [a for a, s in classified if s == "ambiguous"]
     dl_detected = bool(downloads)
+    dl_action = downloads[0] if len(downloads) == 1 else None  # POZİTİF tek download (Fix 6.1 fallback için)
+    base = {"download_action": dl_action, "download_action_resolved": dl_action is not None,
+            "download_action_detected": dl_detected}
     if len(views) == 1:
-        return {"view_action": views[0], "resolved": True, "download_action_detected": dl_detected,
-                "reason": "positive_view", "view_semantic": "view"}
+        return {"view_action": views[0], "resolved": True, "reason": "positive_view", "view_semantic": "view", **base}
     if len(views) > 1:
-        return {"view_action": None, "resolved": False, "download_action_detected": dl_detected,
-                "reason": "ambiguous_multiple_view_candidates"}
+        return {"view_action": None, "resolved": False, "reason": "ambiguous_multiple_view_candidates", **base}
     if acts and downloads and len(downloads) == len(acts):
-        return {"view_action": None, "resolved": False, "download_action_detected": True, "reason": "download_only"}
+        return {"view_action": None, "resolved": False, "reason": "download_only", **base}
     if ambiguous:
-        return {"view_action": None, "resolved": False, "download_action_detected": dl_detected,
-                "reason": "ambiguous_action_semantics"}
-    return {"view_action": None, "resolved": False, "download_action_detected": dl_detected, "reason": "no_view_action"}
+        return {"view_action": None, "resolved": False, "reason": "ambiguous_action_semantics", **base}
+    return {"view_action": None, "resolved": False, "reason": "no_view_action", **base}
 
 
 def classify_document_list_container(observed: dict) -> str:
@@ -768,6 +768,56 @@ def classify_viewer_representation(counts: dict) -> str:
     if counts.get("canvas", 0) > 0 or counts.get("image", 0) > 0:
         return "canvas_image_only"
     return "unknown"
+
+
+# --- Fix 6.1: görüntüleyici SONUÇ sınıflandırması + indirme-gerekli semantiği + çıkarım-desteği --- #
+def viewer_download_instruction_detected(text: str) -> bool:
+    """GERÇEK gözlenen 'Evrak Görüntülenemedi, Evrağı indirerek Görüntüleyebilirsiniz.' semantiği (KATI).
+
+    Görüntüleme-başarısızlığı VE indirerek-görüntüleme yönergesi BİRLİKTE gerekir. Yalın ``indir`` ya
+    da genel program-indirme yönergesi YETERSİZ. Noktalama/büyük-küçük harf zorunlu değil; Türkçe fold +
+    kısıtlı mojibake onarımı uygulanır.
+    """
+    fold = _ascii_lower(_demojibake(text or ""))
+    fold = re.sub(r"\s+", " ", fold)
+    failed = "goruntulenemedi" in fold or "goruntulenemiyor" in fold or "goruntulenememektedir" in fold
+    instruct = ("indirerek goruntule" in fold or "indirerek inceleyebilir" in fold
+                or "indirerek acabilir" in fold)
+    return bool(failed and instruct)
+
+
+def classify_viewer_outcome(text: str, representation: str | None = None) -> str:
+    """Görüntüleyici sonucunu deterministik sınıflar (Fix 6.1).
+
+    content_available / download_required / unsupported_representation / viewer_error / unknown.
+    ``download_required`` YALNIZCA gerçek görüntüleme-başarısızlığı + indirme yönergesi birlikteyken.
+    """
+    if viewer_download_instruction_detected(text):
+        return "download_required"
+    fold = re.sub(r"\s+", " ", _ascii_lower(_demojibake(text or "")))
+    if representation == "dom_text" or re.search(r"ihale bedeli|artirma sonuc|muhammen|alacaga mahsuben", fold):
+        return "content_available"
+    if "goruntulenemedi" in fold or "goruntulenemiyor" in fold or ("evrak" in fold and "hata" in fold):
+        return "viewer_error"
+    if representation in ("iframe", "embed_object", "canvas_image_only", "unknown"):
+        return "unsupported_representation"
+    return "unknown"
+
+
+# Deterministik metin çıkarımı GERÇEKTEN desteklenen formatlar (ham UDF/PDF/ikili DEĞİL).
+EXTRACTABLE_ARTIFACT_EXTENSIONS = (".txt", ".html", ".htm")
+
+
+def extraction_supported_for(extension: str | None, mime_hint: str | None = None) -> bool:
+    """İndirilen artifact deterministik metin çıkarımı için GERÇEKTEN destekleniyor mu (dürüst).
+
+    Repo yalnız düz-metin/HTML'den deterministik metin çıkarır; ham ``.udf`` / ``.pdf`` / ikili
+    DESTEKLENMEZ. ``mimeType=Udf`` URL ipucu tek başına destek ANLAMINA GELMEZ.
+    """
+    ext = (extension or "").strip().lower()
+    if not ext.startswith(".") and ext:
+        ext = "." + ext
+    return ext in EXTRACTABLE_ARTIFACT_EXTENSIONS
 
 
 def classify_view_access_pattern(container_kind: str, observed: dict) -> str:
@@ -1545,6 +1595,18 @@ class BrowserCollector:
                 "access_pattern": None,
                 "artifact_collected": False,
                 "blocking_reason": None,
+                "viewer_outcome": None,
+                "viewer_download_instruction_detected": False,
+                "download_fallback_attempted": False,
+                "download_fallback_resolved_same_row": False,
+                "download_action_resolved": bool(resolution.get("download_action_resolved")),
+                "download_event_detected": False,
+                "downloaded_artifact_extension": None,
+                "downloaded_artifact_mime_hint": None,
+                "downloaded_artifact_size": None,
+                "downloaded_artifact_collected": False,
+                "downloaded_artifact_extraction_supported": None,
+                "download_fallback_blocking_reason": None,
             }
             if not resolution.get("resolved") or resolution.get("view_action") is None:
                 attempt["blocking_reason"] = f"row_action_unresolved:{resolution.get('reason')}"
@@ -1597,18 +1659,38 @@ class BrowserCollector:
                         {"new_page": True, "is_udf": attempt["viewer_url_kind"] == "udf_viewer",
                          "is_pdf": attempt["viewer_url_kind"] == "pdf_viewer"},
                     )
-                    content = self._viewer_source_text(newp, representation)
-                    if content:
-                        documents.append({"artifact_type": sel["artifact_type"], "text": content,
-                                          "source_ref": f"viewer:{attempt['viewer_url_kind']}"})
-                        attempt["artifact_collected"] = True
+                    # Fix 6.1: görüntüleyici SONUCUNU sınıfla (içerik var mı / indirme-gerekli / hata).
+                    vtext = self._viewer_body_text(newp)
+                    outcome = classify_viewer_outcome(vtext, representation)
+                    attempt["viewer_outcome"] = outcome
+                    attempt["viewer_download_instruction_detected"] = viewer_download_instruction_detected(vtext)
+                    if outcome == "download_required":
+                        try:
+                            newp.close()  # başarısız görüntüleyici sekmesi kapatılır (orijinal sayfa KORUNUR)
+                        except Exception:
+                            pass
+                        self._same_row_download_fallback(page, label, sel, resolution, attempt, diag, documents)
+                    elif outcome == "content_available":
+                        content = self._viewer_source_text(newp, representation)
+                        if content:
+                            documents.append({"artifact_type": sel["artifact_type"], "text": content,
+                                              "source_ref": f"viewer:{attempt['viewer_url_kind']}"})
+                            attempt["artifact_collected"] = True
+                        else:
+                            attempt["blocking_reason"] = f"viewer_representation_unsupported:{representation}"
+                            diag["document_collection_failures"] += 1
+                        try:
+                            newp.close()  # operatörün orijinal sekmesi KAPATILMAZ
+                        except Exception:
+                            pass
                     else:
-                        attempt["blocking_reason"] = f"viewer_representation_unsupported:{representation}"
+                        attempt["blocking_reason"] = ("viewer_error" if outcome == "viewer_error"
+                                                      else f"viewer_representation_unsupported:{representation}")
                         diag["document_collection_failures"] += 1
-                    try:
-                        newp.close()  # operatörün orijinal sekmesi KAPATILMAZ
-                    except Exception:
-                        pass
+                        try:
+                            newp.close()
+                        except Exception:
+                            pass
                 else:
                     attempt["access_pattern"] = classify_view_access_pattern(container_kind, {"same_page_nav": True})
                     attempt["blocking_reason"] = "no_new_viewer_page_detected"
@@ -1693,6 +1775,137 @@ class BrowserCollector:
             except Exception:
                 continue
         return None
+
+    def _viewer_body_text(self, newp) -> str:  # pragma: no cover - canlı DOM
+        """Görüntüleyici gövde metnini sınırlı biçimde döndürür (sonuç sınıflandırması için; ham DOM saklanmaz)."""
+        try:
+            return (newp.inner_text("body", timeout=2000) or "")[:2000]
+        except Exception:
+            return ""
+
+    def _locate_row_download_action(self, page, label, download_spec):  # pragma: no cover - canlı DOM
+        """Fix 6.1: AYNI satırın POZİTİF çözülmüş download eylemini, çözümü üreten semantikle bulur.
+
+        Seçiciler yalnız çözülen download metadata'sından türetilir (download erişilebilir ad / download
+        ikon token'ı / download attribute / download href). Global/Nth/başka-satır download KULLANILMAZ.
+        """
+        import re as _re
+
+        if not download_spec:
+            return None
+        key = _re.escape(_demojibake(label or "").split("/")[0].strip()[:24])
+        if not key:
+            return None
+        selectors: list[str] = []
+        nm = download_spec.get("accessible_name")
+        if nm and _text_has_download(nm):
+            safe = _re.sub(r'["\\]', "", str(nm))[:20]
+            if safe:
+                selectors += [f'[title*="{safe}" i]', f'[aria-label*="{safe}" i]']
+        for tok in (download_spec.get("icon_tokens") or [])[:8]:
+            if _text_has_download(tok):
+                safe = _re.sub(r'["\\]', "", str(tok))[:24]
+                if safe:
+                    selectors += [f'[class*="{safe}" i]', f'a:has([class*="{safe}" i])', f'button:has([class*="{safe}" i])']
+        if download_spec.get("download_attr"):
+            selectors.append("a[download]")
+        if download_spec.get("href_kind") == "download":
+            selectors += ['a[href*="indir" i]', 'a[href$=".udf" i]', 'a[href$=".pdf" i]']
+        if not selectors:
+            return None
+        for rsel in ("[class*=doc]", "tr", "li", "[class*=evrak]", "[class*=row]", "div", "section"):
+            try:
+                row = page.locator(rsel).filter(has_text=_re.compile(key, _re.I))
+                if row.count() == 0:
+                    continue
+                r = row.last if rsel in ("div", "section") else row.first
+                for s in selectors:
+                    try:
+                        act = r.locator(s)
+                        if act.count() > 0:
+                            return act.first  # satır-yerel, POZİTİF download eylemi
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        return None
+
+    def _same_row_download_fallback(self, page, label, sel, resolution, attempt, diag, documents):  # pragma: no cover - canlı DOM
+        """Fix 6.1: görüntüleyici 'indirme-gerekli' dediğinde, AYNI satırın çözülmüş download eylemiyle
+        resmî artifact'ı indirir. Global/Nth/başka-satır download YOK; keyfi tıklama YOK; UYDURMA YOK."""
+        attempt["download_fallback_attempted"] = True
+        dl_spec = resolution.get("download_action")
+        if not resolution.get("download_action_resolved") or dl_spec is None:
+            attempt["download_action_resolved"] = False
+            attempt["download_fallback_blocking_reason"] = "download_required_but_download_action_unresolved"
+            attempt["blocking_reason"] = "download_required_but_download_action_unresolved"
+            diag["document_collection_failures"] += 1
+            return
+        attempt["download_action_resolved"] = True
+        dl = self._locate_row_download_action(page, label, dl_spec)
+        if dl is None:
+            attempt["download_fallback_resolved_same_row"] = False
+            attempt["download_fallback_blocking_reason"] = "same_row_download_control_not_located"
+            attempt["blocking_reason"] = "same_row_download_control_not_located"
+            diag["document_collection_failures"] += 1
+            return
+        attempt["download_fallback_resolved_same_row"] = True
+        try:
+            with page.expect_download(timeout=8000) as dinfo:
+                dl.click(timeout=4000)
+            download = dinfo.value
+        except Exception as exc:
+            attempt["download_event_detected"] = False
+            attempt["download_fallback_blocking_reason"] = "no_download_event_detected"
+            attempt["blocking_reason"] = str(exc)[:120] or "no_download_event_detected"
+            diag["document_collection_failures"] += 1
+            return
+        attempt["download_event_detected"] = True
+        fname = ""
+        try:
+            fname = download.suggested_filename or ""
+        except Exception:
+            fname = ""
+        ext = (Path(fname).suffix.lower() or None) if fname else None
+        attempt["downloaded_artifact_extension"] = ext
+        attempt["downloaded_artifact_mime_hint"] = attempt.get("viewer_mime_type_hint")
+        # GİTİGNORE'lı artifact deposu (analitik veri kümesine GİRMEZ; yalnız provenans).
+        try:
+            dest_dir = Path(store.DEFAULT_STORE_DIR) / "artifacts" / "downloads"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / _safe_name(fname or "uyap_download.bin")
+            download.save_as(str(dest))
+            data = dest.read_bytes()
+            attempt["downloaded_artifact_size"] = len(data)
+            attempt["downloaded_artifact_sha256"] = _sha256_bytes(data)[:16]
+            attempt["downloaded_artifact_collected"] = True
+        except Exception as exc:
+            attempt["download_fallback_blocking_reason"] = "download_save_failed"
+            attempt["blocking_reason"] = str(exc)[:120]
+            diag["document_collection_failures"] += 1
+            return
+        supported = extraction_supported_for(ext, attempt.get("viewer_mime_type_hint"))
+        attempt["downloaded_artifact_extraction_supported"] = supported
+        if supported:
+            try:
+                text = dest.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                text = ""
+            if text:
+                documents.append({"artifact_type": sel["artifact_type"], "text": text,
+                                  "source_ref": f"download:{ext}", "local_path": str(dest)})
+                attempt["artifact_collected"] = True
+            else:
+                attempt["download_fallback_blocking_reason"] = "downloaded_artifact_empty"
+                attempt["blocking_reason"] = "downloaded_artifact_empty"
+                diag["document_collection_failures"] += 1
+        else:
+            # Resmî artifact diskte KORUNUR (provenans: type+ext+size+sha) ama deterministik çıkarım
+            # DESTEKLENMEZ → ikili görüntüleyiciye/çıkarıma VERİLMEZ (dürüst; UYDURMA/çöp-metin YOK).
+            documents.append({"artifact_type": sel["artifact_type"], "source_ref": f"download:{ext}",
+                              "extraction_supported": False})
+            attempt["download_fallback_blocking_reason"] = f"downloaded_artifact_extraction_unsupported:{ext or 'binary'}"
+            attempt["blocking_reason"] = f"downloaded_artifact_extraction_unsupported:{ext or 'binary'}"
 
     def _viewer_counts(self, newp) -> dict:  # pragma: no cover - canlı DOM
         counts: dict = {}
