@@ -266,7 +266,10 @@ def _native(tmp_path, monkeypatch, data, fname="auction.udf", resolved=True, rai
                         (lambda p, l, s: _FakeControl()) if locate else (lambda p, l, s: None))
     page = _FakeDownloadPage(_FakeDownload(data, fname), raise_on_download=raise_dl)
     attempt: dict = {}
-    diag = {"document_collection_failures": 0}
+    # Fix 13: native indirme, EŞSİZ mantıksal satır reacquire gerektirir (recognized_document_rows).
+    diag = {"document_collection_failures": 0, "recognized_document_rows": [
+        {"artifact_type": "auction_result", "normalized_label": "1- artirma sonuc / uzatma tutanagi",
+         "logical_row_recognized_type_count": 1}]}
     documents: list = []
     resolution = {"download_action_resolved": resolved, "download_action": {"kind": "download"}}
     ok = col._collect_native_udf_download(page, "1- Artırma Sonuç / Uzatma Tutanağı",
@@ -306,7 +309,7 @@ def test_native_download_requires_resolved_same_row_action(tmp_path, monkeypatch
 
 def test_native_download_requires_located_same_row_control(tmp_path, monkeypatch):
     ok, attempt, documents = _native(tmp_path, monkeypatch, _make_udf(), locate=False)
-    assert ok is False and attempt["native_udf_blocking_reason"] == "same_row_download_control_not_located"
+    assert ok is False and attempt["native_udf_blocking_reason"] == "same_row_download_control_not_located_uniquely"
 
 
 def test_native_download_requires_real_download_event(tmp_path, monkeypatch):
