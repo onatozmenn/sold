@@ -1054,6 +1054,142 @@ def viewer_image_candidate_summary(meta: dict, index: int, mime_hint: str | None
     }
 
 
+# --- Fix 9: görüntüleyici hazır-durum gözlemi + belge-render kimliği + cross-document generic-asset guard --- #
+# Sınırlı (bounded) kararlılık gözlemi — SONSUZ bekleme YOK, keyfi uzun sleep YOK.
+VIEWER_STABILIZATION_MIN_OBSERVATIONS = 2   # ard arda aynı imza sayısı → kararlı
+VIEWER_STABILIZATION_MAX_OBSERVATIONS = 3   # üst sınır (bounded)
+VIEWER_STABILIZATION_POLL_MS = 400          # gözlemler arası KISA sınırlı bekleme
+
+
+def viewer_image_fingerprint(meta: dict) -> str | None:
+    """Fix 9: gizlilik-güvenli DOM kaynak parmak izi (ham URL/BAYT YOK) — kararlılık gözlemi için.
+
+    Yalnız ``(naturalW, naturalH, src_kind, güvenli-uzantı-ipucu)`` üzerinden kısa hash. İçerik/piksel/
+    bayt DEĞİL; iki farklı görüntüleyicide aynı boyutlu asset AYNI parmak izini verebilir — cross-document
+    BAYT kimliği ayrı (tam SHA) ile yakalanır. Placeholder → belge-render geçişini ucuza saptar.
+    """
+    if not meta:
+        return None
+    src = meta.get("src") or meta.get("current_src")
+    sk = meta.get("src_kind") or classify_image_src_kind(src)
+    basis = (f"{int(meta.get('natural_width') or 0)}x{int(meta.get('natural_height') or 0)}"
+             f"|{sk}|{_safe_image_ext_hint(src) or ''}")
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+
+
+def viewer_observation_signature(obs: dict) -> tuple:
+    """Tek görüntüleyici gözleminin deterministik, gizlilik-güvenli imzası (ham URL/bayt YOK)."""
+    return (
+        obs.get("representation"),
+        int(obs.get("candidate_count") or 0),
+        obs.get("selected_dimension"),
+        obs.get("selected_src_kind"),
+        obs.get("selected_fingerprint"),
+    )
+
+
+def classify_viewer_ready_state(observations: list, min_stable: int = VIEWER_STABILIZATION_MIN_OBSERVATIONS) -> dict:
+    """Fix 9: sınırlı görüntüleyici kararlılık kararı (SAF, offline-testable).
+
+    ready_state ∈ {stable_image_representation, stable_text_representation, download_required,
+    viewer_error, timeout_unstable}. İndirme-gerekli / viewer-hata semantiği kararlılığı KESER ve
+    ÖNCELİKLİDİR (Fix 6.1 katı önceliği korunur). İmza son ``min_stable`` gözlemde aynıysa kararlı;
+    değişmeye devam ediyorsa DÜRÜSTÇE ``timeout_unstable``. İlk uygun görüntü TEK BAŞINA kararlı sayılmaz.
+    """
+    obs = list(observations or [])
+    count = len(obs)
+    if count == 0:
+        return {"ready_state": "timeout_unstable", "observation_count": 0,
+                "transition_detected": False, "blocking_reason": "no_viewer_observation"}
+    transition = len({viewer_observation_signature(o) for o in obs}) > 1
+    # Fix 6.1 önceliği: indirme-gerekli / viewer-hata kararlılığı ANINDA keser.
+    for o in obs:
+        if o.get("download_required"):
+            return {"ready_state": "download_required", "observation_count": count,
+                    "transition_detected": transition, "blocking_reason": None}
+        if o.get("viewer_error"):
+            return {"ready_state": "viewer_error", "observation_count": count,
+                    "transition_detected": transition, "blocking_reason": None}
+    sigs = [viewer_observation_signature(o) for o in obs]
+    tail = sigs[-min_stable:]
+    stable = len(tail) >= min_stable and len(set(tail)) == 1
+    rep = obs[-1].get("representation")
+    if stable and rep == "dom_text":
+        state, reason = "stable_text_representation", None
+    elif stable and rep in IMAGE_VIEWER_REPRESENTATIONS:
+        state, reason = "stable_image_representation", None
+    elif stable:
+        state, reason = "timeout_unstable", f"stable_but_unsupported_representation:{rep}"
+    else:
+        state, reason = "timeout_unstable", "viewer_representation_did_not_stabilize"
+    return {"ready_state": state, "observation_count": count,
+            "transition_detected": transition, "blocking_reason": reason}
+
+
+def detect_cross_document_image_duplicates(captures: list) -> dict:
+    """Fix 9: TEK pilot toplamada, EXACT full-SHA256 görüntü kimliği ≥2 AYRI artifact türünde paylaşılıyor mu.
+
+    Run-9: auction_result görüntüsü == sale_notice görüntüsü (aynı bayt). SAF; TAM SHA karşılaştırması
+    (kısa prefix DEĞİL). Aynı türün kendini tekrarı cross-document sayılmaz (ayrık türler gerekir).
+    """
+    by_sha: dict = {}
+    for c in captures or []:
+        sha = c.get("sha256")
+        atype = c.get("artifact_type")
+        if not sha or not atype:
+            continue
+        types = by_sha.setdefault(sha, [])
+        if atype not in types:
+            types.append(atype)
+    duplicate_shas = {sha: types for sha, types in by_sha.items() if len(types) >= 2}
+    all_types = sorted({t for types in duplicate_shas.values() for t in types})
+    return {"duplicate": bool(duplicate_shas), "duplicate_shas": duplicate_shas,
+            "duplicate_artifact_types": all_types}
+
+
+def classify_viewer_image_document_identity(capture: dict, duplicates: dict | None = None,
+                                            association_supported: bool = False) -> str:
+    """Fix 9: yakalanan görüntüleyici görüntüsünün belge-render KİMLİĞİ (deterministik; ML YOK).
+
+    not_document_candidate / shared_cross_document_asset / generic_viewer_asset / document_specific /
+    renderer_asset_unresolved. Cross-document tam-SHA paylaşımı → ``shared_cross_document_asset``. Pozitif
+    belge-render ilişkisi KANITLANMADAN (association) tek yakalama ``renderer_asset_unresolved`` kalır —
+    görünür + materyal + kapsamlı + bayt-yakalandı YETMEZ (yalnız bir görüntüleyici-asset yakalandığını kanıtlar).
+    """
+    if not capture or not capture.get("sha256"):
+        return "not_document_candidate"
+    sha = capture.get("sha256")
+    if sha in (duplicates or {}).get("duplicate_shas", {}):
+        return "shared_cross_document_asset"
+    if capture.get("generic_viewer_asset"):
+        return "generic_viewer_asset"
+    if association_supported or capture.get("document_render_association_supported"):
+        return "document_specific"
+    return "renderer_asset_unresolved"
+
+
+def resolve_viewer_image_identities(captures: list) -> list:
+    """Fix 9: cross-document tam-SHA guard + kayıt-başı belge kimliği + promosyon kararı (SAF).
+
+    Girdi ``captures``: ``[{"artifact_type", "sha256"(TAM), "extension", ...}]``. Döner paralel liste:
+    her kayıt için ``viewer_image_document_identity`` + cross_document_duplicate + duplicate_artifact_types
+    + ``promote_as_document_source`` (YALNIZCA ``document_specific`` iken True). Paylaşılan/çözülmemiş asset
+    ASLA iki satırın belge kaynağı olarak bağımsızca PROMOTE EDİLMEZ.
+    """
+    dup = detect_cross_document_image_duplicates(captures)
+    out = []
+    for c in captures or []:
+        sha = c.get("sha256")
+        identity = classify_viewer_image_document_identity(c, dup)
+        out.append({
+            "artifact_type": c.get("artifact_type"),
+            "viewer_image_document_identity": identity,
+            "cross_document_duplicate": sha in dup["duplicate_shas"],
+            "duplicate_artifact_types": dup["duplicate_shas"].get(sha, []),
+            "promote_as_document_source": identity == "document_specific",
+        })
+    return out
+
 
 def classify_view_access_pattern(container_kind: str, observed: dict) -> str:
     """Belge-listesi konteyneri + görüntüleme olayından erişim desenini adlandırır (uydurma YOK)."""
@@ -1540,6 +1676,8 @@ class BrowserCollector:
                 "document_collection_attempts": [],
                 "document_collection_failures": 0,
                 "viewer_pages_opened": 0,
+                "viewer_image_cross_document_duplicate": False,
+                "viewer_image_duplicate_artifact_types": [],
             }
             if follow_documents:
                 for lk in links:
@@ -1637,6 +1775,8 @@ class BrowserCollector:
             "document_collection_attempts": [],
             "document_collection_failures": 0,
             "viewer_pages_opened": 0,
+            "viewer_image_cross_document_duplicate": False,
+            "viewer_image_duplicate_artifact_types": [],
         }
         documents: list[dict] = []
         patterns: list[dict] = []
@@ -1818,6 +1958,7 @@ class BrowserCollector:
 
         selected: list[dict] = []
         recognized: list[dict] = []
+        pending_image_captures: list = []  # Fix 9: (attempt, capture) — döngü SONRASI kimlik/promosyon
         for i, row in enumerate(rows):
             atype = classify_document_label(row.get("label", ""))
             if not atype:
@@ -1890,8 +2031,25 @@ class BrowserCollector:
                 "viewer_image_artifact_mime_hint": None,
                 "viewer_image_artifact_size": None,
                 "viewer_image_artifact_sha256": None,
+                "viewer_image_source_sha256": None,
                 "viewer_image_text_extraction_supported": None,
                 "viewer_image_capture_blocking_reason": None,
+                "viewer_asset_captured": False,
+                "document_source_artifact_collected": False,
+                "viewer_image_document_identity": None,
+                "viewer_image_cross_document_duplicate": False,
+                "viewer_image_duplicate_artifact_types": [],
+                "viewer_asset_only": False,
+                "viewer_asset_identity_blocking_reason": None,
+                "viewer_ready_state": None,
+                "viewer_stabilization_observation_count": 0,
+                "viewer_stabilization_transition_detected": False,
+                "viewer_representation_sequence": [],
+                "viewer_image_candidate_count_sequence": [],
+                "viewer_selected_image_dimension_sequence": [],
+                "viewer_selected_image_src_kind_sequence": [],
+                "viewer_image_fingerprint_changed": False,
+                "viewer_stabilization_blocking_reason": None,
             }
             if not resolution.get("resolved") or resolution.get("view_action") is None:
                 attempt["blocking_reason"] = f"row_action_unresolved:{resolution.get('reason')}"
@@ -1970,13 +2128,66 @@ class BrowserCollector:
                         except Exception:
                             pass
                     elif outcome == "image_backed":
-                        # Fix 8: görüntü-destekli görüntüleyici → belge-render görüntüsünün KESİN kaynak
-                        # baytlarını yakala (OCR YOK). İndirme-gerekli/hata semantiği YOK → indirme TETİKLENMEZ.
-                        self._collect_viewer_image(newp, attempt, sel, documents, diag)
-                        try:
-                            newp.close()  # operatörün orijinal sekmesi KAPATILMAZ
-                        except Exception:
-                            pass
+                        # Fix 8: görüntü-destekli görüntüleyici. Fix 9: KESİN yakalamadan ÖNCE SINIRLI
+                        # kararlılık gözlemi (ilk uygun görüntüyü anında yakalama); indirme-gerekli/hata
+                        # kararlılığı KESER (Fix 6.1 önceliği korunur). Promosyon döngü SONRASI kimliğe bağlı.
+                        ready = self._observe_viewer_stabilization(newp)
+                        attempt["viewer_ready_state"] = ready.get("ready_state")
+                        attempt["viewer_stabilization_observation_count"] = ready.get("observation_count", 0)
+                        attempt["viewer_stabilization_transition_detected"] = bool(ready.get("transition_detected"))
+                        attempt["viewer_representation_sequence"] = ready.get("representation_sequence") or []
+                        attempt["viewer_image_candidate_count_sequence"] = ready.get("candidate_count_sequence") or []
+                        attempt["viewer_selected_image_dimension_sequence"] = ready.get("selected_dimension_sequence") or []
+                        attempt["viewer_selected_image_src_kind_sequence"] = ready.get("selected_src_kind_sequence") or []
+                        attempt["viewer_image_fingerprint_changed"] = bool(ready.get("fingerprint_changed"))
+                        attempt["viewer_stabilization_blocking_reason"] = ready.get("blocking_reason")
+                        rs = ready.get("ready_state")
+                        if rs == "download_required":
+                            # Fix 6.1 önceliği: kararlılık sırasında indirme-gerekli belirdi → aynı-satır fallback.
+                            attempt["viewer_download_instruction_detected"] = True
+                            try:
+                                newp.close()
+                            except Exception:
+                                pass
+                            self._same_row_download_fallback(page, label, sel, resolution, attempt, diag, documents)
+                        elif rs == "stable_text_representation":
+                            content = self._viewer_source_text(newp, "dom_text")
+                            if content:
+                                documents.append({"artifact_type": sel["artifact_type"], "text": content,
+                                                  "source_ref": f"viewer:{attempt['viewer_url_kind']}"})
+                                attempt["artifact_collected"] = True
+                                attempt["document_source_artifact_collected"] = True
+                            else:
+                                attempt["blocking_reason"] = "viewer_stable_text_but_no_source_text"
+                                diag["document_collection_failures"] += 1
+                            try:
+                                newp.close()
+                            except Exception:
+                                pass
+                        elif rs == "stable_image_representation":
+                            # KESİN kaynak baytlarını yakala + görüntüleyici-asset olarak sakla (Fix 8).
+                            # Promosyon YAPILMAZ: cross-document kimlik döngü sonrası çözülür (Fix 9).
+                            capture = self._collect_viewer_image(newp, attempt, sel, diag)
+                            if capture is not None:
+                                pending_image_captures.append((attempt, capture))
+                            try:
+                                newp.close()  # operatörün orijinal sekmesi KAPATILMAZ
+                            except Exception:
+                                pass
+                        elif rs == "viewer_error":
+                            attempt["blocking_reason"] = "viewer_error"
+                            diag["document_collection_failures"] += 1
+                            try:
+                                newp.close()
+                            except Exception:
+                                pass
+                        else:  # timeout_unstable — ilk görüntüyü belge kanıtı sayma (dürüst)
+                            attempt["blocking_reason"] = ready.get("blocking_reason") or "viewer_stabilization_timeout_unstable"
+                            diag["document_collection_failures"] += 1
+                            try:
+                                newp.close()
+                            except Exception:
+                                pass
                     else:
                         attempt["blocking_reason"] = ("viewer_error" if outcome == "viewer_error"
                                                       else f"viewer_representation_unsupported:{representation}")
@@ -1994,6 +2205,32 @@ class BrowserCollector:
                 attempt["blocking_reason"] = str(exc)[:120]
                 diag["document_collection_failures"] += 1
             diag["document_collection_attempts"].append(attempt)
+        # Fix 9: cross-document tam-SHA duplicate guard + belge-render kimliği + KOŞULLU promosyon.
+        # Byte-identical bir görüntü ≥2 AYRI resmî DocumentRow'da paylaşılıyorsa (Run-9: auction_result ==
+        # sale_notice) → shared_cross_document_asset → İKİSİ DE belge kaynağı olarak PROMOTE EDİLMEZ.
+        # Yalnız document_specific kimlik promote edilir; diğerleri görüntüleyici-asset (tanı) olarak kalır.
+        if pending_image_captures:
+            captures = [c for (_a, c) in pending_image_captures]
+            dup = detect_cross_document_image_duplicates(captures)
+            diag["viewer_image_cross_document_duplicate"] = dup["duplicate"]
+            diag["viewer_image_duplicate_artifact_types"] = dup["duplicate_artifact_types"]
+            resolutions = resolve_viewer_image_identities(captures)
+            for (att, cap), rez in zip(pending_image_captures, resolutions):
+                att["viewer_image_document_identity"] = rez["viewer_image_document_identity"]
+                att["viewer_image_cross_document_duplicate"] = bool(rez["cross_document_duplicate"])
+                att["viewer_image_duplicate_artifact_types"] = rez["duplicate_artifact_types"]
+                if rez["promote_as_document_source"]:
+                    documents.append({"artifact_type": cap["artifact_type"],
+                                      "source_ref": f"viewer_image:{cap['extension'] or '.bin'}",
+                                      "extraction_supported": False})
+                    att["document_source_artifact_collected"] = True
+                    att["artifact_collected"] = True
+                else:
+                    att["document_source_artifact_collected"] = False
+                    att["artifact_collected"] = False
+                    att["viewer_asset_only"] = True
+                    att["viewer_asset_identity_blocking_reason"] = (
+                        f"viewer_image_not_document_specific:{rez['viewer_image_document_identity']}")
         return documents, patterns
 
     def _locate_row_view_action(self, page, label, view_spec):  # pragma: no cover - canlı DOM
@@ -2271,11 +2508,14 @@ class BrowserCollector:
             return data, mime, ext
         return None
 
-    def _collect_viewer_image(self, newp, attempt, sel, documents, diag):  # pragma: no cover - canlı DOM
-        """Fix 8: görüntü-destekli görüntüleyicide belge-render görüntüsünü seçip KESİN kaynağını yakalar.
+    def _collect_viewer_image(self, newp, attempt, sel, diag):  # pragma: no cover - canlı DOM
+        """Fix 8+9: görüntü-destekli görüntüleyicide belge-render adayının KESİN kaynağını yakalar ve
+        görüntüleyici-ASSET olarak saklar (Fix 8 bayt yakalama KORUNUR: data/blob/same-origin, tam
+        bayt/size/sha/store).
 
-        Görüntü artifact'ı KORUNUR (provenans) ama metin çıkarımını DESTEKLEMEZ (OCR YOK); İhale Bedeli
-        UYDURULMAZ. Aday yoksa / kaynak yakalanamazsa dürüstçe bloklama nedeni raporlanır.
+        Fix 9: TEK yakalama TEK BAŞINA satırın belge-kaynak artifact'ını PROMOTE ETMEZ — kimlik (cross-
+        document tam-SHA guard + belge-render ilişkisi) döngü SONRASI çözülür. Görüntü artifact'ı metin
+        çıkarımını DESTEKLEMEZ (OCR YOK); İhale Bedeli UYDURULMAZ. Döner: capture kaydı ya da None.
         """
         raw = self._viewer_image_candidates(newp)
         attempt["viewer_image_candidate_count"] = len(raw)
@@ -2290,8 +2530,9 @@ class BrowserCollector:
         idx = select_viewer_image_candidate(classified)
         if idx is None:
             attempt["viewer_image_capture_blocking_reason"] = "no_document_image_candidate"
+            attempt["viewer_image_document_identity"] = "not_document_candidate"
             diag["document_collection_failures"] += 1
-            return
+            return None
         chosen = raw[idx]
         src = chosen.get("src") or chosen.get("current_src")
         src_kind = classify_image_src_kind(src)
@@ -2303,35 +2544,110 @@ class BrowserCollector:
         if not cap.get("supported"):
             attempt["viewer_image_capture_blocking_reason"] = cap.get("reason") or "source_capture_unsupported"
             diag["document_collection_failures"] += 1
-            return
+            return None
         got = self._capture_image_source(newp, src, src_kind)
         if not got:
             attempt["viewer_image_source_bytes_captured"] = False
             attempt["viewer_image_capture_blocking_reason"] = "source_bytes_not_captured"
             diag["document_collection_failures"] += 1
-            return
+            return None
         data, mime, ext = got
+        full_sha = _sha256_bytes(data)  # Fix 9: TAM sha (cross-document guard tam-SHA kullanır)
         attempt["viewer_image_source_bytes_captured"] = True
         attempt["viewer_image_artifact_mime_hint"] = mime
         attempt["viewer_image_artifact_extension"] = ext
         attempt["viewer_image_artifact_size"] = len(data)
-        attempt["viewer_image_artifact_sha256"] = _sha256_bytes(data)[:16]
+        attempt["viewer_image_artifact_sha256"] = full_sha[:16]   # kısa (tanı gösterimi)
+        attempt["viewer_image_source_sha256"] = full_sha          # TAM (kimlik/guard karşılaştırması)
         try:
             dest_dir = Path(store.DEFAULT_STORE_DIR) / "artifacts" / "viewer_images"
             dest_dir.mkdir(parents=True, exist_ok=True)
-            dest = dest_dir / _safe_name(f"{sel['artifact_type']}_{attempt['viewer_image_artifact_sha256']}{ext or '.bin'}")
+            dest = dest_dir / _safe_name(f"{sel['artifact_type']}_{full_sha[:16]}{ext or '.bin'}")
             dest.write_bytes(data)
         except Exception as exc:
             attempt["viewer_image_capture_blocking_reason"] = "image_artifact_save_failed"
             attempt["blocking_reason"] = str(exc)[:120]
             diag["document_collection_failures"] += 1
-            return
-        # KESİN kaynak baytları KORUNDU (resmî render artifact'ı). Metin çıkarımı DESTEKLENMEZ (OCR YOK).
-        attempt["viewer_image_artifact_collected"] = True
+            return None
+        # Fix 9: görüntüleyici-asset KESİN baytlarıyla KORUNDU (mühendislik/provenans) ama belge-KAYNAK
+        # İDDİA EDİLMEZ; document_source_artifact_collected kimlik çözülene kadar False. Metin çıkarımı YOK (OCR YOK).
+        attempt["viewer_image_artifact_collected"] = True   # görüntüleyici-asset yakalandı (metin/İhale Bedeli DEĞİL)
+        attempt["viewer_asset_captured"] = True
         attempt["viewer_image_text_extraction_supported"] = extraction_supported_for(ext, mime)  # → False (görüntü)
-        attempt["artifact_collected"] = True  # kaynak artifact toplandı (metin/İhale Bedeli DEĞİL)
-        documents.append({"artifact_type": sel["artifact_type"], "source_ref": f"viewer_image:{ext or '.bin'}",
-                          "extraction_supported": False})
+        attempt["document_source_artifact_collected"] = False  # promosyon post-loop kimliğe bağlı
+        return {"artifact_type": sel["artifact_type"], "sha256": full_sha, "extension": ext,
+                "size": len(data), "mime_hint": mime, "stored_path": str(dest)}
+
+    def _observe_viewer_stabilization(self, newp):  # pragma: no cover - canlı DOM
+        """Fix 9: SINIRLI (bounded) görüntüleyici kararlılık gözlemi — ilk uygun görüntüyü ANINDA yakalama.
+
+        En çok ``VIEWER_STABILIZATION_MAX_OBSERVATIONS`` kez ucuz güvenli imza gözlenir; gözlemler arası
+        ``wait_for_timeout`` ile KISA SINIRLI bekleme (SONSUZ sleep YOK, keyfi uzun sleep YOK). İndirme-
+        gerekli / viewer-hata semantiği ANINDA keser (Fix 6.1 önceliği). Son ``MIN_OBSERVATIONS`` imza
+        aynıysa erken çıkar (kararlı). ``classify_viewer_ready_state`` + gizlilik-güvenli diziler döner.
+        """
+        observations: list = []
+        rep_seq: list = []
+        cnt_seq: list = []
+        dim_seq: list = []
+        kind_seq: list = []
+        last_fp = None
+        fp_changed = False
+        for i in range(VIEWER_STABILIZATION_MAX_OBSERVATIONS):
+            counts = self._viewer_counts(newp)
+            representation = classify_viewer_representation(counts)
+            vtext = self._viewer_body_text(newp)
+            raw = self._viewer_image_candidates(newp)
+            classified = []
+            for m in raw:
+                sk = classify_image_src_kind(m.get("src") or m.get("current_src"))
+                cand = classify_document_image_candidate({**m, "src_kind": sk})
+                classified.append({**m, "src_kind": sk, "document_image_candidate": cand["document_image_candidate"]})
+            idx = select_viewer_image_candidate(classified)
+            sel_dim = sel_kind = sel_fp = None
+            if idx is not None:
+                ch = classified[idx]
+                sel_dim = f"{int(ch.get('natural_width') or 0)}x{int(ch.get('natural_height') or 0)}"
+                sel_kind = ch.get("src_kind")
+                sel_fp = viewer_image_fingerprint(ch)
+            obs = {
+                "representation": representation,
+                "candidate_count": len(raw),
+                "selected_dimension": sel_dim,
+                "selected_src_kind": sel_kind,
+                "selected_fingerprint": sel_fp,
+                "download_required": viewer_download_instruction_detected(vtext),
+                "viewer_error": classify_viewer_outcome(vtext, representation) == "viewer_error",
+                "text_available": bool(counts.get("text_available")),
+            }
+            observations.append(obs)
+            rep_seq.append(representation)
+            cnt_seq.append(len(raw))
+            dim_seq.append(sel_dim)
+            kind_seq.append(sel_kind)
+            if last_fp is not None and sel_fp != last_fp:
+                fp_changed = True
+            last_fp = sel_fp
+            if obs["download_required"] or obs["viewer_error"]:
+                break
+            sigs = [viewer_observation_signature(o) for o in observations]
+            if (len(sigs) >= VIEWER_STABILIZATION_MIN_OBSERVATIONS
+                    and len(set(sigs[-VIEWER_STABILIZATION_MIN_OBSERVATIONS:])) == 1):
+                break  # kararlı → erken çık
+            if i < VIEWER_STABILIZATION_MAX_OBSERVATIONS - 1:
+                try:
+                    newp.wait_for_timeout(VIEWER_STABILIZATION_POLL_MS)  # SINIRLI; unbounded sleep YOK
+                except Exception:
+                    pass
+        ready = classify_viewer_ready_state(observations)
+        ready.update({
+            "representation_sequence": rep_seq,
+            "candidate_count_sequence": cnt_seq,
+            "selected_dimension_sequence": dim_seq,
+            "selected_src_kind_sequence": kind_seq,
+            "fingerprint_changed": fp_changed,
+        })
+        return ready
 
     def _viewer_counts(self, newp) -> dict:  # pragma: no cover - canlı DOM
         counts: dict = {}
