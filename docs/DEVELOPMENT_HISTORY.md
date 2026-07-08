@@ -711,3 +711,58 @@ milestones:
   post-Fix-11 operator rerun — which will persist and reveal the real layout — is required.** Structural core,
   four SMM moments, `conditional_on_trade`, `Θ_A`, TOKİ external status (5 observed / 0 SMM), and the
   numerical-search convention are unchanged; the pilot remains non-mutating (genuine count stays 7).
+
+- **UYAP Live Browser Pilot 1 — Live Interoperability Fix 12 (measured twelfth live result: `FAIL`; native
+  UDF source format discovered)** — chronology: runs 1–11 = **FAIL** → Fixes 1–11 → run 12 = **FAIL** → a real
+  official `.udf` was manually downloaded and inspected → Fix 12 → operator rerun pending. Run 12's viewer
+  sequence for `auction_result` ended `image_only → unknown → unknown` within the observation window, so no
+  auction-result DOM text was collected. The operator then **manually clicked the real row-local download** for
+  `1- Artırma Sonuç / Uzatma Tutanağı` and supplied the exact `.udf`, inspected byte-for-byte: **file size
+  4406 bytes, a ZIP-compatible (`PK`) container** with top-level members `documentproperties.xml`,
+  `content.xml`, `sign.sgn`; **`content.xml` is 17940 bytes uncompressed, UTF-8 XML**, and carries the official
+  document source text directly inside its `content` element's CDATA — including the explicit `İhale Bedeli`
+  monetary literal, `Ödenmesi Gereken Bedel` / `ALACAĞA MAHSUBEN`, KDV, and the same-asset descriptors used by
+  the existing reconciliation path. The prior proposed transition-gap/viewer-wait Fix 12 was **cancelled**:
+  root cause is that for the measured auction-result document **the viewer is not the best deterministic
+  evidence layer** — the official downloaded `.udf` is itself a native container whose `content.xml` holds
+  deterministic UTF-8 text. **Fix 12 (deterministic native UDF container extraction + same-row official
+  download collection only; no OCR, no ML, no rendering/LibreOffice/GUI, no additional viewer waits, no
+  known-truth injection, no page-state/card/modal/row/view-action/reconciliation/audit/structural change; the
+  viewer code and architecture are preserved):** a new `sold/ingestion/uyap/udf.py`
+  `extract_udf_source_text(path_or_bytes)` validates the ZIP container and reads **only** the root
+  `content.xml` directly (no `extractall`; rejects path-traversal member names, duplicate/ambiguous
+  `content.xml`, encrypted/malformed archives, non-ZIP input, and bounds the decompressed size with
+  `MAX_UDF_DECOMPRESSED_BYTES` against zip-bombs), parses the XML **safely** with the standard library (no
+  external entities/DTD/XInclude/network — a `DOCTYPE`/`ENTITY`/`XInclude`/stylesheet is refused before
+  parsing), finds the `content` element namespace-agnostically, and returns its CDATA/text exactly (UTF-8
+  Turkish preserved), with honest per-stage `blocking_reason`s and a `native_udf_supported(diag)` predicate
+  that requires validated structure + `content.xml` + parsed content text (never the extension alone). The
+  collector adds `_collect_native_udf_download`: for an `auction_result` DocumentRow whose **row-local download
+  action is positively resolved by the existing Fix-6 semantics** and which emits a **real browser download
+  event**, it clicks that same-row control (never a page-global/first/Nth control, and *not* the Fix-6.1
+  "unsupported viewer ⇒ download" trigger), stores the exact `.udf` bytes **unchanged** in the existing
+  gitignored artifact store (full SHA256 internally, short SHA256 in diagnostics), runs the native reader, and
+  on success feeds the extracted `content.xml` text into the **existing** label-bounded `extract_evidence`
+  (source acquisition is solved by the native adapter; field extraction remains the Fix-10/11 parser). This is
+  gated as a new evidence policy — `NATIVE_DOWNLOAD_TYPES = (auction_result,)`, priority-first — and on any
+  failure it falls through to the preserved viewer path; `sale_notice`'s working stable-DOM-text path is not
+  in the native set and is unchanged. `artifact_types_collected` may now include `auction_result` with the
+  provenance reason **official same-row native UDF artifact** (`native_udf_source_relation`), not a viewer
+  image or a merely-opened viewer page. The audit numerator stays the explicit official `İhale Bedeli` only
+  (`Satış Tutarı`/`Ödenmesi Gereken Bedel`/`ALACAĞA MAHSUBEN` are never the auction price; `ALACAĞA MAHSUBEN`
+  is settlement context only, and there is no KDV gross-up/net-down). New privacy-safe per-attempt diagnostics
+  (`native_download_attempted`/`_action_resolved`/`_event_detected`, `native_artifact_collected`/`_extension`/
+  `_size`/`_sha256`, `native_container_kind`, `native_udf_zip_valid`, `native_udf_member_names_safe_summary`
+  (only a known-member-name summary + an unsafe-path flag), `native_udf_content_xml_found`/`_content_xml_size`/
+  `_xml_parse_succeeded`/`_content_element_found`/`_source_text_available`/`_text_extraction_supported`,
+  `native_udf_source_relation`, `native_udf_blocking_reason`) are surfaced in the pilot report's `native_udf`
+  block and carry **no** native source text, full `content.xml`, names, TC IDs, IBANs, addresses, download/
+  viewer URLs, cookies, or tokens. Added 37 offline tests using **sanitized synthetic** UDF fixtures (a ZIP of
+  `documentproperties.xml` + a synthetic `content.xml` + `sign.sgn`, with synthetic amounts/identifiers such
+  as `1.234.567,89` and `123 Ada, 4 Parsel` — the real official `.udf` and its exact `content.xml` are
+  **never** committed). Full suite: **627 passed** (590 baseline + 37 tests). **The manually supplied artifact
+  proves the measured native format only; it does *not* yet prove the automated row-local browser download +
+  native extraction path works live, and no pilot `PASS` is claimed — a post-Fix-12 operator rerun is
+  required.** Structural core, four SMM moments, `conditional_on_trade`, `Θ_A`, TOKİ external status (5
+  observed / 0 SMM), and the numerical-search convention are unchanged; the pilot remains non-mutating (genuine
+  count stays 7).
