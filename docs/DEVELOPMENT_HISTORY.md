@@ -815,3 +815,43 @@ milestones:
   `PASS` is claimed until the operator reruns.** Structural core, four SMM moments, `conditional_on_trade`,
   `Θ_A`, TOKİ external status (5 observed / 0 SMM), and the numerical-search convention are unchanged; the
   pilot remains non-mutating (genuine count stays 7).
+
+- **UYAP Live Browser Pilot 1 — Live Interoperability Fix 14 (measured fourteenth live result: `FAIL`;
+  sale-notice native UDF collection)** — chronology: runs 1–13 = **FAIL** → Fixes 1–13 → run 14 = **FAIL** →
+  Fix 14 → operator rerun pending. Run 14 **live-proved the Fix-13 auction-result native path end-to-end**:
+  `native_row_reacquired=true`, `native_row_reacquired_artifact_type=auction_result`,
+  `native_row_reacquired_label_match=true`, `native_action_owner_same_row=true`,
+  `native_action_owner_semantic_revalidated=true`, `native_action_owner_fingerprint_match=true`,
+  `native_download_event_detected=true`, `native_artifact_collected=true` (`native_artifact_size=4406`,
+  `native_udf_content_xml_size=17940`), `native_detected_document_type=auction_result`,
+  `native_document_type_corroborated=true` / `native_document_type_mismatch=false`, and the **existing**
+  extractor independently recovered `extracted_auction_price=5715000.0` (`auction_price_candidate_count=1`,
+  `auction_price_value_relation_strategy=same_segment`), `settlement_field_label_found=true`,
+  `alacaga_mahsuben_detected=true` (`settlement_value_relation_strategy=odenmesi_gereken_bedel_segment`) — so
+  the auction-result native source path is **solved live and is not modified**. Run 14 failed **only** because
+  `sale_notice` was still on the viewer path, whose real sequence was `image_only → unknown → dom_text` with
+  `viewer_stabilization_observation_count=3`, `viewer_ready_state=timeout_unstable`,
+  `blocking_reason=viewer_representation_did_not_stabilize`, `artifact_collected=false` /
+  `document_source_artifact_collected=false` → `extracted_appraisal=null`, `appraisal_candidate_count=0`,
+  `kdv_rate=null`, `reconciliation_status=ambiguous`, `audit_decision=MISSING_APPRAISAL`, even though the same
+  `sale_notice` row already exposes a positively resolved row-local download action
+  (`download_action_detected=true`). **Fix 14 (a one-policy extension only; the native UDF parser, the
+  auction-result path, viewer stabilization, and the appraisal parser are all unchanged; no OCR, no ML, no
+  known-truth injection; structural freeze):** `NATIVE_DOWNLOAD_TYPES` is extended from `(auction_result,)` to
+  `(auction_result, sale_notice)`, so `sale_notice` now uses the **same** Fix-13 DocumentRow-bound,
+  pre-click-revalidated, document-type-corroborated native UDF download path — `select_unique_document_row`
+  reacquires the unique `sale_notice` row by recognized identity, `_locate_row_download_action` requires an
+  exactly-one row-scoped download control (never a page-global/first/Nth control), a real `expect_download`
+  event is required, the unchanged native reader parses the `.udf`, and `corroborate_native_document_type`
+  promotes the artifact **only** when `native_detected_document_type == sale_notice` (a `requested=sale_notice`
+  / `detected=auction_result` mismatch keeps the bytes for diagnostics but is not promoted). `_DOC_PRIORITY`
+  keeps `auction_result` first and `sale_notice` second, `appraisal_report`/`sale_spec` are **not** added, and
+  the viewer path remains as fallback — no viewer stabilization wait is needed once the native download
+  succeeds. The corroborated `sale_notice` source text feeds the **existing** `extract_evidence` (which already
+  live-proved `extracted_appraisal=6800000.0` with one candidate and `kdv_rate=20.0` when the source is
+  available), and reconciliation is expected to return `reconciled`. Added 21 offline tests (the Fix-12
+  `sale_notice`-not-native test was updated to the Fix-14 policy). Full suite: **678 passed** (657 baseline +
+  21 tests). **No pilot `PASS` is claimed: the automated `sale_notice` native download + corroboration has not
+  yet run live, so a post-Fix-14 operator rerun is required.** Structural core, four SMM moments,
+  `conditional_on_trade`, `Θ_A`, TOKİ external status (5 observed / 0 SMM), and the numerical-search convention
+  are unchanged; the pilot remains non-mutating (genuine count stays 7).
