@@ -558,3 +558,59 @@ milestones:
   fallback did not run live** — a post-Fix-8 operator rerun is required. Structural core, four SMM moments,
   `conditional_on_trade`, `Θ_A`, TOKİ external status (5 observed / 0 SMM), and the numerical-search convention
   are unchanged; the pilot remains non-mutating (genuine count stays 7).
+
+- **UYAP Live Browser Pilot 1 — Live Interoperability Fix 9 (measured ninth live result: `FAIL`)** —
+  chronology: runs 1–8 = **FAIL** → Fixes 1–8 → run 9 = **FAIL** → Fix 9 → operator rerun pending. Run 9
+  **live-proved Fix 8's exact browser-accessible source-byte capture**: for both `auction_result` and
+  `sale_notice` the collector reached the real UDF viewer (`viewer_representation=image_only`,
+  `viewer_outcome=image_backed`), classified the image source (`viewer_image_source_kind=http_resource`),
+  captured the exact bytes in the authenticated viewer context (`viewer_image_source_capture_strategy=
+  same_origin_page_fetch`, `viewer_image_source_bytes_captured=true`), computed size/hash, and stored the
+  renderer image — each a `.png`, natural `298×298`, rendered `100×120`, `63334` bytes, sha256
+  `074e28d977997b50…`. **But the two viewers produced a byte-identical PNG — the same size and the same
+  SHA256 — for two logically distinct official documents** (`Artırma Sonuç / Uzatma Tutanağı` vs
+  `Satış İlanı`), and Fix 8 promoted **both** as row source artifacts
+  (`artifact_types_collected=[auction_result, sale_notice, status_card]`). The mutation guard passed again
+  (`uyap.json` unchanged, count `7 → 7`, SMM unchanged). Root cause: **a captured viewer image was treated as
+  the row's document source artifact merely because it was visible, materially sized, viewer-content-scoped,
+  and its bytes were captured** — those facts prove only that a *viewer asset* was captured, not that the
+  specific official *document content* was captured; a byte-identical image shared across two different
+  documents is a high-confidence **generic/shared viewer-asset** signal (placeholder / loader / application
+  graphic), and the operator additionally observed each viewer tab opening and closing very quickly
+  (compatible with capturing a **pre-document-ready** image — treated as a hypothesis to measure, not a
+  proven fact). We do **not** claim the PNG is definitively a logo/placeholder until DOM/resource evidence
+  proves it. **Fix 9 (viewer ready-state + document-render image identity + cross-document generic-asset
+  guard only; Fix 8's byte capture is preserved; no OCR, no screenshot, no image-text parsing, no
+  auto-download, and no page-state/card/modal/row/action/download-fallback/structural change):** (1) new pure
+  helpers — `classify_viewer_ready_state` (bounded stabilization decision → `stable_image_representation` /
+  `stable_text_representation` / `download_required` / `viewer_error` / `timeout_unstable`, with
+  `download_required`/`viewer_error` taking precedence), `viewer_observation_signature` and
+  `viewer_image_fingerprint` (privacy-safe DOM signature/fingerprint over natural dimensions + `src_kind` +
+  extension hint — never raw URLs or bytes), `detect_cross_document_image_duplicates` (exact full 64-char
+  SHA256 across ≥2 **distinct** artifact types — never a short prefix), `classify_viewer_image_document_
+  identity` (`document_specific` / `shared_cross_document_asset` / `generic_viewer_asset` /
+  `renderer_asset_unresolved` / `not_document_candidate`), and `resolve_viewer_image_identities` (per-capture
+  identity + a promotion decision that is `true` **only** for `document_specific`); (2) live (pragma)
+  `_observe_viewer_stabilization` polls the safe signature across `VIEWER_STABILIZATION_MAX_OBSERVATIONS`
+  bounded steps with a short `wait_for_timeout` (never an unbounded sleep), so the collector no longer
+  captures the **first** qualifying image immediately — a placeholder later replaced by a document render is
+  detected (`viewer_image_fingerprint_changed`), and an ever-changing viewer honestly reports
+  `timeout_unstable`; (3) `_collect_viewer_image` still captures and stores the exact source bytes (Fix 8
+  preserved) but **no longer promotes** — it records `viewer_asset_captured=true` and returns a capture with
+  the **full** SHA256, and the per-container post-loop pass assigns identity and appends a document **only**
+  when the identity is `document_specific`; (4) a `shared_cross_document_asset` (the Run-9 case) is preserved
+  as a diagnostic viewer asset but is **not** appended, so it does **not** add `auction_result`/`sale_notice`
+  to `artifact_types_collected` (`status_card` is unaffected). New privacy-safe diagnostics
+  (`viewer_ready_state`, `viewer_stabilization_observation_count`, `viewer_stabilization_transition_detected`,
+  `viewer_representation_sequence`, `viewer_image_fingerprint_changed`, `viewer_asset_captured`,
+  `document_source_artifact_collected`, `viewer_image_document_identity`, `viewer_image_cross_document_
+  duplicate`, `viewer_image_duplicate_artifact_types`, `viewer_asset_only`,
+  `viewer_asset_identity_blocking_reason`) emit no raw URLs or image bytes (SHA256 only). Fix 6.1's strict
+  `download_required` precedence still interrupts stabilization and takes priority, and `auction_result`
+  remains the priority official price source. Added 43 offline tests. Full suite: **518 passed** (475 baseline
+  + 43 tests). **No live `PASS` is claimed: document-source identity was not proven live, image/UDF text
+  extraction still does not work, the İhale Bedeli was not extracted, and whether the identical 298×298 PNG is
+  an early placeholder or the final stable viewer image is exactly what the post-Fix-9 operator rerun must
+  measure** — a post-Fix-9 operator rerun is required. Structural core, four SMM moments,
+  `conditional_on_trade`, `Θ_A`, TOKİ external status (5 observed / 0 SMM), and the numerical-search convention
+  are unchanged; the pilot remains non-mutating (genuine count stays 7).
