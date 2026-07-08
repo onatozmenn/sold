@@ -143,8 +143,8 @@ def test_viewer_representation_diagnostics():
     assert classify_viewer_representation({"text_available": True}) == "dom_text"
     assert classify_viewer_representation({"iframe": 1}) == "iframe"
     assert classify_viewer_representation({"embed": 1}) == "embed_object"
-    assert classify_viewer_representation({"canvas": 2}) == "canvas_image_only"   # görüntü-yalnız → desteklenmiyor
-    assert classify_viewer_representation({"image": 3}) == "canvas_image_only"
+    assert classify_viewer_representation({"canvas": 2}) == "canvas_only"   # Fix 8: canvas ve image AYRI
+    assert classify_viewer_representation({"image": 3}) == "image_only"     # görüntü-yalnız (canvas DEĞİL)
     assert classify_viewer_representation({}) == "unknown"
 
 
