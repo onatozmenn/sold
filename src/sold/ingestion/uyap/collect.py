@@ -827,16 +827,31 @@ def viewer_mime_hint(url: str) -> str | None:
 
 
 def classify_viewer_representation(counts: dict) -> str:
-    """Görüntüleyici belge temsili: dom_text / iframe / embed_object / canvas_image_only / unknown."""
+    """Görüntüleyici belge temsili (Fix 8: kesin isimlendirme — canvas ve image AYRILIR).
+
+    dom_text / iframe / embed_object / canvas_and_image / canvas_only / image_only / unknown.
+    Canvas gözlenmediyse ``canvas_*`` RAPORLANMAZ (Run-8: canvas=0, image=1 → image_only).
+    """
     if counts.get("text_available"):
         return "dom_text"
     if counts.get("iframe", 0) > 0:
         return "iframe"
     if counts.get("embed", 0) > 0 or counts.get("object", 0) > 0:
         return "embed_object"
-    if counts.get("canvas", 0) > 0 or counts.get("image", 0) > 0:
-        return "canvas_image_only"
+    canvas = counts.get("canvas", 0) > 0
+    image = counts.get("image", 0) > 0
+    if canvas and image:
+        return "canvas_and_image"
+    if canvas:
+        return "canvas_only"
+    if image:
+        return "image_only"
     return "unknown"
+
+
+# Fix 8: bir belge-render GÖRÜNTÜsü içeren (dolayısıyla kaynak-yakalama denenebilecek) temsiller.
+IMAGE_VIEWER_REPRESENTATIONS = ("image_only", "canvas_and_image")
+
 
 
 # --- Fix 6.1: görüntüleyici SONUÇ sınıflandırması + indirme-gerekli semantiği + çıkarım-desteği --- #
@@ -856,10 +871,12 @@ def viewer_download_instruction_detected(text: str) -> bool:
 
 
 def classify_viewer_outcome(text: str, representation: str | None = None) -> str:
-    """Görüntüleyici sonucunu deterministik sınıflar (Fix 6.1).
+    """Görüntüleyici sonucunu deterministik sınıflar (Fix 6.1 + Fix 8).
 
-    content_available / download_required / unsupported_representation / viewer_error / unknown.
-    ``download_required`` YALNIZCA gerçek görüntüleme-başarısızlığı + indirme yönergesi birlikteyken.
+    content_available / download_required / image_backed / unsupported_representation / viewer_error /
+    unknown. ``download_required`` YALNIZCA görüntüleme-başarısızlığı + indirme yönergesi birlikteyken;
+    viewer-hata/indirme-gerekli semantiği görüntü-varlığından ÖNCE gelir (Fix 6.1 tetikleyicisi katı kalır).
+    Görüntü-destekli temsil (image_only / canvas_and_image) → ``image_backed`` (Fix 8 kaynak-yakalama).
     """
     if viewer_download_instruction_detected(text):
         return "download_required"
@@ -868,25 +885,174 @@ def classify_viewer_outcome(text: str, representation: str | None = None) -> str
         return "content_available"
     if "goruntulenemedi" in fold or "goruntulenemiyor" in fold or ("evrak" in fold and "hata" in fold):
         return "viewer_error"
-    if representation in ("iframe", "embed_object", "canvas_image_only", "unknown"):
+    if representation in IMAGE_VIEWER_REPRESENTATIONS:
+        return "image_backed"
+    if representation in ("iframe", "embed_object", "canvas_only", "unknown"):
         return "unsupported_representation"
     return "unknown"
 
 
-# Deterministik metin çıkarımı GERÇEKTEN desteklenen formatlar (ham UDF/PDF/ikili DEĞİL).
+# Deterministik metin çıkarımı GERÇEKTEN desteklenen formatlar (ham UDF/PDF/ikili/GÖRÜNTÜ DEĞİL).
 EXTRACTABLE_ARTIFACT_EXTENSIONS = (".txt", ".html", ".htm")
 
 
 def extraction_supported_for(extension: str | None, mime_hint: str | None = None) -> bool:
     """İndirilen artifact deterministik metin çıkarımı için GERÇEKTEN destekleniyor mu (dürüst).
 
-    Repo yalnız düz-metin/HTML'den deterministik metin çıkarır; ham ``.udf`` / ``.pdf`` / ikili
-    DESTEKLENMEZ. ``mimeType=Udf`` URL ipucu tek başına destek ANLAMINA GELMEZ.
+    Repo yalnız düz-metin/HTML'den deterministik metin çıkarır; ham ``.udf`` / ``.pdf`` / GÖRÜNTÜ
+    (png/jpeg) / ikili DESTEKLENMEZ. ``mimeType=Udf`` URL ipucu tek başına destek ANLAMINA GELMEZ.
     """
     ext = (extension or "").strip().lower()
     if not ext.startswith(".") and ext:
         ext = "." + ext
     return ext in EXTRACTABLE_ARTIFACT_EXTENSIONS
+
+
+# --- Fix 8: görüntü-destekli görüntüleyici temsili — kaynak introspeksiyonu + kesin bayt yakalama (OCR YOK) --- #
+_IMAGE_MIME_EXT = {
+    "image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/gif": ".gif",
+    "image/webp": ".webp", "image/tiff": ".tiff", "image/bmp": ".bmp", "image/svg+xml": ".svg",
+    "application/pdf": ".pdf",
+}
+
+
+def image_mime_to_extension(mime: str | None) -> str | None:
+    """Güvenli MIME → uzantı eşlemesi (png/jpeg/... ; bilinmiyorsa None)."""
+    return _IMAGE_MIME_EXT.get((mime or "").split(";")[0].strip().lower())
+
+
+def classify_image_src_kind(src: str | None) -> str:
+    """Bir görüntü src'sinin KAYNAK TÜRÜ (ham URL DÖNMEZ): data_url / blob_url / http_resource /
+    relative_resource / empty / unknown. Yalnız yakalama-stratejisi kararı için."""
+    s = str(src or "").strip()
+    if not s:
+        return "empty"
+    low = s.lower()
+    if low.startswith("data:"):
+        return "data_url"
+    if low.startswith("blob:"):
+        return "blob_url"
+    if low.startswith(("http://", "https://", "//")):
+        return "http_resource"
+    if low.startswith("javascript:"):
+        return "unknown"
+    return "relative_resource"
+
+
+def image_source_capture_supported(src_kind: str | None, same_origin: bool = True) -> dict:
+    """Bu kaynak türü deterministik tarayıcı-erişimli bayt yakalamayı destekliyor mu (OCR YOK)."""
+    if src_kind == "data_url":
+        return {"supported": True, "strategy": "data_url_decode"}
+    if src_kind == "blob_url":
+        return {"supported": True, "strategy": "blob_scoped_fetch"}
+    if src_kind == "relative_resource":
+        return {"supported": True, "strategy": "same_origin_page_fetch"}
+    if src_kind == "http_resource":
+        if same_origin:
+            return {"supported": True, "strategy": "same_origin_page_fetch"}
+        return {"supported": False, "strategy": None, "reason": "cross_origin_source_not_captured"}
+    return {"supported": False, "strategy": None, "reason": f"unsupported_source_kind:{src_kind}"}
+
+
+def classify_document_image_candidate(meta: dict, min_dimension: int = 200) -> dict:
+    """Bir görüntünün belge-RENDER adayı mı yoksa dekoratif (logo/ikon/loading) mi olduğunu belirler.
+
+    Deterministik kanıt: görünür + materyal boyut (naturel ya da render ≥ ``min_dimension``) + görüntüleyici
+    içerik kapsamında (header/nav/footer/logo DEĞİL). GÖRSEL METİN / OCR KULLANILMAZ. OFFLINE testable.
+    """
+    if not meta.get("visible"):
+        return {"document_image_candidate": False, "candidate_reason": "not_visible"}
+    src_kind = meta.get("src_kind") or classify_image_src_kind(meta.get("src") or meta.get("current_src"))
+    if src_kind == "empty":
+        return {"document_image_candidate": False, "candidate_reason": "empty_src"}
+    nw, nh = int(meta.get("natural_width") or 0), int(meta.get("natural_height") or 0)
+    rw, rh = int(meta.get("rendered_width") or 0), int(meta.get("rendered_height") or 0)
+    if max(nw, nh, rw, rh) < min_dimension:
+        return {"document_image_candidate": False, "candidate_reason": "too_small_icon_or_logo"}
+    if not meta.get("viewer_content_scoped", True):
+        return {"document_image_candidate": False, "candidate_reason": "outside_viewer_content_scope"}
+    return {"document_image_candidate": True, "candidate_reason": "material_visible_scoped_image"}
+
+
+def select_viewer_image_candidate(candidates: list[dict]) -> int | None:
+    """Belge-render adayları arasından EN BÜYÜK materyal olanı seçer (global ilk görüntü DEĞİL).
+
+    Yalnız ``document_image_candidate`` True olanlar arasından; aday yoksa None. OFFLINE testable.
+    """
+    docs = [(i, c) for i, c in enumerate(candidates or []) if c.get("document_image_candidate")]
+    if not docs:
+        return None
+
+    def _area(c: dict) -> int:
+        return max(int(c.get("natural_width") or 0) * int(c.get("natural_height") or 0),
+                   int(c.get("rendered_width") or 0) * int(c.get("rendered_height") or 0))
+
+    docs.sort(key=lambda ic: (_area(ic[1]), -ic[0]), reverse=True)
+    return docs[0][0]
+
+
+def decode_data_url(data_url: str) -> tuple | None:
+    """``data:`` URL'yi KESİN baytlara çözer → ``(bytes, mime, ext)``; geçersizse None. OFFLINE testable.
+
+    Bayt gövdesi tanılara ASLA yazılmaz (yalnız yakalama içindir).
+    """
+    m = re.match(r"data:([^;,]*)((?:;[^,]*)*)?,(.*)", str(data_url or ""), re.DOTALL)
+    if not m:
+        return None
+    mime = (m.group(1) or "application/octet-stream").strip().lower() or "application/octet-stream"
+    params = (m.group(2) or "").lower()
+    body = m.group(3) or ""
+    try:
+        if ";base64" in params:
+            import base64
+            data = base64.b64decode(body)
+        else:
+            from urllib.parse import unquote_to_bytes
+            data = unquote_to_bytes(body)
+    except Exception:
+        return None
+    return data, mime, (image_mime_to_extension(mime) or ".bin")
+
+
+def _safe_image_ext_hint(src: str | None) -> str | None:
+    """Ham URL/sorgu OLMADAN, src'den güvenli uzantı ipucu (data: → MIME; blob: → None)."""
+    s = str(src or "")
+    low = s.lower()
+    if low.startswith("data:"):
+        mm = re.match(r"data:([^;,]+)", s)
+        return image_mime_to_extension(mm.group(1)) if mm else None
+    if low.startswith("blob:") or not s:
+        return None
+    path = s.split("?", 1)[0].split("#", 1)[0]
+    suf = Path(path).suffix.lower()
+    return suf if suf and len(suf) <= 8 else None
+
+
+def viewer_image_candidate_summary(meta: dict, index: int, mime_hint: str | None = None) -> dict:
+    """Gizlilik-güvenli görüntü-aday özeti (ham src/blob/data-gövde/evrakId ASLA). OFFLINE testable."""
+    src = meta.get("src") or meta.get("current_src")
+    src_kind = classify_image_src_kind(src)
+    cand = classify_document_image_candidate({**meta, "src_kind": src_kind})
+    cap = image_source_capture_supported(src_kind, bool(meta.get("same_origin", True)))
+    return {
+        "local_index": index,
+        "visible": bool(meta.get("visible")),
+        "natural_width": int(meta.get("natural_width") or 0),
+        "natural_height": int(meta.get("natural_height") or 0),
+        "rendered_width": int(meta.get("rendered_width") or 0),
+        "rendered_height": int(meta.get("rendered_height") or 0),
+        "src_kind": src_kind,
+        "current_src_kind": classify_image_src_kind(meta.get("current_src")),
+        "same_origin": bool(meta.get("same_origin", True)),
+        "extension_hint": _safe_image_ext_hint(src),
+        "mime_hint": mime_hint,
+        "viewer_content_scoped": bool(meta.get("viewer_content_scoped", True)),
+        "document_image_candidate": bool(cand.get("document_image_candidate")),
+        "candidate_reason": cand.get("candidate_reason"),
+        "source_capture_supported": bool(cap.get("supported")),
+        "source_capture_strategy": cap.get("strategy"),
+    }
+
 
 
 def classify_view_access_pattern(container_kind: str, observed: dict) -> str:
@@ -1710,6 +1876,22 @@ class BrowserCollector:
                 "downloaded_artifact_collected": False,
                 "downloaded_artifact_extraction_supported": None,
                 "download_fallback_blocking_reason": None,
+                "viewer_representation": None,
+                "viewer_image_candidate_count": 0,
+                "viewer_document_image_candidate_count": 0,
+                "viewer_image_candidates": [],
+                "selected_viewer_image_candidate_index": None,
+                "viewer_image_source_kind": None,
+                "viewer_image_source_capture_supported": None,
+                "viewer_image_source_capture_strategy": None,
+                "viewer_image_source_bytes_captured": False,
+                "viewer_image_artifact_collected": False,
+                "viewer_image_artifact_extension": None,
+                "viewer_image_artifact_mime_hint": None,
+                "viewer_image_artifact_size": None,
+                "viewer_image_artifact_sha256": None,
+                "viewer_image_text_extraction_supported": None,
+                "viewer_image_capture_blocking_reason": None,
             }
             if not resolution.get("resolved") or resolution.get("view_action") is None:
                 attempt["blocking_reason"] = f"row_action_unresolved:{resolution.get('reason')}"
@@ -1757,6 +1939,7 @@ class BrowserCollector:
                         "viewer_text_available": bool(counts.get("text_available")),
                     })
                     representation = classify_viewer_representation(counts)
+                    attempt["viewer_representation"] = representation
                     attempt["access_pattern"] = classify_view_access_pattern(
                         container_kind,
                         {"new_page": True, "is_udf": attempt["viewer_url_kind"] == "udf_viewer",
@@ -1782,6 +1965,14 @@ class BrowserCollector:
                         else:
                             attempt["blocking_reason"] = f"viewer_representation_unsupported:{representation}"
                             diag["document_collection_failures"] += 1
+                        try:
+                            newp.close()  # operatörün orijinal sekmesi KAPATILMAZ
+                        except Exception:
+                            pass
+                    elif outcome == "image_backed":
+                        # Fix 8: görüntü-destekli görüntüleyici → belge-render görüntüsünün KESİN kaynak
+                        # baytlarını yakala (OCR YOK). İndirme-gerekli/hata semantiği YOK → indirme TETİKLENMEZ.
+                        self._collect_viewer_image(newp, attempt, sel, documents, diag)
                         try:
                             newp.close()  # operatörün orijinal sekmesi KAPATILMAZ
                         except Exception:
@@ -2009,6 +2200,138 @@ class BrowserCollector:
                               "extraction_supported": False})
             attempt["download_fallback_blocking_reason"] = f"downloaded_artifact_extraction_unsupported:{ext or 'binary'}"
             attempt["blocking_reason"] = f"downloaded_artifact_extraction_unsupported:{ext or 'binary'}"
+
+    def _viewer_image_candidates(self, newp) -> list:  # pragma: no cover - canlı DOM
+        """Görüntüleyicideki ``<img>`` elemanlarının GÜVENLİ yapısal metadata'sını döner (ham DOM saklanmaz).
+
+        naturalWidth/Height, render boyutu, görünürlük, görüntüleyici-içerik kapsamı (header/nav/footer/
+        logo DIŞI), same-origin ve src (yalnız KAYNAK-YAKALAMA için içsel; tanıya SIZMAZ). GÖRSEL/OCR YOK.
+        """
+        try:
+            raw = newp.eval_on_selector_all("img", """(imgs) => imgs.map((im) => {
+                const r = im.getBoundingClientRect();
+                const st = window.getComputedStyle(im);
+                const visible = st.display !== 'none' && st.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+                let scoped = true, p = im.parentElement, depth = 0;
+                while (p && depth < 8) {
+                    const c = (p.className || '').toString().toLowerCase();
+                    const t = (p.tagName || '').toLowerCase();
+                    if (t === 'header' || t === 'nav' || t === 'footer' ||
+                        c.indexOf('logo') >= 0 || c.indexOf('header') >= 0 || c.indexOf('nav') >= 0 ||
+                        c.indexOf('footer') >= 0 || c.indexOf('brand') >= 0) { scoped = false; break; }
+                    p = p.parentElement; depth++;
+                }
+                let same = true;
+                try {
+                    const u = new URL(im.currentSrc || im.src || '', location.href);
+                    if (u.protocol === 'http:' || u.protocol === 'https:') same = (u.origin === location.origin);
+                } catch (e) {}
+                return {
+                    natural_width: im.naturalWidth || 0, natural_height: im.naturalHeight || 0,
+                    rendered_width: Math.round(r.width), rendered_height: Math.round(r.height),
+                    visible: visible, viewer_content_scoped: scoped, same_origin: same,
+                    src: im.src || '', current_src: im.currentSrc || ''
+                };
+            })""")
+            return raw or []
+        except Exception:
+            return []
+
+    def _capture_image_source(self, newp, src, src_kind):  # pragma: no cover - canlı DOM
+        """Belge-render görüntüsünün KESİN kaynak baytlarını yakalar (OCR YOK). Döner ``(bytes, mime, ext)``.
+
+        data: → doğrudan çöz; blob:/same-origin → görüntüleyici sayfasında KISITLI tarayıcı-içi fetch
+        (mevcut kimlik-doğrulamalı bağlam; elle çerez/token KOPYALANMAZ). Ekran görüntüsü ALINMAZ.
+        """
+        if src_kind == "data_url":
+            return decode_data_url(src)
+        if src_kind in ("blob_url", "http_resource", "relative_resource"):
+            try:
+                res = newp.evaluate("""async (u) => {
+                    try {
+                        const r = await fetch(u);
+                        const b = await r.arrayBuffer();
+                        const bytes = new Uint8Array(b);
+                        let s = ''; const CH = 0x8000;
+                        for (let i = 0; i < bytes.length; i += CH) { s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH)); }
+                        return { ok: true, b64: btoa(s), mime: (r.headers.get('content-type') || '') };
+                    } catch (e) { return { ok: false }; }
+                }""", src)
+            except Exception:
+                return None
+            if not res or not res.get("ok") or not res.get("b64"):
+                return None
+            import base64
+            try:
+                data = base64.b64decode(res["b64"])
+            except Exception:
+                return None
+            mime = (res.get("mime") or "").split(";")[0].strip().lower() or "application/octet-stream"
+            ext = image_mime_to_extension(mime) or _safe_image_ext_hint(src) or ".bin"
+            return data, mime, ext
+        return None
+
+    def _collect_viewer_image(self, newp, attempt, sel, documents, diag):  # pragma: no cover - canlı DOM
+        """Fix 8: görüntü-destekli görüntüleyicide belge-render görüntüsünü seçip KESİN kaynağını yakalar.
+
+        Görüntü artifact'ı KORUNUR (provenans) ama metin çıkarımını DESTEKLEMEZ (OCR YOK); İhale Bedeli
+        UYDURULMAZ. Aday yoksa / kaynak yakalanamazsa dürüstçe bloklama nedeni raporlanır.
+        """
+        raw = self._viewer_image_candidates(newp)
+        attempt["viewer_image_candidate_count"] = len(raw)
+        classified = []
+        for m in raw:
+            sk = classify_image_src_kind(m.get("src") or m.get("current_src"))
+            cand = classify_document_image_candidate({**m, "src_kind": sk})
+            classified.append({**m, "src_kind": sk, "document_image_candidate": cand["document_image_candidate"]})
+        attempt["viewer_image_candidates"] = [viewer_image_candidate_summary(m, i) for i, m in enumerate(raw)][:8]
+        attempt["viewer_document_image_candidate_count"] = sum(1 for c in classified if c["document_image_candidate"])
+
+        idx = select_viewer_image_candidate(classified)
+        if idx is None:
+            attempt["viewer_image_capture_blocking_reason"] = "no_document_image_candidate"
+            diag["document_collection_failures"] += 1
+            return
+        chosen = raw[idx]
+        src = chosen.get("src") or chosen.get("current_src")
+        src_kind = classify_image_src_kind(src)
+        attempt["selected_viewer_image_candidate_index"] = idx
+        attempt["viewer_image_source_kind"] = src_kind
+        cap = image_source_capture_supported(src_kind, bool(chosen.get("same_origin", True)))
+        attempt["viewer_image_source_capture_supported"] = bool(cap.get("supported"))
+        attempt["viewer_image_source_capture_strategy"] = cap.get("strategy")
+        if not cap.get("supported"):
+            attempt["viewer_image_capture_blocking_reason"] = cap.get("reason") or "source_capture_unsupported"
+            diag["document_collection_failures"] += 1
+            return
+        got = self._capture_image_source(newp, src, src_kind)
+        if not got:
+            attempt["viewer_image_source_bytes_captured"] = False
+            attempt["viewer_image_capture_blocking_reason"] = "source_bytes_not_captured"
+            diag["document_collection_failures"] += 1
+            return
+        data, mime, ext = got
+        attempt["viewer_image_source_bytes_captured"] = True
+        attempt["viewer_image_artifact_mime_hint"] = mime
+        attempt["viewer_image_artifact_extension"] = ext
+        attempt["viewer_image_artifact_size"] = len(data)
+        attempt["viewer_image_artifact_sha256"] = _sha256_bytes(data)[:16]
+        try:
+            dest_dir = Path(store.DEFAULT_STORE_DIR) / "artifacts" / "viewer_images"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / _safe_name(f"{sel['artifact_type']}_{attempt['viewer_image_artifact_sha256']}{ext or '.bin'}")
+            dest.write_bytes(data)
+        except Exception as exc:
+            attempt["viewer_image_capture_blocking_reason"] = "image_artifact_save_failed"
+            attempt["blocking_reason"] = str(exc)[:120]
+            diag["document_collection_failures"] += 1
+            return
+        # KESİN kaynak baytları KORUNDU (resmî render artifact'ı). Metin çıkarımı DESTEKLENMEZ (OCR YOK).
+        attempt["viewer_image_artifact_collected"] = True
+        attempt["viewer_image_text_extraction_supported"] = extraction_supported_for(ext, mime)  # → False (görüntü)
+        attempt["artifact_collected"] = True  # kaynak artifact toplandı (metin/İhale Bedeli DEĞİL)
+        documents.append({"artifact_type": sel["artifact_type"], "source_ref": f"viewer_image:{ext or '.bin'}",
+                          "extraction_supported": False})
 
     def _viewer_counts(self, newp) -> dict:  # pragma: no cover - canlı DOM
         counts: dict = {}
