@@ -897,9 +897,11 @@ def classify_viewer_outcome(text: str, representation: str | None = None) -> str
 # Deterministik metin çıkarımı GERÇEKTEN desteklenen formatlar (ham UDF/PDF/ikili/GÖRÜNTÜ DEĞİL).
 EXTRACTABLE_ARTIFACT_EXTENSIONS = (".txt", ".html", ".htm")
 
-# Fix 12: satır-yerel resmî .udf indirmenin NATIVE konteyner çıkarımıyla TERCİH EDİLDİĞİ evidence türleri.
-# auction_result öncelik-1 (ölçülen native artifact); sale_notice viewer yolu KORUNUR (native opsiyonel/bloklayıcı DEĞİL).
-NATIVE_DOWNLOAD_TYPES = (ARTIFACT_AUCTION_RESULT,)
+# Fix 12/14: satır-yerel resmî .udf indirmenin NATIVE konteyner çıkarımıyla TERCİH EDİLDİĞİ evidence türleri.
+# auction_result öncelik-1 (Fix 12/13, canlı-kanıtlı); Fix 14: sale_notice öncelik-2 eklendi (aynı
+# DocumentRow-bound + korroborasyonlu native yol). _DOC_PRIORITY auction_result'ı sale_notice'ten ÖNCE
+# işler → native öncelik sırası (auction_result → sale_notice) korunur. appraisal_report/sale_spec EKLENMEZ.
+NATIVE_DOWNLOAD_TYPES = (ARTIFACT_AUCTION_RESULT, ARTIFACT_SALE_NOTICE)
 # Native UDF konteyner uzantıları (destek YALNIZCA doğrulanmış yapı + content.xml ile; uzantı tek başına YETMEZ).
 NATIVE_UDF_EXTENSIONS = (".udf",)
 
