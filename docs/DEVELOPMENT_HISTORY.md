@@ -510,3 +510,51 @@ milestones:
   rerun is required. Structural core, four SMM moments, `conditional_on_trade`, `Θ_A`, TOKİ external status
   (5 observed / 0 SMM), and the numerical-search convention are unchanged; the pilot remains non-mutating
   (genuine count stays 7).
+
+- **UYAP Live Browser Pilot 1 — Live Interoperability Fix 8 (measured eighth live result: `FAIL`)** —
+  chronology: runs 1–7 = **FAIL** → Fixes 1–7 → run 8 = **FAIL** → Fix 8 → operator rerun pending. Run 8
+  **live-proved Fix 7 end-to-end to the viewer**: for `auction_result` the corrected logical row exposed two
+  real `button` controls (`row_boundary_strategy=label_actionable_ancestor`, `actionable_control_tags=
+  ["button","button"]`), Fix 6 resolved `fa-arrow-down`→`download` and `fa-eye`→`view`
+  (`view_action_resolved=true`, `download_action_resolved=true`), and the collector **programmatically
+  clicked the real eye control and opened a real UYAP UDF viewer tab** (`new_page_detected=true`,
+  `viewer_url_kind=udf_viewer`, `access_pattern=modal_new_tab_udf_viewer`); `sale_notice` did the same, so
+  `viewer_pages_opened=2`. **But both viewers had no DOM text, no iframe/embed/object, `canvas_count=0`, and
+  exactly `image_count=1`** — the old `classify_viewer_representation` collapsed this into the misleading
+  `unsupported_representation:canvas_image_only` (reporting canvas when none was observed), and since no
+  download-required instruction was present, **Fix 6.1 correctly did not trigger**. The mutation guard
+  passed again (`uyap.json` unchanged, count `7 -> 7`, SMM unchanged). Root cause: the collector obtained
+  deterministic source only from DOM-text/iframe paths and never inspected whether the single **image**
+  element exposed browser-accessible source bytes — the blocker is the **image-backed UDF viewer
+  representation**. **Fix 8 (viewer representation / image-source capture only; no page-state/card/modal/
+  row/action/download-fallback/structural change, and no OCR):** (1) `classify_viewer_representation` now
+  splits canvas and image → `dom_text`/`iframe`/`embed_object`/`canvas_and_image`/`canvas_only`/`image_only`/
+  `unknown`; (2) `classify_viewer_outcome` routes `image_only`/`canvas_and_image` to a distinct `image_backed`
+  outcome placed **after** the strict `download_required` and `viewer_error` precedence (a decorative image
+  never triggers the Fix-6.1 same-row download fallback); (3) new pure helpers introspect and classify the
+  live image safely — `classify_image_src_kind` (`data_url`/`blob_url`/`http_resource`/`relative_resource`/
+  `empty`/`unknown`, never the raw URL), `classify_document_image_candidate` (material visible image inside
+  the viewer-content scope; logos/icons/out-of-scope rejected — no OCR/visual text), `select_viewer_image_
+  candidate` (largest material **document** candidate, never the first/global image), `image_source_capture_
+  supported`, `viewer_image_candidate_summary` (privacy-safe), and `decode_data_url`/`image_mime_to_extension`;
+  (4) live (pragma) `_viewer_image_candidates` (safe per-image metadata via a scoped `eval_on_selector_all`),
+  `_capture_image_source` (data: decoded directly; blob:/same-origin fetched by a narrowly scoped in-page
+  `fetch` in the already-authenticated viewer context — no manual cookie/token handling, no screenshot), and
+  `_collect_viewer_image` (select → capture exact bytes → store the renderer image in the existing gitignored
+  artifact store with type+ext+size+short sha). A captured image is an **official viewer-render source
+  artifact but is not text-extractable** — `extraction_supported_for` still accepts only `.txt`/`.html`/`.htm`
+  (a `mimeType=Udf`/image MIME never implies text support), so `viewer_image_artifact_collected=true`,
+  `viewer_image_text_extraction_supported=false`, and the extracted auction price stays **null** (honest).
+  New privacy-safe per-attempt diagnostics (`viewer_representation`, `viewer_image_candidate_count`,
+  `viewer_document_image_candidate_count`, `viewer_image_candidates`, `selected_viewer_image_candidate_index`,
+  `viewer_image_source_kind`, `viewer_image_source_capture_supported`/`_strategy`,
+  `viewer_image_source_bytes_captured`, `viewer_image_artifact_collected`/`_extension`/`_mime_hint`/`_size`/
+  `_sha256`, `viewer_image_text_extraction_supported`, `viewer_image_capture_blocking_reason`) emit **no** raw
+  src/blob/data-URL bodies, base64, `evrakId`, cookies, tokens, or document text. `auction_result` remains the
+  priority official price source and `sale_notice` an accepted appraisal-side path; result-card `Satış Tutarı`
+  is never substituted and known truth stays verifier-only. Added 35 offline tests. Full suite: **475 passed**
+  (440 baseline + 35 tests). **No live `PASS` is claimed: image source capture has not been proven live,
+  UDF/image text extraction does not work, the İhale Bedeli was not extracted, and the same-row download
+  fallback did not run live** — a post-Fix-8 operator rerun is required. Structural core, four SMM moments,
+  `conditional_on_trade`, `Θ_A`, TOKİ external status (5 observed / 0 SMM), and the numerical-search convention
+  are unchanged; the pilot remains non-mutating (genuine count stays 7).
