@@ -190,34 +190,37 @@ def _collect_image(fake, artifact_type, tmp_path, monkeypatch):
     monkeypatch.setattr(_collect.store, "DEFAULT_STORE_DIR", tmp_path)
     attempt = {"artifact_collected": False}
     diag = {"document_collection_failures": 0}
-    documents: list = []
-    BrowserCollector()._collect_viewer_image(fake, attempt, {"artifact_type": artifact_type}, documents, diag)
-    return attempt, documents, diag
+    # Fix 9: _collect_viewer_image artık documents almaz / PROMOTE ETMEZ; capture kaydı döner.
+    capture = BrowserCollector()._collect_viewer_image(fake, attempt, {"artifact_type": artifact_type}, diag)
+    return attempt, capture, diag
 
 
 def test_data_url_image_captured_stored_and_provenance(tmp_path, monkeypatch):
     b64 = base64.b64encode(PNG_BYTES).decode()
     fake = _FakeViewerPage([{**_DOC_IMG, "src": f"data:image/png;base64,{b64}"}])
-    attempt, documents, diag = _collect_image(fake, "auction_result", tmp_path, monkeypatch)
+    attempt, capture, diag = _collect_image(fake, "auction_result", tmp_path, monkeypatch)
     assert attempt["viewer_image_source_bytes_captured"] is True
-    assert attempt["viewer_image_artifact_collected"] is True
+    assert attempt["viewer_image_artifact_collected"] is True   # görüntüleyici-asset yakalandı
+    assert attempt["viewer_asset_captured"] is True
     assert attempt["viewer_image_artifact_extension"] == ".png"
     assert attempt["viewer_image_artifact_mime_hint"] == "image/png"
     assert attempt["viewer_image_artifact_size"] == len(PNG_BYTES)
     assert attempt["viewer_image_text_extraction_supported"] is False   # görüntü metin çıkarımı DESTEKLENMEZ
-    # KESİN baytlar diske yazıldı (mevcut artifact deposu)
+    # Fix 9: TEK yakalama TEK BAŞINA belge kaynağı DEĞİL (kimlik post-loop; document_source False)
+    assert attempt["document_source_artifact_collected"] is False
+    # KESİN baytlar diske yazıldı (mevcut artifact deposu) — Fix 8 KORUNUR
     stored = list((tmp_path / "artifacts" / "viewer_images").glob("*.png"))
     assert len(stored) == 1 and stored[0].read_bytes() == PNG_BYTES
-    # provenans: DocumentRow türü + viewer-backed kaynak; METİN YOK
-    assert documents and documents[0]["artifact_type"] == "auction_result"
-    assert documents[0]["source_ref"].startswith("viewer_image:") and "text" not in documents[0]
+    # capture kaydı TAM sha döner (kısa prefix DEĞİL); DocumentRow'a doğrudan eklenmez
+    assert capture is not None and capture["artifact_type"] == "auction_result"
+    assert len(capture["sha256"]) == 64 and capture["extension"] == ".png"
 
 
 def test_blob_image_captured_via_scoped_fetch(tmp_path, monkeypatch):
     b64 = base64.b64encode(PNG_BYTES).decode()
     fake = _FakeViewerPage([{**_DOC_IMG, "src": "blob:https://esatis.uyap.gov.tr/xyz", "same_origin": True}],
                            fetch={"blob:https://esatis.uyap.gov.tr/xyz": {"ok": True, "b64": b64, "mime": "image/jpeg"}})
-    attempt, documents, diag = _collect_image(fake, "sale_notice", tmp_path, monkeypatch)
+    attempt, capture, diag = _collect_image(fake, "sale_notice", tmp_path, monkeypatch)
     assert attempt["viewer_image_source_kind"] == "blob_url"
     assert attempt["viewer_image_source_capture_strategy"] == "blob_scoped_fetch"
     assert attempt["viewer_image_source_bytes_captured"] is True
@@ -230,24 +233,25 @@ def test_same_origin_http_image_captured(tmp_path, monkeypatch):
     url = "https://esatis.uyap.gov.tr/pp/render"
     fake = _FakeViewerPage([{**_DOC_IMG, "src": url, "same_origin": True}],
                            fetch={url: {"ok": True, "b64": b64, "mime": "image/png"}})
-    attempt, documents, diag = _collect_image(fake, "auction_result", tmp_path, monkeypatch)
+    attempt, capture, diag = _collect_image(fake, "auction_result", tmp_path, monkeypatch)
     assert attempt["viewer_image_source_bytes_captured"] is True
     assert attempt["viewer_image_artifact_size"] == len(PNG_BYTES)
 
 
 def test_unsupported_source_kind_reports_blocker(tmp_path, monkeypatch):
     fake = _FakeViewerPage([{**_DOC_IMG, "src": "javascript:void(0)", "same_origin": True}])
-    attempt, documents, diag = _collect_image(fake, "auction_result", tmp_path, monkeypatch)
+    attempt, capture, diag = _collect_image(fake, "auction_result", tmp_path, monkeypatch)
     assert attempt["viewer_image_source_capture_supported"] is False
     assert attempt["viewer_image_capture_blocking_reason"].startswith("unsupported_source_kind")
-    assert not documents
+    assert capture is None
 
 
 def test_no_document_candidate_reports_blocker(tmp_path, monkeypatch):
     fake = _FakeViewerPage([{**_LOGO}])   # yalnız logo → belge adayı yok
-    attempt, documents, diag = _collect_image(fake, "auction_result", tmp_path, monkeypatch)
+    attempt, capture, diag = _collect_image(fake, "auction_result", tmp_path, monkeypatch)
     assert attempt["viewer_image_capture_blocking_reason"] == "no_document_image_candidate"
-    assert not documents
+    assert attempt["viewer_image_document_identity"] == "not_document_candidate"
+    assert capture is None
 
 
 # --- F. Görüntü artifact'ı metin/fiyat çıkarımı İMA ETMEZ; known-truth enjekte YOK -------- #
