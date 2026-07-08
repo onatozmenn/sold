@@ -171,15 +171,18 @@ def _ihale_bedeli_relation(segments: list, label: str = "ihale bedeli", max_foll
         "bounded_following_segments_inspected": 0, "bounded_following_money_count": 0,
         "boundary_stop_reason": None, "intervening_field_label_types": [], "relation_candidates": [],
     }
+    # Fix 13: AÇIK ALAN etiketi tam-sözcük olmalı — çekimli prose ("ihale bedelini/bedelinin yatirmamasi")
+    # etiket-bulundu SAYILMAZ (word-boundary). Auction numeratör semantiği değişmez (açık İhale Bedeli alanı).
+    label_re = re.compile(r"\b" + re.escape(label) + r"\b")
     for i, seg in enumerate(segments):
         fold = _ascii_lower(seg)
-        pos = fold.find(label)
-        if pos < 0:
+        lm = label_re.search(fold)
+        if lm is None:
             continue
         nb["label_segment_found"] = True
         if nb["label_segment_index"] is None:
             nb["label_segment_index"] = i
-        end = pos + len(label)
+        end = lm.end()
         # 1. same segment (label sonrası bounded bölge)
         region = _bounded_region(seg, fold, end)
         same_hits = [m for m in MONEY_LITERAL_RE.finditer(region) if _money_ok(region, m)]
@@ -274,6 +277,57 @@ def asset_descriptors(fold: str) -> dict:
         "block": _cap(r"\b([a-z])\s*blok\b"),
         "section_no": _cap(r"(\d{1,5})\s*no\.?\s*lu\b"),
         "floor": _cap(r"(\d{1,3})\.\s*kat\b"),
+    }
+
+
+# --- Fix 13: NATIVE belge-türü korroborasyonu (deterministik SEMANTİK; DEĞERDEN/known-truth'tan DEĞİL) --- #
+# Auction-result semantiği: sonuç/uzatma TUTANAĞI (+ açık "İhale Bedeli" tam-sözcük alanı).
+_DOC_TYPE_AUCTION_RESULT = ("artirma sonuc tutanagi", "satis sonuc tutanagi", "uzatma tutanagi", "sonuc tutanagi")
+# Sale-notice semantiği: elektronik satış ortamında AÇIK ARTIRMA İLANI / satış ilanı.
+_DOC_TYPE_SALE_NOTICE = ("elektronik satis ortaminda", "acik artirma ilani", "satis ilani")
+_DOC_TYPE_SALE_SPEC = ("satis sartnamesi", "sartname")
+_DOC_TYPE_APPRAISAL = ("bilirkisi raporu", "kiymet takdir raporu", "kiymet takdiri raporu")
+
+
+def classify_udf_document_type(source_text: str | None) -> str:
+    """NATIVE UDF kaynak metninden DETERMİNİSTİK belge-türü (semantik başlık/alan; PARASAL DEĞERDEN DEĞİL).
+
+    auction_result / sale_notice / sale_spec / appraisal_report / unknown. Sonuç-tutanağı semantiği en
+    ayırt edici olduğundan ÖNCE denenir (satış ilanı 'açık artırma' içerse de 'sonuç/uzatma tutanağı'
+    içermez). Yedek: açık ``İhale Bedeli`` TAM-sözcük alanı (çekimli prose 'ihale bedelini' DEĞİL).
+    """
+    fold = re.sub(r"\s+", " ", _ascii_lower(demojibake(source_text or "")))
+    if any(t in fold for t in _DOC_TYPE_AUCTION_RESULT):
+        return "auction_result"
+    if any(t in fold for t in _DOC_TYPE_SALE_NOTICE):
+        return "sale_notice"
+    if any(t in fold for t in _DOC_TYPE_SALE_SPEC):
+        return "sale_spec"
+    if any(t in fold for t in _DOC_TYPE_APPRAISAL):
+        return "appraisal_report"
+    if re.search(r"\bihale bedeli\b", fold):   # açık resmî sonuç-alanı yapısı (tam-sözcük; prose DEĞİL)
+        return "auction_result"
+    return "unknown"
+
+
+def corroborate_native_document_type(source_text: str | None, requested_artifact_type: str | None) -> dict:
+    """Fix 13: NATIVE kaynak belge-türü İSTENEN artifact türüyle uyuşuyor mu (promosyon-öncesi guard).
+
+    Yalnız ``detected == requested`` ise korrobore; farklı (ve unknown değil) ise MİSMATCH (Run-13:
+    requested auction_result / detected sale_notice → mismatch). Tanı gizlilik-güvenli (metin YOK).
+    """
+    detected = classify_udf_document_type(source_text)
+    corroborated = bool(detected == requested_artifact_type)
+    mismatch = bool(detected != "unknown" and detected != requested_artifact_type)
+    reason = ("document_type_match" if corroborated
+              else (f"detected_{detected}_for_requested_{requested_artifact_type}" if mismatch
+                    else "document_type_indeterminate"))
+    return {
+        "native_detected_document_type": detected,
+        "native_requested_artifact_type": requested_artifact_type,
+        "native_document_type_corroborated": corroborated,
+        "native_document_type_mismatch": mismatch,
+        "native_document_type_corroboration_reason": reason,
     }
 
 

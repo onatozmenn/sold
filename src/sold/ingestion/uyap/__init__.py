@@ -59,11 +59,12 @@ from .collect import (
     resolve_row_view_action,
     select_row_document_actions,
     select_target_page_index,
+    select_unique_document_row,
     viewer_mime_hint,
     visible_document_types,
 )
 from .discovery import discover
-from .extract import asset_descriptors, extract_evidence
+from .extract import asset_descriptors, corroborate_native_document_type, classify_udf_document_type, extract_evidence
 from .models import (
     ADMISSIBLE_COMPLETED_SALE,
     AUDIT_DECISIONS,
@@ -176,6 +177,9 @@ __all__ = [
     "extract_udf_source_text",
     "native_udf_supported",
     "MAX_UDF_DECOMPRESSED_BYTES",
+    "classify_udf_document_type",
+    "corroborate_native_document_type",
+    "select_unique_document_row",
     # pilot (live browser verification)
     "pilot",
     "run_pilot",

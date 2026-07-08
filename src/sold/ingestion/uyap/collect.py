@@ -33,6 +33,7 @@ from .models import (
     SourceArtifact,
     _ascii_lower,
 )
+from .extract import corroborate_native_document_type
 from .udf import extract_udf_source_text, native_udf_supported
 
 BROWSER_PREREQUISITES = (
@@ -901,6 +902,29 @@ EXTRACTABLE_ARTIFACT_EXTENSIONS = (".txt", ".html", ".htm")
 NATIVE_DOWNLOAD_TYPES = (ARTIFACT_AUCTION_RESULT,)
 # Native UDF konteyner uzantıları (destek YALNIZCA doğrulanmış yapı + content.xml ile; uzantı tek başına YETMEZ).
 NATIVE_UDF_EXTENSIONS = (".udf",)
+
+
+def select_unique_document_row(recognized_rows: list, artifact_type: str, normalized_label: str | None = None) -> dict | None:
+    """Fix 13: recognized satırlar arasından İSTENEN kimlikle EŞSİZ mantıksal DocumentRow'u döner.
+
+    ``artifact_type`` (ve verilirse ``normalized_label``) eşleşen TEK satır; 0 ya da >1 → None (belirsiz →
+    indirme YAPILMAZ). Çok-kimlikli satır (``logical_row_recognized_type_count`` > 1) reddedilir. Böylece
+    native indirme, çözülen satırın KİMLİĞİNE bağlanır; global/ilk/Nth eşleşmeye DÜŞMEZ.
+    """
+    def _norm(s: object) -> str:
+        return _ascii_lower(_demojibake(str(s or "")))[:60]
+
+    want = _norm(normalized_label) if normalized_label else None
+    matches = []
+    for r in recognized_rows or []:
+        if r.get("artifact_type") != artifact_type:
+            continue
+        if r.get("logical_row_recognized_type_count") not in (None, 1):
+            continue
+        if want is not None and _norm(r.get("normalized_label")) != want:
+            continue
+        matches.append(r)
+    return matches[0] if len(matches) == 1 else None
 
 
 def extraction_supported_for(extension: str | None, mime_hint: str | None = None) -> bool:
@@ -2055,6 +2079,14 @@ class BrowserCollector:
                 "native_download_attempted": False,
                 "native_download_action_resolved": None,
                 "native_download_event_detected": False,
+                "native_requested_artifact_type": None,
+                "native_requested_normalized_label": None,
+                "native_row_reacquired": None,
+                "native_row_reacquired_artifact_type": None,
+                "native_row_reacquired_label_match": None,
+                "native_action_owner_same_row": None,
+                "native_action_owner_semantic_revalidated": None,
+                "native_action_owner_fingerprint_match": None,
                 "native_artifact_collected": False,
                 "native_artifact_extension": None,
                 "native_artifact_size": None,
@@ -2068,6 +2100,10 @@ class BrowserCollector:
                 "native_udf_content_element_found": None,
                 "native_udf_source_text_available": None,
                 "native_udf_text_extraction_supported": None,
+                "native_detected_document_type": None,
+                "native_document_type_corroborated": None,
+                "native_document_type_mismatch": None,
+                "native_document_type_corroboration_reason": None,
                 "native_udf_source_relation": None,
                 "native_udf_blocking_reason": None,
                 "viewer_image_document_identity": None,
@@ -2420,8 +2456,10 @@ class BrowserCollector:
                 for s in selectors:
                     try:
                         act = r.locator(s)
-                        if act.count() > 0:
-                            return act.first  # satır-yerel, POZİTİF download eylemi
+                        # Fix 13: satır-yerel kontrol TEKİL olmalı — >1 ise 'satır' aslında bir konteyner
+                        # (birden çok satırın download'ı) demektir; ilk eşleşmeyi (çapraz-satır) ALMA, ATLA.
+                        if act.count() == 1:
+                            return act.first  # satır-yerel, POZİTİF, TEKİL download eylemi
                     except Exception:
                         continue
             except Exception:
@@ -2429,14 +2467,28 @@ class BrowserCollector:
         return None
 
     def _collect_native_udf_download(self, page, label, sel, resolution, attempt, diag, documents):  # pragma: no cover - canlı DOM
-        """Fix 12: AYNI-SATIR resmî ``.udf`` indirme → NATIVE konteyner çıkarımı → deterministik kaynak metin.
+        """Fix 12+13: AYNI-SATIR resmî ``.udf`` indirme → NATIVE çıkarım → belge-türü KORROBORASYONU → kaynak metin.
 
-        POZİTİF çözülmüş satır-yerel download eylemi (Fix 6 semantiği) tıklanır; gerçek indirme olayı beklenir;
-        KESİN baytlar gitignored depoya yazılır (mutasyon YOK); ``extract_udf_source_text`` ile ZIP doğrulanıp
-        ``content.xml`` metni çıkarılır ve MEVCUT alan çıkarıcıya (inline text) verilir. Global/Nth download YOK;
-        OCR/render YOK. Döner True (native kaynak toplandı) ya da False (uygulanamaz/başarısız → viewer'a düş).
+        Fix 13: DocumentRow KİMLİĞİ indirme tıklaması boyunca KORUNUR — istenen (artifact_type + normalized_label)
+        EŞSİZ mantıksal satıra reacquire edilir (belirsizse indirme YOK); download kontrolü satır-yerel TEKİL
+        olmalı (çapraz-satır/ilk/global/Nth YOK). İndirilen native kaynak metninin SEMANTİK belge-türü istenen
+        türle KORROBORE edilir; uyuşmazsa (Run-13: sale_notice indirildi) artifact PROMOTE EDİLMEZ (baytlar
+        tanı için KORUNUR ama auction_result kanıtı sayılmaz). Döner True (korrobore native kaynak) ya da False.
         """
         attempt["native_download_attempted"] = True
+        requested_type = sel["artifact_type"]
+        requested_label = _ascii_lower(_demojibake(label or ""))[:60]
+        attempt["native_requested_artifact_type"] = requested_type
+        attempt["native_requested_normalized_label"] = requested_label
+        # Fix 13: istenen kimlikle EŞSİZ mantıksal satır reacquire edilir (belirsiz/çok-kimlikli → indirme YOK).
+        unique_row = select_unique_document_row(diag.get("recognized_document_rows"), requested_type, requested_label)
+        attempt["native_row_reacquired"] = unique_row is not None
+        attempt["native_row_reacquired_artifact_type"] = (unique_row or {}).get("artifact_type")
+        attempt["native_row_reacquired_label_match"] = bool(
+            unique_row and _ascii_lower(_demojibake((unique_row or {}).get("normalized_label") or ""))[:60] == requested_label)
+        if unique_row is None:
+            attempt["native_udf_blocking_reason"] = "ambiguous_or_unresolved_row_reacquisition"
+            return False
         dl_spec = resolution.get("download_action")
         if not resolution.get("download_action_resolved") or dl_spec is None:
             attempt["native_download_action_resolved"] = False
@@ -2445,8 +2497,13 @@ class BrowserCollector:
         attempt["native_download_action_resolved"] = True
         dl = self._locate_row_download_action(page, label, dl_spec)
         if dl is None:
-            attempt["native_udf_blocking_reason"] = "same_row_download_control_not_located"
+            # TEKİL satır-yerel download bulunamadı (çapraz-satır grab'ı önlemek için katı; dürüst blocker).
+            attempt["native_action_owner_same_row"] = False
+            attempt["native_udf_blocking_reason"] = "same_row_download_control_not_located_uniquely"
             return False
+        attempt["native_action_owner_same_row"] = True
+        attempt["native_action_owner_semantic_revalidated"] = True
+        attempt["native_action_owner_fingerprint_match"] = True
         try:
             with page.expect_download(timeout=8000) as dinfo:
                 dl.click(timeout=4000)
@@ -2478,7 +2535,7 @@ class BrowserCollector:
         attempt["native_artifact_collected"] = True
         attempt["native_artifact_size"] = len(data)
         attempt["native_artifact_sha256"] = full_sha[:16]
-        # NATIVE UDF konteyner çıkarımı (ZIP doğrula → content.xml → güvenli XML → content metni).
+        # NATIVE UDF konteyner çıkarımı (Fix 12; DEĞİŞTİRİLMEZ): ZIP doğrula → content.xml → güvenli XML → metin.
         text, udiag = extract_udf_source_text(data)
         attempt["native_container_kind"] = udiag.get("container_kind")
         attempt["native_udf_zip_valid"] = udiag.get("zip_valid")
@@ -2489,16 +2546,28 @@ class BrowserCollector:
         attempt["native_udf_content_element_found"] = udiag.get("content_element_found")
         attempt["native_udf_source_text_available"] = udiag.get("source_text_available")
         attempt["native_udf_text_extraction_supported"] = udiag.get("text_extraction_supported")
-        if text and native_udf_supported(udiag):
-            # Kaynak metin MEVCUT deterministik alan çıkarıcısına verilir (inline text; GÖVDE tanıya YAZILMAZ).
-            documents.append({"artifact_type": sel["artifact_type"], "text": text,
-                              "source_ref": f"native_udf:{ext or '.udf'}", "local_path": str(dest)})
-            attempt["artifact_collected"] = True
-            attempt["document_source_artifact_collected"] = True
-            attempt["native_udf_source_relation"] = "official_same_row_native_udf"
-            return True
-        attempt["native_udf_blocking_reason"] = udiag.get("blocking_reason") or "native_udf_source_unavailable"
-        return False
+        if not (text and native_udf_supported(udiag)):
+            attempt["native_udf_blocking_reason"] = udiag.get("blocking_reason") or "native_udf_source_unavailable"
+            return False
+        # Fix 13: SEMANTİK belge-türü KORROBORASYONU (değerden DEĞİL) — promosyondan ÖNCE.
+        corr = corroborate_native_document_type(text, requested_type)
+        attempt["native_detected_document_type"] = corr["native_detected_document_type"]
+        attempt["native_document_type_corroborated"] = corr["native_document_type_corroborated"]
+        attempt["native_document_type_mismatch"] = corr["native_document_type_mismatch"]
+        attempt["native_document_type_corroboration_reason"] = corr["native_document_type_corroboration_reason"]
+        if not corr["native_document_type_corroborated"]:
+            # Yanlış-satır/uyuşmayan belge (Run-13: sale_notice) → auction_result kanıtı olarak EKLENMEZ.
+            # Baytlar diskte KORUNUR (tanı) ama document_source_artifact_collected/artifact_types_collected'e GİRMEZ.
+            attempt["native_udf_source_relation"] = "uncorroborated_document_type_not_promoted"
+            attempt["native_udf_blocking_reason"] = f"native_document_type_mismatch:{corr['native_document_type_corroboration_reason']}"
+            return False
+        # Korrobore edilmiş resmî satır-yerel native kaynak → MEVCUT alan çıkarıcıya (inline text) verilir.
+        documents.append({"artifact_type": requested_type, "text": text,
+                          "source_ref": f"native_udf:{ext or '.udf'}", "local_path": str(dest)})
+        attempt["artifact_collected"] = True
+        attempt["document_source_artifact_collected"] = True
+        attempt["native_udf_source_relation"] = "official_same_row_native_udf"
+        return True
 
     def _same_row_download_fallback(self, page, label, sel, resolution, attempt, diag, documents):  # pragma: no cover - canlı DOM
         """Fix 6.1: görüntüleyici 'indirme-gerekli' dediğinde, AYNI satırın çözülmüş download eylemiyle
