@@ -373,3 +373,49 @@ milestones:
   proven** — a post-Fix-5 operator rerun is required. Structural core, four SMM moments,
   `conditional_on_trade`, `Θ_A`, TOKİ external status (5 observed / 0 SMM), and the numerical-search
   convention are unchanged; the pilot remains non-mutating (genuine count stays 7).
+
+- **UYAP Live Browser Pilot 1 — Live Interoperability Fix 6 (measured sixth live result: `FAIL`)** —
+  chronology: runs 1–5 = **FAIL** → Fixes 1–5 → run 6 = **FAIL** → Fix 6 → operator rerun pending. Run 6
+  **proved Fix 5 live**: `page_state=search_listing`, target `2026/263` card matched on `file_id`+
+  `institution`, `document_entry_path=listing_card_modal`, `document_list_opened=true`,
+  `document_modal_opened=true`, `document_list_container_kind=listing_modal`, the four real evidence rows
+  recognized (`sale_notice`, `sale_spec`, `appraisal_report`, `auction_result`), and
+  `document_actions_observed=8` (each row `action_count=2`). **But every row reported
+  `view_action_resolved=false` and `download_action_detected=false`**, so all four collection attempts
+  stopped at `row_action_unresolved:no_view_action`, no view control was clicked, `viewer_pages_opened=0`,
+  `audit_decision=MISSING_APPRAISAL`, `pilot_outcome=FAIL`. The mutation guard passed again (`uyap.json`
+  unchanged, count `7 -> 7`, SMM unchanged). The operator has directly observed that each row carries two
+  right-side **icon-only** controls (a red download/down-arrow and a separate eye/view) and that the eye
+  opens `/pp/viewer.jsp?mimeType=Udf&evrakId=...`. The exact defect was **row-local icon-control
+  semantics**: the resolver inspected only each control's own text/class, never its descendant icon
+  metadata. **Fix 6 (row-local action semantics only; no page-state/card/modal/document-row/structural
+  change):** each recognized document row's clickable controls are introspected with nesting flattened
+  (`_row_action_elements` — `<a><i></i></a>` is one action, the `<i>` is icon metadata; icon-only `<i>`/`svg`
+  are clickables when no anchor/button/onclick exists) into a rich, privacy-safe spec (`_action_spec`):
+  tag, role, accessible name, `title`/`aria-label`, `href_kind`, `download` attribute, `onclick` presence,
+  safe class tokens, descendant icon tokens (own + descendant class tokens, SVG `<title>` text,
+  `<use href="#…">` fragment, descendant `title`/`aria-label`/`alt`), and safe handler tokens (from the
+  `onclick` body and href **path** only — never the query/opaque `evrakId`). A deterministic
+  `classify_action_semantic` returns `download`/`view`/`ambiguous`/`unknown` by precedence
+  (accessibility/title → descendant icon tokens → href/`download` attribute → onclick/handler tokens →
+  else `unknown`); generic icon families are supported (download: `download`/`arrow-down`/`file-download`/
+  `cloud-download`/`indir`/`kaydet`; view: `eye`/`view`/`visibility`/`preview`/`goruntule`/`goster`/`incele`/
+  `onizleme`, incl. `fa-*`/`glyphicon-*`/`mdi-*`/`bi-*` token variants) without assuming the real UYAP icon
+  framework in advance. `resolve_row_view_action` now resolves a row **only** when exactly one action is
+  positively classified `view` — there is **no** "the other is download, so this is view" inference, **no**
+  positional/right-most/Nth-action guessing (the earlier weak `single_non_download_beside_download` rule was
+  removed), and **color is never a classifier** (the observed red is ignored). The live click uses
+  `_locate_row_view_action`, which builds discriminative selectors **only** from the resolved view spec
+  (accessible name / view icon token / viewer href) — never a global Nth-eye — then flows into the existing
+  Fix-2/Fix-3 new-tab UDF viewer handling. New privacy-safe report diagnostics: `action_resolution_strategy`
+  and `recognized_document_rows[].action_summaries` (per action: `local_index`, `tag`, `role`,
+  `accessible_name_present`/short name, `title`, `aria_label`, `href_kind`, `download_attribute_present`,
+  `onclick_present`, `safe_class_tokens`, `descendant_icon_tokens`, `semantic_candidates`,
+  `resolved_semantic`) — with **no** raw hrefs, opaque `evrakId` values, `onclick` bodies, cookies/tokens,
+  or DOM dumps, so an unresolved live run stays debuggable. Result-card `Satış Tutarı` is still never
+  substituted for the explicit İhale Bedeli. Added 29 offline tests. Full suite: **392 passed** (363
+  baseline + 29 tests). **No live `PASS` is claimed, the viewer stage was not exercised live, and UDF source
+  extraction / İhale Bedeli extraction remain unproven** — a post-Fix-6 operator rerun is required.
+  Structural core, four SMM moments, `conditional_on_trade`, `Θ_A`, TOKİ external status (5 observed / 0
+  SMM), and the numerical-search convention are unchanged; the pilot remains non-mutating (genuine count
+  stays 7).
