@@ -42,6 +42,12 @@ def _iso_date(value: str | None) -> str | None:
     return None
 
 
+def _bulk_province(candidate: dict) -> str | None:
+    """Kanıtta il yoksa toplu-arama ilinden KABA il (kişisel değil; ör. 'ANKARA' → 'Ankara')."""
+    label = str((candidate.get("bulk") or {}).get("province_label") or "").strip()
+    return label.title() or None
+
+
 def build_genuine_record(candidate: dict) -> dict:
     """Admitte edilecek adaydan HAM genuine UYAP kaydı kurar (uyap.json şeması; normalize sonra)."""
     ev = candidate.get("extracted") or {}
@@ -63,7 +69,7 @@ def build_genuine_record(candidate: dict) -> dict:
     return {
         "public_record_id": candidate.get("file_id"),
         "auction_date": _iso_date(ev.get("completion_datetime")),
-        "province": ev.get("province"),
+        "province": ev.get("province") or _bulk_province(candidate),
         "district": ev.get("district"),
         "property_type": ev.get("property_type"),
         "appraised_value": audit.get("appraisal_value"),

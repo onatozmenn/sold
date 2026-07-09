@@ -470,8 +470,9 @@ def extract_evidence(
     ev.deposit_amount = dep_val
     ev.share_settlement = ("hisse orani" in all_fold) or ("satilan hisse" in all_fold) or ("hisse" in all_fold and "orani" in all_fold)
     # KDV: gerçek detay sayfası "KDV Oranı : %20" (etiket/değer AYRI düğümlerde; araya ':' ve
-    # boşluk/nbsp girebilir). Önce 'oranı' desenli, sonra %-çıpalı yedek (nbsp \s ile toplanır).
-    m_kdv = re.search(r"kdv\s*orani?\s*:?\s*%?\s*(\d{1,3})", all_fold) or re.search(r"kdv[^0-9%]{0,12}%\s*(\d{1,3})", all_fold)
+    # boşluk/nbsp girebilir). '%' ZORUNLU (yalın 'kdv ... 1' gibi başıboş rakam ORAN sayılmaz) —
+    # gerçek '%1' (konut) / '%20' korunur, başıboş rakam reddedilir.
+    m_kdv = re.search(r"kdv\s*orani?\s*:?\s*%\s*(\d{1,3})", all_fold) or re.search(r"kdv[^0-9%]{0,12}%\s*(\d{1,3})", all_fold)
     ev.kdv_rate = float(m_kdv.group(1)) if m_kdv else None
     ev.result_document_type = ARTIFACT_AUCTION_RESULT if ARTIFACT_AUCTION_RESULT in per_type else None
     m_dt = re.search(r"(\d{2}[./]\d{2}[./]\d{4})", all_text)
