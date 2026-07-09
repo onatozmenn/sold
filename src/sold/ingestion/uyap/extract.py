@@ -157,6 +157,24 @@ def _bounded_token_sequence(segments: list, tokens: tuple, max_span: int = 3):
     return None
 
 
+def _segment_kind(seg: str) -> str:
+    """Gizlilik-güvenli segment TÜRÜ: bilinen alan/kimlik etiketi-TÜRÜ + 'money'/'other' (METİN/DEĞER İÇERİĞİ ASLA)."""
+    fold = _ascii_lower(seg)
+    parts: list[str] = []
+    fm = _VALUE_BOUNDARY_RE.search(fold)
+    if fm:
+        parts.append(f"label:{fm.group(0).strip()}")
+    if MONEY_LITERAL_RE.search(_bounded_region(seg, fold, 0)):
+        parts.append("money")
+    return "+".join(parts) if parts else "other"
+
+
+def _segment_shape(segments: list, start: int, window: int = 12) -> list:
+    """``start``'tan itibaren en çok ``window`` segmentin gizlilik-güvenli TÜR haritası (yerleşim tanısı; METİN YOK)."""
+    lo = max(0, start)
+    return [_segment_kind(segments[j]) for j in range(lo, min(len(segments), lo + window))]
+
+
 def _ihale_bedeli_relation(segments: list, label: str = "ihale bedeli", max_following: int = 3):
     """Fix 11: AÇIK İhale Bedeli için LABEL→VALUE ilişkisi + gizlilik-güvenli komşuluk tanısı.
 
@@ -166,10 +184,11 @@ def _ihale_bedeli_relation(segments: list, label: str = "ihale bedeli", max_foll
     yalnız yapısal sayaç + normalize etiket-TÜRÜ (SEGMENT METNİ / DEĞER İÇERİĞİ ASLA).
     """
     nb = {
-        "label_segment_found": False, "label_segment_index": None,
+        "label_segment_found": False, "label_segment_index": None, "label_occurrence_count": 0,
         "same_segment_money_count": 0, "adjacent_segment_money_count": 0,
         "bounded_following_segments_inspected": 0, "bounded_following_money_count": 0,
         "boundary_stop_reason": None, "intervening_field_label_types": [], "relation_candidates": [],
+        "segment_shape": [],
     }
     # Fix 13: AÇIK ALAN etiketi tam-sözcük olmalı — çekimli prose ("ihale bedelini/bedelinin yatirmamasi")
     # etiket-bulundu SAYILMAZ (word-boundary). Auction numeratör semantiği değişmez (açık İhale Bedeli alanı).
@@ -180,8 +199,10 @@ def _ihale_bedeli_relation(segments: list, label: str = "ihale bedeli", max_foll
         if lm is None:
             continue
         nb["label_segment_found"] = True
+        nb["label_occurrence_count"] += 1
         if nb["label_segment_index"] is None:
             nb["label_segment_index"] = i
+            nb["segment_shape"] = _segment_shape(segments, i, window=12)
         end = lm.end()
         # 1. same segment (label sonrası bounded bölge)
         region = _bounded_region(seg, fold, end)
@@ -215,7 +236,7 @@ def _ihale_bedeli_relation(segments: list, label: str = "ihale bedeli", max_foll
         if nb["boundary_stop_reason"] is None:
             nb["boundary_stop_reason"] = ("max_segments" if nb["bounded_following_segments_inspected"]
                                           else "no_following_segment")
-        return None, None, nb              # yalnız İLK açık-etiket oluşumunun ilişkisi
+        # Fix: İLK oluşum başarısızsa DURMA — sonraki İhale Bedeli oluşumunu dene (başlık+detay yerleşimi).
     return None, None, nb
 
 
@@ -476,6 +497,8 @@ def extract_evidence(
             "boundary_stop_reason": _inb.get("boundary_stop_reason"),
             "intervening_field_label_types": _inb.get("intervening_field_label_types", []),
             "relation_candidates": _inb.get("relation_candidates", []),
+            "label_occurrence_count": _inb.get("label_occurrence_count", 0),
+            "segment_shape": _inb.get("segment_shape", []),
         },
         "settlement": settle_nb,
     }

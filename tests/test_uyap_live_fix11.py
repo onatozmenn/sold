@@ -126,6 +126,29 @@ def test_property_identifier_boundary_stops_search_and_unrelated_money_not_captu
     assert "ada" in nb["boundary_stop_reason"]
 
 
+def test_ihale_header_row_then_detail_row_extracts_from_later_occurrence():
+    # Gerçek Ankara 2026/23: İhale Bedeli etiketi ÖNCE başlık satırında (hemen ardından
+    # 'Ödenmesi Gereken Bedel' sınırı → ilk oluşum değersiz), SONRA detay satırında değerle.
+    # İLK oluşumda durmak yerine SONRAKİ oluşum denenir (uydurma yok: gerçek parasal literal gerekir).
+    text = ("İhale Bedeli\nÖdenmesi Gereken Bedel\nKDV\n"
+            "İhale Bedeli 4.654.000,00 TL\nÖdenmesi Gereken Bedel 4.114.000,00 TL")
+    val, strat, nb = _ihale_bedeli_relation(_segs(text))
+    assert val == 4_654_000.0
+    assert nb["label_occurrence_count"] == 2
+    assert nb["segment_shape"] and nb["segment_shape"][0].startswith("label:ihale bedeli")
+
+
+def test_ihale_columnar_layout_returns_none_but_shape_reveals_columns():
+    # Sütun düzeni (etiket bloğu + değer bloğu, etiket TEKRARLANMAZ): dürüstçe None döner
+    # (pozisyonel eşleme UYDURMA olmaz), ama segment_shape sütun yerleşimini AÇIĞA çıkarır.
+    text = "İhale Bedeli\nÖdenmesi Gereken Bedel\nKDV\n4.654.000,00 TL\n4.114.000,00 TL\n20"
+    val, strat, nb = _ihale_bedeli_relation(_segs(text))
+    assert val is None
+    assert nb["label_occurrence_count"] == 1
+    assert "money" in nb["segment_shape"]                    # değer bloğu iz'de görünür
+    assert nb["segment_shape"][0].startswith("label:ihale bedeli")
+
+
 def test_no_whole_document_money_scan():
     # değer 5 segment sonra → bounded (max_following=3) ULAŞMAZ; tüm-belge taraması YOK
     val, strat, nb = _ihale_bedeli_relation(_segs("İhale Bedeli\na\nb\nc\nd\n5.715.000,00"))
