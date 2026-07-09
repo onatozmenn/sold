@@ -2101,15 +2101,19 @@ def uyap_bulk_cmd(
         for i in d.get("inputs", []):
             typer.echo(f"    - type={i.get('type')} id={i.get('id')} name={i.get('name')} "
                        f"class={i.get('class')} placeholder={i.get('placeholder')} "
-                       f"readonly={i.get('readonly')} aria={i.get('aria_label')} maxlen={i.get('maxlength')}")
+                       f"readonly={i.get('readonly')} label={i.get('label')} maxlen={i.get('maxlength')}")
         typer.echo(f"  select ({d.get('select_count')}):")
         for s in d.get("selects", []):
             typer.echo(f"    - id={s.get('id')} name={s.get('name')} class={s.get('class')} "
-                       f"aria={s.get('aria_label')} options={s.get('option_count')}")
+                       f"label={s.get('label')} options={s.get('option_count')}")
         typer.echo("  button:")
         for b in d.get("buttons", []):
             if b.get("text"):
                 typer.echo(f"    - '{b.get('text')}' id={b.get('id')} class={b.get('class')}")
+        typer.echo("  aksiyon adayları (ara/sorgu/listele):")
+        for a in d.get("action_candidates", []):
+            typer.echo(f"    - <{a.get('tag')}> '{a.get('text')}' id={a.get('id')} "
+                       f"class={a.get('class')} onclick={a.get('onclick')}")
         typer.secho("  Bu çıktıyı paylaşın; canlı seçicileri (tarih/İl/kategori/ARA) gerçek DOM'a göre netleştireceğim.",
                     fg=typer.colors.GREEN)
         raise typer.Exit(code=0)

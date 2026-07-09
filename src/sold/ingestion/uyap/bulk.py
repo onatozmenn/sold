@@ -315,6 +315,17 @@ def summarize_form_controls(html: object) -> dict:
     except Exception:
         return {"input_count": 0, "select_count": 0, "inputs": [], "selects": [], "buttons": [], "markers": {}}
 
+    def _label_text(el) -> str | None:
+        lid = el.get("id")
+        if lid:
+            lab = soup.find("label", attrs={"for": lid})
+            if lab:
+                return lab.get_text(" ", strip=True)[:48] or None
+        par = el.find_parent("label")
+        if par:
+            return par.get_text(" ", strip=True)[:48] or None
+        return None
+
     def _attrs(el) -> dict:
         return {
             "tag": el.name,
@@ -324,6 +335,7 @@ def summarize_form_controls(html: object) -> dict:
             "class": " ".join(el.get("class") or []) or None,
             "placeholder": el.get("placeholder"),
             "aria_label": el.get("aria-label"),
+            "label": _label_text(el),
             "role": el.get("role"),
             "readonly": el.has_attr("readonly") or el.get("aria-readonly") == "true",
             "maxlength": el.get("maxlength"),
@@ -345,6 +357,28 @@ def summarize_form_controls(html: object) -> dict:
         buttons.append({"tag": "input", "id": e.get("id"),
                         "class": " ".join(e.get("class") or []) or None,
                         "text": (e.get("value") or "")[:40]})
+
+    # Aksiyon adayları (ara/sorgu/listele) — ARA kontrolü çoğu zaman <a class=btn> olabilir.
+    action_re = re.compile(r"\b(ara|sorgula|sorgu|listele|arama)\b")
+    action_candidates: list[dict] = []
+    seen_act: set = set()
+    for el in soup.find_all(["a", "button", "input"]):
+        if el.name == "input" and (el.get("type") or "text") not in ("submit", "button"):
+            continue
+        txt = (el.get("value") if el.name == "input" else el.get_text(" ", strip=True)) or ""
+        cls = " ".join(el.get("class") or [])
+        idc = _fold(f"{el.get('id') or ''} {el.get('name') or ''} {cls}")
+        btn_like = "btn" in cls.lower()
+        if action_re.search(_fold(txt)) or "ara" in idc.split() or "sorgu" in idc or (btn_like and el.name == "a"):
+            key = (el.name, el.get("id"), txt[:24])
+            if key in seen_act:
+                continue
+            seen_act.add(key)
+            action_candidates.append({
+                "tag": el.name, "type": el.get("type"), "id": el.get("id"),
+                "class": cls or None, "text": txt[:32], "onclick": el.has_attr("onclick"),
+            })
+
     fold = _fold(html)
     return {
         "input_count": len(inputs),
@@ -352,12 +386,14 @@ def summarize_form_controls(html: object) -> dict:
         "inputs": inputs,
         "selects": selects,
         "buttons": buttons[:40],
+        "action_candidates": action_candidates[:50],
         "markers": {
             "has_tasinmaz": "tasinmaz" in fold,
             "has_tasinir": "tasinir" in fold,
             "has_date_label": ("ihale bitis tarih" in fold or "tarih aralik" in fold),
             "has_il_label": bool(re.search(r"\bil\b", fold)),
-            "has_ara_button": any((b.get("text") or "").strip().lower() == "ara" for b in buttons),
+            "has_ara_button": any((b.get("text") or "").strip().lower() == "ara" for b in buttons)
+            or any((a.get("text") or "").strip().lower() == "ara" for a in action_candidates),
         },
     }
 
@@ -733,15 +769,21 @@ class UyapBulkCollector:
         end_ui = format_uyap_ui_date(w["end"])
         self._print(f"[UYAP BULK] pencere {w['start']}→{w['end']} · {CATEGORY_TASINMAZ} · {province}")
 
-        self._select_category_tasinmaz(page)
-        self._select_province(page, province)
+        self._dismiss_notices(page)
+        cat_ok = self._select_category_tasinmaz(page)
+        prov_ok = self._select_province(page, province)
         if not self._set_and_verify_dates(page, start_ui, end_ui):
             rec["status"] = "DATE_INPUT_UNVERIFIED"
             upsert_window_record(state, rec)
             save_bulk_state(state, self.store_dir)
-            self._print("  tarih girişi doğrulanamadı — pencere atlandı (uydurma yok).")
+            self._print(f"  tarih girişi doğrulanamadı (kategori={cat_ok} il={prov_ok}) — pencere atlandı (uydurma yok).")
             return None
-        self._click_ara(page)
+        if not self._click_ara(page):
+            rec["status"] = "ARA_BUTTON_NOT_LOCATED"
+            upsert_window_record(state, rec)
+            save_bulk_state(state, self.store_dir)
+            self._print("  ARA (arama) kontrolü bulunamadı — pencere atlandı. `--diagnose` çıktısındaki aksiyon adaylarını paylaşın.")
+            return None
         result_html = self._wait_result_state(page)
 
         exp = detect_session_expiration(result_html, page.url)
@@ -837,42 +879,75 @@ class UyapBulkCollector:
                 best = p
         return best or (context.pages[0] if context.pages else None)
 
-    def _select_category_tasinmaz(self, page):  # pragma: no cover - canlı DOM
-        import re as _re
-
-        for getter in (
-            lambda: page.get_by_role("radio", name=_re.compile("taşınmaz", _re.I)),
-            lambda: page.get_by_label(_re.compile("taşınmaz", _re.I)),
-            lambda: page.get_by_text(_re.compile(r"^\s*taşınmaz\s*$", _re.I)),
-        ):
+    def _dismiss_notices(self, page):  # pragma: no cover - canlı DOM
+        """Yalnız bilgilendirme/duyuru pop-up'larını KAPATIR (Tamam/Kapat). Yasal 'Kabul Et' TIKLANMAZ."""
+        for sel in ("#closeBtnDuyuru", "#btnCloseTrialOk"):
             try:
-                loc = getter()
-                if loc.count() > 0:
-                    loc.first.check() if loc.first.get_attribute("type") == "radio" else loc.first.click()
-                    return True
+                el = page.locator(sel)
+                if el.count() and el.first.is_visible():
+                    el.first.click()
+                    page.wait_for_timeout(200)
             except Exception:
                 continue
+
+    def _select_category_tasinmaz(self, page):  # pragma: no cover - canlı DOM
+        """Geçmiş İlanlar (history) formunda Taşınmaz kategorisini seçer.
+
+        Kategori radyoları ``radioHistory1/2/3`` (Taşınır/Taşınmaz/Taşıt). Sıra TAHMİN EDİLMEZ —
+        ilişkili ETİKET metni 'taşınmaz' olan radyo bulunur ve işaretlenir (md-radiobtn gizli input
+        ise etikete tıklanır).
+        """
+        try:
+            radios = page.locator("input[id^=radioHistory]")
+            for i in range(radios.count()):
+                r = radios.nth(i)
+                rid = r.get_attribute("id") or ""
+                text = ""
+                try:
+                    lab = page.locator(f"label[for='{rid}']")
+                    if lab.count():
+                        text = lab.first.inner_text()
+                    else:
+                        text = r.evaluate("el => (el.closest('label') || el.parentElement || {}).innerText || ''")
+                except Exception:
+                    text = ""
+                if "tasinmaz" in _fold(text):
+                    try:
+                        r.check()
+                    except Exception:
+                        lab = page.locator(f"label[for='{rid}']")
+                        (lab.first if lab.count() else r).click(force=True)
+                    return True
+        except Exception:
+            pass
         return False
 
     def _select_province(self, page, province):  # pragma: no cover - canlı DOM
-        import re as _re
-
-        for getter in (
-            lambda: page.get_by_label(_re.compile(r"^\s*İl\s*$", _re.I)),
-            lambda: page.locator("select").filter(has_text=_re.compile("il", _re.I)),
-            lambda: page.get_by_role("combobox", name=_re.compile("il", _re.I)),
-        ):
-            try:
-                loc = getter()
-                if loc.count() > 0:
-                    try:
-                        loc.first.select_option(label=province)
-                    except Exception:
-                        loc.first.click()
-                        page.get_by_role("option", name=_re.compile(province, _re.I)).first.click()
+        """Geçmiş İlanlar İl seçicisini (``#historySearchIller``, native <select>) ayarlar."""
+        try:
+            sel = page.locator("#historySearchIller")
+            if not sel.count():
+                return False
+            for how in ("label", "value"):
+                try:
+                    sel.first.select_option(**{how: province})
+                    return True
+                except Exception:
+                    continue
+            try:  # görünen seçenek metnine göre (Türkçe büyük/küçük harf toleransı)
+                val = sel.first.evaluate(
+                    "(el,p)=>{const t=p.toLocaleUpperCase('tr-TR');"
+                    "const o=[...el.options].find(o=>(o.text||'').trim().toLocaleUpperCase('tr-TR')===t);"
+                    "return o?o.value:null;}",
+                    province,
+                )
+                if val is not None:
+                    sel.first.select_option(value=val)
                     return True
             except Exception:
-                continue
+                pass
+        except Exception:
+            pass
         return False
 
     def _set_and_verify_dates(self, page, start_ui, end_ui):  # pragma: no cover - canlı DOM
@@ -885,9 +960,9 @@ class UyapBulkCollector:
         import re as _re
 
         strategies = (
+            lambda: page.locator("#historyBaslangicTarihi, #historyBitisTarihi"),  # Geçmiş İlanlar (birebir)
             lambda: page.get_by_role("textbox", name=_re.compile("tarih|bitis|baslang", _re.I)),
-            lambda: page.locator("input[placeholder*='/'], input[placeholder*='.'], input[placeholder*='g' i]"),
-            lambda: page.locator("input[id*=tarih i], input[name*=tarih i], input[id*=bitis i], input[name*=bitis i]"),
+            lambda: page.locator("input[id*=tarih i], input[id*=bitis i]"),
             lambda: page.locator("input[type=date]"),
         )
         for strat in strategies:
@@ -907,22 +982,40 @@ class UyapBulkCollector:
             box.click()
             box.fill("")
             box.fill(ui)
+            try:
+                box.press("Escape")           # açılan takvim overlay'ini kapat
+                box.evaluate("el => el.blur()")
+            except Exception:
+                pass
             return _digits(box.input_value()) == _digits(ui)
         except Exception:
             return False
 
     def _click_ara(self, page):  # pragma: no cover - canlı DOM
+        """Geçmiş İlanlar ARA kontrolünü bulur ve tıklar (button VEYA anchor/[role=button]).
+
+        ARA çoğu zaman <a class="btn">Ara</a> olabilir; GÖRÜNÜR olan ilk eşleşme tıklanır."""
         import re as _re
 
-        for getter in (
-            lambda: page.get_by_role("button", name=_re.compile(r"^\s*ara\s*$", _re.I)),
-            lambda: page.get_by_text(_re.compile(r"^\s*ara\s*$", _re.I)),
-        ):
+        ara_exact = _re.compile(r"^\s*ara\s*$", _re.I)
+        ara_word = _re.compile(r"\bara\b", _re.I)
+        getters = (
+            lambda: page.get_by_role("button", name=ara_exact),
+            lambda: page.get_by_role("link", name=ara_exact),
+            lambda: page.locator("a[class*=btn i], button, [role=button], input[type=submit], input[type=button]").filter(has_text=ara_word),
+            lambda: page.locator("[id*=ara i]").filter(has_text=ara_word),
+        )
+        for getter in getters:
             try:
                 loc = getter()
-                if loc.count() > 0:
-                    loc.first.click()
-                    return True
+                for i in range(min(loc.count(), 20)):
+                    el = loc.nth(i)
+                    try:
+                        if el.is_visible():
+                            el.click()
+                            return True
+                    except Exception:
+                        continue
             except Exception:
                 continue
         return False
