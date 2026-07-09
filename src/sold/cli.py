@@ -2117,6 +2117,7 @@ def uyap_bulk_cmd(
     discovery_only: bool = typer.Option(False, "--discovery-only", help="Yalnızca Satıldı açık artırmaları keşfet+kalıcılaştır (belge edinimi yok)"),
     diagnose: bool = typer.Option(False, "--diagnose", help="READ-ONLY: 'Geçmiş İlanlar' form kontrol yapısını basar (arama/indirme YOK); canlı seçicileri eşlemek için"),
     diagnose_results: bool = typer.Option(False, "--diagnose-results", help="READ-ONLY: gerçek aramayı çalıştırıp SONUÇ kart yapısını basar (indirme/mutasyon YOK; --date-from/--date-to gerekli)"),
+    diagnose_documents: bool = typer.Option(False, "--diagnose-documents", help="TANI: hedef kartın (--kayit-no) 'İhale Evrak Listesi'ni çalıştırıp belge-listesinin ne açtığını basar (admisyon YOK)"),
     store_dir: Optional[str] = typer.Option(None, help="Çalışma deposu / kontrol noktası dizini"),
     genuine_path: Optional[str] = typer.Option(None, help="genuine uyap.json yolu (DUPLICATE denetimi; admisyon YOK)"),
 ) -> None:
@@ -2196,6 +2197,33 @@ def uyap_bulk_cmd(
         typer.echo(f"  sayım/sayfa banner: {d.get('count_banners')}")
         typer.secho("  Bu çıktıyı paylaşın; parse_result_cards'ı gerçek sonuç kartına göre ayarlayacağım.",
                     fg=typer.colors.GREEN)
+        raise typer.Exit(code=0)
+    if diagnose_documents:
+        if not cdp_endpoint or not date_from or not date_to:
+            typer.secho("--diagnose-documents için --cdp-endpoint, --date-from, --date-to gerekli (--kayit-no önerilir).", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        try:
+            d = UyapBulkCollector(
+                cdp_endpoint=cdp_endpoint, store_dir=store_dir, genuine_path=genuine_path,
+            ).diagnose_documents(province=province, date_from=date_from, date_to=date_to, target_kayit_no=kayit_no)
+        except RuntimeError as exc:
+            typer.secho(str(exc), fg=typer.colors.YELLOW)
+            typer.echo(BROWSER_PREREQUISITES)
+            raise typer.Exit(code=1)
+        typer.secho("[UYAP BULK] BELGE-LİSTESİ TANI (hedef kartın evrak listesini çalıştırır; admisyon YOK)", fg=typer.colors.CYAN, bold=True)
+        typer.echo(f"  hedef: {d.get('target')} · adımlar: {d.get('steps')}")
+        typer.echo(f"  sekme: önce={d.get('pre_tab_count')} sonra={d.get('post_tab_count')} · yeni sekme: {d.get('new_tab_urls')}")
+        typer.echo(f"  toplanan belge: {d.get('documents_collected')}")
+        dg = d.get("diag", {})
+        typer.echo(f"  page_state={dg.get('page_state')} entry={dg.get('document_entry_path')} card_found={dg.get('target_record_card_found')} "
+                   f"control={dg.get('document_list_control_found')}({dg.get('document_list_control_kind')}) "
+                   f"list_opened={dg.get('document_list_opened')} container={dg.get('document_list_container_kind')}")
+        typer.echo(f"  pre_click_types={dg.get('pre_click_visible_document_types')} post_click_types={dg.get('post_click_visible_document_types')}")
+        typer.echo(f"  tanınan satırlar: {[r.get('artifact_type') for r in dg.get('recognized_document_rows', [])]}")
+        for att in dg.get("document_collection_attempts", []):
+            typer.echo(f"    - attempt {att.get('artifact_type') or att.get('stage')}: blocking={att.get('blocking_reason')}")
+        typer.echo(f"  tıklama-sonrası alan (modal/panel/evrak): {d.get('post_click_area')}")
+        typer.secho("  Bu çıktıyı paylaşın; evrak-listesi açılışını (modal/yeni-sekme/yönlendirme) buna göre bağlarım.", fg=typer.colors.GREEN)
         raise typer.Exit(code=0)
     if not date_from or not date_to:
         typer.secho("--date-from ve --date-to gerekli (yalnızca --diagnose bunları gerektirmez).", fg=typer.colors.RED)

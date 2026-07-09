@@ -509,6 +509,45 @@ def summarize_result_structure(html: object) -> dict:
     return out
 
 
+def summarize_document_area(html: object) -> list[dict]:
+    """Post-click document-list containers (modal/dialog/panel/evrak) - privacy-safe summary.
+
+    Reports tag/class/id + document-type token presence + a visibility hint for elements whose
+    class contains modal/dialog/panel/popup/evrak or role=dialog, to see whether clicking the
+    'evrak listesi' control actually opens a list and in what structure. No personal text returned.
+    OFFLINE testable.
+    """
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html or "", "html.parser")
+    except Exception:
+        return []
+    out: list[dict] = []
+    seen: set = set()
+    _doc_tokens = ("evrak listesi", "satis ilani", "bilirkisi", "sartname",
+                   "artirma sonuc", "tutanagi", "muhammen", "kiymeti", "uzatma")
+    for sel in ("[class*=modal i]", "[class*=dialog i]", "[class*=panel i]",
+                "[class*=popup i]", "[role=dialog]", "[class*=evrak i]"):
+        for el in soup.select(sel):
+            key = (el.name, " ".join(el.get("class") or []), el.get("id"))
+            if key in seen:
+                continue
+            seen.add(key)
+            ft = _fold(el.get_text(" ", strip=True))
+            style = (el.get("style") or "").lower()
+            classes = el.get("class") or []
+            out.append({
+                "tag": el.name,
+                "id": el.get("id"),
+                "class": " ".join(classes) or None,
+                "visible_hint": ("display:none" not in style and "hidden" not in classes and "hide" not in classes),
+                "doc_tokens": [t for t in _doc_tokens if t in ft],
+                "text_len": len(ft),
+            })
+    return out[:30]
+
+
 # --------------------------------------------------------------------------- #
 # 7) Yeniden başlama / tekilleştirme (SAF).
 # --------------------------------------------------------------------------- #
@@ -813,6 +852,66 @@ class UyapBulkCollector:
                 "session": detect_session_expiration(result_html, page.url),
             }
             return summary
+
+    def diagnose_documents(self, province, date_from, date_to,
+                           target_file_id=None, target_kayit_no=None):  # pragma: no cover - canlı tarayıcı
+        """Hedef kartın 'İhale Evrak Listesi' kontrolünü çalıştırıp belge-listesinin NE yaptığını raporlar.
+
+        Gerçek ``_collect_documents``'ı bir kart için çalıştırır (aynı edinim yolu) ve tıklama-öncesi/
+        sonrası sekme sayısı + URL, toplanan belge sayısı, toplama tanıları ve tıklama-sonrası olası
+        modal/panel iskeletini döndürür — 'evrak listesi' tıklanınca liste modal mı / yeni sekme mi /
+        yönlendirme mi açıyor görmek için. ADMİSYON YOK; genuine'e dokunmaz.
+        """
+        from .collect import BrowserCollector
+
+        w = generate_date_windows(date_from, date_to)[0]
+        start_ui, end_ui = format_uyap_ui_date(w["start"]), format_uyap_ui_date(w["end"])
+        sync_playwright = BrowserCollector._sync_playwright()
+        collector = BrowserCollector(cdp_endpoint=self.cdp_endpoint)
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(self.cdp_endpoint)
+            if not browser.contexts:
+                raise RuntimeError("no_usable_browser_context: CDP oturumunda kullanılabilir bağlam yok.")
+            context = browser.contexts[0]
+            page = self._find_gecmis_page(context)
+            if page is None:
+                raise RuntimeError("no_gecmis_ilanlar_page: 'Geçmiş İlanlar' sayfasını elle açın.")
+            self._dismiss_notices(page)
+            self._select_category_tasinmaz(page)
+            self._select_province(page, province)
+            dates = self._set_and_verify_dates(page, start_ui, end_ui)
+            ara = self._click_ara(page) if dates else False
+            self._wait_result_state(page)
+            cards = parse_result_cards(page.content())
+            target = None
+            for c in cards:
+                if target_kayit_no and c.get("kayit_no") == target_kayit_no:
+                    target = c
+                    break
+                if target_file_id and str(c.get("file_id")) == str(target_file_id):
+                    target = c
+                    break
+            if target is None:
+                target = next((c for c in cards if c.get("sold")), None)
+            fid = target.get("file_id") if target else None
+            pre_tabs = [self._safe_ref(p.url) for p in context.pages]
+            docs, patterns, diag = collector._collect_documents(page, context, fid, province)
+            post_tabs = [self._safe_ref(p.url) for p in context.pages]
+            keys = ("page_state", "document_entry_path", "target_record_card_found",
+                    "document_list_control_found", "document_list_control_kind", "document_list_opened",
+                    "document_list_container_kind", "pre_click_visible_document_types",
+                    "post_click_visible_document_types", "document_container_strategy",
+                    "recognized_document_rows", "document_collection_attempts", "viewer_pages_opened")
+            return {
+                "steps": {"dates_verified": dates, "ara_clicked": ara, "window": w},
+                "target": {"file_id": fid, "kayit_no": target and target.get("kayit_no")},
+                "pre_tab_count": len(pre_tabs),
+                "post_tab_count": len(post_tabs),
+                "new_tab_urls": post_tabs[len(pre_tabs):] if len(post_tabs) > len(pre_tabs) else [],
+                "documents_collected": len(docs),
+                "diag": {k: diag.get(k) for k in keys},
+                "post_click_area": summarize_document_area(page.content()),
+            }
 
     # -- Canlı koşu (pragma: canlı tarayıcı/DOM gerektirir; ağ testlerinde çalışmaz) ------- #
     def run(
