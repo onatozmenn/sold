@@ -253,6 +253,17 @@ def _card_kayit_no(text: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _kayit_no_from_el(el) -> str | None:
+    """KAYIT NO'yu kart elementinin class'ından alır (ör. ``incelenen-li 16760761856``) — metinde yoksa."""
+    try:
+        for c in (el.get("class") or []):
+            if c.isdigit() and len(c) >= 6:
+                return c
+    except Exception:
+        pass
+    return None
+
+
 def parse_result_cards(html: object) -> list[dict]:
     """Sonuç sayfasındaki açık-artırma kartlarını KART-YEREL olarak ayrıştırır.
 
@@ -266,7 +277,7 @@ def parse_result_cards(html: object) -> list[dict]:
         soup = BeautifulSoup(html or "", "html.parser")
     except Exception:
         return []
-    for sel in ("[class*=card]", "[class*=sonuc]", "[class*=result]", "[class*=ilan]", "li", "tr"):
+    for sel in ("[class*=card]", "[class*=sonuc]", "[class*=result]", "[class*=ilan]", "[class*=incelenen]", "li", "tr"):
         candidates: list = []
         for el in soup.select(sel):
             text = el.get_text(" ", strip=True)
@@ -282,13 +293,17 @@ def parse_result_cards(html: object) -> list[dict]:
         seen: set = set()
         for el, text in candidates:
             fid = _card_file_id(text)
-            if not fid or fid in seen:      # dış (en üst) kart önce gelir → ilkini tut
+            if not fid:
                 continue
-            seen.add(fid)
+            kayit = _card_kayit_no(text) or _kayit_no_from_el(el)
+            dedup_key = kayit or fid        # KAYIT NO auction-özel; yoksa Esas No (dış kart önce)
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
             status_raw = _card_status_raw(text)
             cls = classify_card_status(status_raw or "")
             cards.append({
-                "kayit_no": _card_kayit_no(text),
+                "kayit_no": kayit,
                 "file_id": fid,
                 "institution_text": _card_institution(text),
                 "source_status_raw": status_raw,
@@ -417,7 +432,7 @@ def summarize_result_structure(html: object) -> dict:
         "first_card_skeleton": None,
     }
     best_el = None
-    for sel in ("[class*=card]", "[class*=sonuc]", "[class*=result]", "[class*=ilan]", "li", "tr", "div"):
+    for sel in ("[class*=card]", "[class*=sonuc]", "[class*=result]", "[class*=ilan]", "[class*=incelenen]", "li", "tr", "div"):
         els = soup.select(sel)
         single = 0
         with_status = 0
