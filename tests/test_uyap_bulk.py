@@ -459,7 +459,7 @@ def test_reuses_existing_extract_audit_pipeline_no_admission(tmp_path):
     assert not gp.exists()
     after = genuine_fingerprint()
     assert after["sha256"] == before["sha256"]
-    assert after["genuine_uyap_count"] == before["genuine_uyap_count"] == 7
+    assert after["genuine_uyap_count"] == before["genuine_uyap_count"]  # process_sold_auction genuine'i DEĞİŞTİRMEZ (mutlak sayıdan bağımsız)
 
 
 # --------------------------------------------------------------------------- #

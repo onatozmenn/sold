@@ -843,7 +843,7 @@ class UyapBulkCollector:
         cdp_endpoint: str,
         store_dir: Path | str | None = None,
         genuine_path: Path | str | None = None,
-        request_delay_ms: int = 900,
+        request_delay_ms: int = 400,
         result_timeout_ms: int = 20000,
         stall_seconds: int = 120,
     ) -> None:
