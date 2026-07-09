@@ -2107,7 +2107,7 @@ def uyap_pilot_cmd(
         typer.echo(f"    {mark} {k}: beklenen={f['expected']} · gözlenen={f['actual']}")
     typer.echo(f"  opsiyonel korroborasyon geçti: {cmp['optional_all_passed']}")
     mg = r["mutation_guard"]
-    typer.echo(f"  mutasyon-korumu: uyap.json değişmedi={mg['uyap_json_unchanged']} · genuine sayı 7={mg['genuine_uyap_count_unchanged']} · SMM değişmedi={mg['smm_moments_unchanged']}")
+    typer.echo(f"  mutasyon-korumu: uyap.json değişmedi={mg['uyap_json_unchanged']} · genuine sayı değişmedi={mg['genuine_uyap_count_unchanged']} · SMM değişmedi={mg['smm_moments_unchanged']}")
     if r["document_access_patterns"]:
         typer.echo(f"  belge-erişim desenleri: {r['document_access_patterns']}")
     for reason in r["blocking_reasons"]:

@@ -1546,6 +1546,7 @@ class UyapBulkCollector:
     def _close_modal(self, page):  # pragma: no cover - canlı DOM
         import re as _re
 
+        closed = False
         for getter in (
             lambda: page.get_by_role("button", name=_re.compile("kapat|close", _re.I)),
             lambda: page.locator("[aria-label*=close i], [class*=close], button.close"),
@@ -1554,15 +1555,25 @@ class UyapBulkCollector:
                 loc = getter()
                 if loc.count() > 0:
                     loc.first.click()
-                    page.wait_for_timeout(300)
-                    return True
+                    closed = True
+                    break
             except Exception:
                 continue
-        try:
-            page.keyboard.press("Escape")
-        except Exception:
-            pass
-        return False
+        if not closed:
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+        # Modal GERÇEKTEN kapanana kadar bekle (bounded ~2s): sonraki kartın kontrol-tıklamasının
+        # YARIM-KAPANAN modalla YARIŞMASINI önler → --delay-ms 0'da bile temiz durum, eksik-çekim yok.
+        for _ in range(10):
+            try:
+                if page.locator(".modal.in, .modal.show").count() == 0:
+                    break
+            except Exception:
+                break
+            page.wait_for_timeout(200)
+        return closed
 
     @staticmethod
     def _safe_ref(url: object) -> str | None:

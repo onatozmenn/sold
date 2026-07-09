@@ -1957,33 +1957,61 @@ class BrowserCollector:
                 return documents, patterns, diag
         diag["document_entry_state"] = "entry_control_click"
 
-        try:
-            control.click(timeout=5000)
-        except Exception as exc:
-            diag["document_collection_attempts"].append({"stage": "control_click", "blocking_reason": str(exc)[:120]})
-            diag["document_collection_failures"] += 1
-            return documents, patterns, diag
-
         # Fix 5: AÇILAN belge listesini GÖRÜNÜR SEMANTİK içerikten algıla (gerçek UYAP overlay'i
         # div/portal/custom olabilir; .modal / role=dialog / <tr> GEREKMEZ). Ortak-ata konteyner +
         # etiket-anchoring ile satırlar; başlık TEK BAŞINA yetmez (≥2 distinkt belge türü gerekir).
+        # SAĞLAMLIK (delay 0 yarışı): kontrol tıklaması yutulur ya da önceki kartın modal kapanışı araya
+        # girerse modal açılmayabilir → TEK KEZ yeniden dene (Escape ile yarım overlay temizle, kontrolü
+        # search_listing'de KAYIT NO ile yeniden bul). Hız feda edilmeden eksik-çekim (MISSING_APPRAISAL)
+        # önlenir; başarılı kart İLK denemede erken döner (retry yalnız yarışan karta ek süre getirir).
         rows: list[dict] = []
         det = {"detected": False, "recognized_types": [], "container_strategy": "not_found"}
-        for _ in range(12):  # ~6s
+        click_attempts = 0
+        for _attempt in range(2):
             try:
-                cur_html = page.content()
-            except Exception:
-                cur_html = ""
-            # Açık belge modalına scope et: sayfadaki (modal DIŞI) başıboş belge etiketleri ortak-atayı
-            # body'ye genişletip algılamayı bozar (bulk listing modalında görüldü). Modal bulunamazsa
-            # tüm-sayfa davranışına düşer (pilot yolu korunur).
-            scoped = scope_open_document_modal(cur_html) or cur_html
-            det = detect_document_list(scoped)
-            if det["detected"]:
-                rows = extract_document_rows_semantic(scoped) or extract_panel_document_rows(scoped)
-                if rows:
-                    break
-            page.wait_for_timeout(500)
+                control.click(timeout=5000)
+                click_attempts += 1
+            except Exception as exc:
+                if _attempt == 0:
+                    try:
+                        page.keyboard.press("Escape")
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(300)
+                    if page_state == "search_listing":
+                        control = self._locate_card_control(page, target_file_id, target_record_ref) or control
+                    continue
+                diag["document_collection_attempts"].append({"stage": "control_click", "blocking_reason": str(exc)[:120]})
+                diag["document_collection_failures"] += 1
+                diag["document_control_click_attempts"] = click_attempts
+                return documents, patterns, diag
+            for _ in range(12):  # ~6s
+                try:
+                    cur_html = page.content()
+                except Exception:
+                    cur_html = ""
+                # Açık belge modalına scope et: sayfadaki (modal DIŞI) başıboş belge etiketleri ortak-atayı
+                # body'ye genişletip algılamayı bozar (bulk listing modalında görüldü). Modal bulunamazsa
+                # tüm-sayfa davranışına düşer (pilot yolu korunur).
+                scoped = scope_open_document_modal(cur_html) or cur_html
+                det = detect_document_list(scoped)
+                if det["detected"]:
+                    rows = extract_document_rows_semantic(scoped) or extract_panel_document_rows(scoped)
+                    if rows:
+                        break
+                page.wait_for_timeout(500)
+            if rows:
+                break
+            # modal açılmadı → yarım overlay'i temizle + kontrolü yeniden bul, TEK kez daha dene.
+            if _attempt == 0:
+                try:
+                    page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                page.wait_for_timeout(300)
+                if page_state == "search_listing":
+                    control = self._locate_card_control(page, target_file_id, target_record_ref) or control
+        diag["document_control_click_attempts"] = click_attempts
 
         pre_types = diag.get("pre_click_visible_document_types", [])
         post_types = det.get("recognized_types", [])

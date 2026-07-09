@@ -316,7 +316,7 @@ def run_pilot(
     report["mutation_guard"] = {
         "before": before,
         "after": after,
-        "genuine_uyap_count_unchanged": before["genuine_uyap_count"] == after["genuine_uyap_count"] == 7,
+        "genuine_uyap_count_unchanged": before["genuine_uyap_count"] == after["genuine_uyap_count"],
         "uyap_json_unchanged": before["sha256"] == after["sha256"],
         "smm_moments_unchanged": before["smm_moments"] == after["smm_moments"],
         "uyap_sale_prob_absent": "uyap_sale_prob" not in after["smm_moments"],
