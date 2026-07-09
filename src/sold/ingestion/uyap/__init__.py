@@ -9,8 +9,27 @@ KORUR (pay = açık İhale Bedeli; ASLA Ödenmesi Gereken Bedel/depozito/hisse/m
 
 from __future__ import annotations
 
-from . import admit, audit, collect, discovery, extract, models, pilot, pipeline, reconcile, review, store, udf
+from . import admit, audit, bulk, collect, discovery, extract, models, pilot, pipeline, reconcile, review, store, udf
 from .admit import INGESTION_BATCH, admit as admit_candidate, build_genuine_record, record_exclusion
+from .bulk import (
+    CATEGORY_TASINMAZ,
+    MAX_WINDOW_DAYS,
+    UyapBulkCollector,
+    acquisition_state,
+    classify_card_status,
+    detect_session_expiration,
+    extract_result_metadata,
+    format_uyap_ui_date,
+    generate_date_windows,
+    is_sold_status,
+    load_bulk_state,
+    parse_result_cards,
+    process_sold_auction,
+    save_bulk_state,
+    should_acquire,
+    valid_result_pages,
+    zero_results,
+)
 from .audit import audit_candidate
 from .collect import (
     BROWSER_PREREQUISITES,
@@ -180,6 +199,25 @@ __all__ = [
     "classify_udf_document_type",
     "corroborate_native_document_type",
     "select_unique_document_row",
+    # bulk discovery + iteration (Geçmiş İlanlar; reuses the single-auction path)
+    "bulk",
+    "UyapBulkCollector",
+    "CATEGORY_TASINMAZ",
+    "MAX_WINDOW_DAYS",
+    "generate_date_windows",
+    "format_uyap_ui_date",
+    "valid_result_pages",
+    "is_sold_status",
+    "classify_card_status",
+    "extract_result_metadata",
+    "zero_results",
+    "detect_session_expiration",
+    "parse_result_cards",
+    "acquisition_state",
+    "should_acquire",
+    "process_sold_auction",
+    "load_bulk_state",
+    "save_bulk_state",
     # pilot (live browser verification)
     "pilot",
     "run_pilot",

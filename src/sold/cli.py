@@ -2053,6 +2053,57 @@ def uyap_pilot_cmd(
                     fg=typer.colors.CYAN)
 
 
+@uyap_app.command("bulk")
+def uyap_bulk_cmd(
+    cdp_endpoint: Optional[str] = typer.Option(None, "--cdp-endpoint", help="Kendi başlattığınız Chrome'un CDP uç noktası (ör. http://127.0.0.1:9222)"),
+    province: str = typer.Option("ANKARA", "--province", help="İl (gerçek UYAP İl seçicisinden; ilk kontrollü koşu ANKARA)"),
+    date_from: str = typer.Option(..., "--date-from", help="Başlangıç (YYYY-MM-DD)"),
+    date_to: str = typer.Option(..., "--date-to", help="Bitiş (YYYY-MM-DD)"),
+    resume: bool = typer.Option(False, "--resume", help="Tamamlanmış pencereleri atla, kaldığı yerden devam et"),
+    max_records: Optional[int] = typer.Option(None, "--max-records", help="En fazla bu kadar Satıldı açık artırma edin"),
+    max_windows: Optional[int] = typer.Option(None, "--max-windows", help="En fazla bu kadar tarih penceresi işle"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Yalnızca tarih-pencere planını yazdır (tarayıcı açmaz)"),
+    discovery_only: bool = typer.Option(False, "--discovery-only", help="Yalnızca Satıldı açık artırmaları keşfet+kalıcılaştır (belge edinimi yok)"),
+    store_dir: Optional[str] = typer.Option(None, help="Çalışma deposu / kontrol noktası dizini"),
+    genuine_path: Optional[str] = typer.Option(None, help="genuine uyap.json yolu (DUPLICATE denetimi; admisyon YOK)"),
+) -> None:
+    """UYAP TOPLU keşif+iterasyon — 'Geçmiş İlanlar'da Taşınmaz+İl+tarih ile SADECE Satıldı açık artırmalar.
+
+    Kullanıcı-kontrollü Chrome'a CDP ile BAĞLANIR (kimlik doğrulama OTOMATİKLEŞTİRİLMEZ; parola/MFA/
+    CAPTCHA işlenmez). Çalışan tek-kayıt edinim yolunu + mevcut denetim boru hattını yeniden kullanır;
+    ADMİSYON YAPMAZ (ADMISSIBLE adaylar `sold uyap review`/`admit` ile AÇIKÇA alınır). page 0 asla
+    tıklanmaz; kontrol noktası her sayfada kaydedilir; oturum sona ererse güvenle durur ve `--resume`
+    ile devam eder. Yapısal ekonometrik çekirdek DEĞİŞMEZ.
+    """
+    from .ingestion.uyap import BROWSER_PREREQUISITES
+    from .ingestion.uyap.bulk import UyapBulkCollector
+
+    if not dry_run and not cdp_endpoint:
+        typer.secho("--cdp-endpoint gerekli (canlı oturum). Ör: http://127.0.0.1:9222", fg=typer.colors.RED)
+        typer.echo(BROWSER_PREREQUISITES)
+        raise typer.Exit(code=1)
+    try:
+        s = UyapBulkCollector(
+            cdp_endpoint=cdp_endpoint or "", store_dir=store_dir, genuine_path=genuine_path,
+        ).run(
+            province=province, date_from=date_from, date_to=date_to,
+            max_records=max_records, max_windows=max_windows,
+            dry_run=dry_run, discovery_only=discovery_only, resume=resume,
+        )
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.YELLOW)
+        typer.echo(BROWSER_PREREQUISITES)
+        raise typer.Exit(code=1)
+    typer.secho(f"UYAP toplu koşu bitti · durma nedeni={s.get('stopped_reason')}", fg=typer.colors.CYAN, bold=True)
+    typer.echo(f"  kapsam: {s['category']} · {s['province']} · {s['date_from']}→{s['date_to']}")
+    typer.echo(f"  pencere: {s['windows_processed']}/{s['windows_total']} · incelenen kart: {s['result_cards_inspected']}")
+    typer.echo(f"  Satıldı keşfedilen: {s['sold_discovered']} · edinilen: {s['acquisitions_completed']} · atlanan(bilinen): {s['sold_skipped_known']} · edinim hatası: {s['acquisition_failures']}")
+    typer.echo(f"  denetim kararları: {s['audit_decisions']}")
+    if s.get("stopped_reason") == "SESSION_EXPIRED":
+        typer.secho("  OTURUM SONA ERDİ: Chrome'da yeniden giriş yapıp aynı komutu `--resume` ile çalıştırın.", fg=typer.colors.YELLOW)
+    typer.secho("  admisyon YAPILMADI — ADMISSIBLE adayları `sold uyap review` ile inceleyip `sold uyap admit` ile AÇIKÇA alın.", fg=typer.colors.GREEN)
+
+
 def main() -> None:
     app()
 
