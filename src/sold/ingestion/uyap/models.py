@@ -150,15 +150,21 @@ def parse_tl_amount(text: object) -> float | None:
     return val if val != 0 else None
 
 
-def deterministic_candidate_id(institution: object, file_id: object) -> str:
+def deterministic_candidate_id(institution: object, file_id: object, record_ref: object = None) -> str:
     """Kurum + resmî dosya kimliğinden DETERMİNİSTİK candidate_id (yeniden-keşif idempotent).
 
-    Kişisel veri içermez; yalnızca kamu kurum + dosya kimliği kullanılır.
+    Kişisel veri içermez; yalnızca kamu kurum + dosya kimliği kullanılır. ``record_ref`` (ör. UYAP
+    KAYIT NO) verilirse AYNI Esas'ın farklı açık artırmaları AYRI kimlik alır (bir dava/Esas birden
+    çok taşınmaz/açık artırma içerebilir). ``record_ref=None`` iken davranış ÖNCEKİ ile BİREBİR AYNIdır.
     """
     key = f"{_ascii_lower(institution).strip()}|{_ascii_lower(file_id).strip()}"
+    if record_ref:
+        key += f"|{_ascii_lower(record_ref).strip()}"
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
     fid = re.sub(r"[^A-Za-z0-9]+", "-", str(file_id or "").strip()).strip("-") or "NA"
-    return f"UYAP-{fid}-{digest}"
+    ref = re.sub(r"[^A-Za-z0-9]+", "-", str(record_ref or "").strip()).strip("-")
+    suffix = f"-{ref}" if ref else ""
+    return f"UYAP-{fid}{suffix}-{digest}"
 
 
 def _utcnow_iso() -> str:

@@ -60,15 +60,17 @@ def new_candidate(
     listing_ref: str | None = None,
     status_text: str | None = None,
     source_page_ref: str | None = None,
+    record_ref: str | None = None,
 ) -> dict:
     """Kişisel-olmayan keşif metaverisinden yeni bir aday kaydı kurar (P/Q KULLANMAZ)."""
-    cid = deterministic_candidate_id(institution, file_id)
+    cid = deterministic_candidate_id(institution, file_id, record_ref)
     now = _utcnow_iso()
     return {
         "candidate_id": cid,
         "state": STATE_DISCOVERED,
         "institution": institution,
         "file_id": file_id,
+        "kayit_no": record_ref,
         "listing_ref": listing_ref,
         "status_text": status_text,
         "source_page_ref": source_page_ref,

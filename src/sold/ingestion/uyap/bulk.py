@@ -615,9 +615,10 @@ def process_sold_auction(
         return outcome
 
     # 1) KALICI keşif — belge ediniminden ÖNCE (kesinti olsa bile kayıt bilinir kalır).
+    #    record_ref=KAYIT NO → aynı Esas'ın farklı açık artırmaları AYRI aday (birleşmez/kaybolmaz).
     cand = discover(
         institution, file_id, listing_ref=kayit_no, status_text=status_raw,
-        source_page_ref=source_page_ref, store_dir=store_dir,
+        source_page_ref=source_page_ref, store_dir=store_dir, record_ref=kayit_no,
     )
     bulk_meta = cand.setdefault("bulk", {})
     bulk_meta.update({

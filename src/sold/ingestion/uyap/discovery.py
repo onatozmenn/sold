@@ -21,13 +21,15 @@ def discover(
     status_text: str | None = None,
     source_page_ref: str | None = None,
     store_dir: Path | str | None = None,
+    record_ref: str | None = None,
 ) -> dict:
     """Bir adayı keşfeder ve çalışma deposuna IDEMPOTENT kaydeder.
 
-    Aynı kurum+dosya için tekrar çağrılırsa aynı ``candidate_id`` güncellenir (kopya YOK).
+    Aynı kurum+dosya(+``record_ref``) için tekrar çağrılırsa aynı ``candidate_id`` güncellenir (kopya
+    YOK). ``record_ref`` (KAYIT NO) verilirse aynı Esas'ın farklı açık artırmaları AYRI aday olur.
     Durum metni ham olarak korunur; admisyon kararı burada VERİLMEZ.
     """
-    cid = deterministic_candidate_id(institution, file_id)
+    cid = deterministic_candidate_id(institution, file_id, record_ref)
     existing = store.get_candidate(cid, store_dir)
     if existing is not None:
         # yalnızca keşif metaverisini tazele; iş akışı durumunu geri ALMA
@@ -45,6 +47,7 @@ def discover(
         listing_ref=listing_ref,
         status_text=status_text,
         source_page_ref=source_page_ref,
+        record_ref=record_ref,
     )
     cand["state"] = STATE_DISCOVERED
     return store.upsert(cand, store_dir)
