@@ -164,7 +164,7 @@ def _segment_kind(seg: str) -> str:
     fm = _VALUE_BOUNDARY_RE.search(fold)
     if fm:
         parts.append(f"label:{fm.group(0).strip()}")
-    if MONEY_LITERAL_RE.search(_bounded_region(seg, fold, 0)):
+    if MONEY_LITERAL_RE.search(fold):      # segmentin HERHANGI yerinde para (etiket öncesi/sonrası dahil)
         parts.append("money")
     return "+".join(parts) if parts else "other"
 
@@ -188,11 +188,17 @@ def _ihale_bedeli_relation(segments: list, label: str = "ihale bedeli", max_foll
         "same_segment_money_count": 0, "adjacent_segment_money_count": 0,
         "bounded_following_segments_inspected": 0, "bounded_following_money_count": 0,
         "boundary_stop_reason": None, "intervening_field_label_types": [], "relation_candidates": [],
-        "segment_shape": [],
+        "segment_shape": [], "document_segment_count": len(segments),
+        "label_segment_indexes": [], "money_segment_indexes": [],
     }
     # Fix 13: AÇIK ALAN etiketi tam-sözcük olmalı — çekimli prose ("ihale bedelini/bedelinin yatirmamasi")
     # etiket-bulundu SAYILMAZ (word-boundary). Auction numeratör semantiği değişmez (açık İhale Bedeli alanı).
     label_re = re.compile(r"\b" + re.escape(label) + r"\b")
+    # Gizlilik-güvenli belge-geneli KONUM haritası (yalnız segment İNDEKSLERİ; DEĞER/METİN İÇERİĞİ ASLA):
+    # etiket bloğu ile değer bloğunun ayrı (sütun/başlık) olduğu düzeni teşhis için — tahmin değil, GÖZLEM.
+    nb["label_segment_indexes"] = [j for j, s in enumerate(segments) if label_re.search(_ascii_lower(s))][:20]
+    nb["money_segment_indexes"] = [j for j, s in enumerate(segments)
+                                   if MONEY_LITERAL_RE.search(_ascii_lower(s))][:24]
     for i, seg in enumerate(segments):
         fold = _ascii_lower(seg)
         lm = label_re.search(fold)
@@ -499,6 +505,9 @@ def extract_evidence(
             "relation_candidates": _inb.get("relation_candidates", []),
             "label_occurrence_count": _inb.get("label_occurrence_count", 0),
             "segment_shape": _inb.get("segment_shape", []),
+            "document_segment_count": _inb.get("document_segment_count", 0),
+            "label_segment_indexes": _inb.get("label_segment_indexes", []),
+            "money_segment_indexes": _inb.get("money_segment_indexes", []),
         },
         "settlement": settle_nb,
     }

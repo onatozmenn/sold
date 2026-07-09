@@ -147,6 +147,10 @@ def test_ihale_columnar_layout_returns_none_but_shape_reveals_columns():
     assert nb["label_occurrence_count"] == 1
     assert "money" in nb["segment_shape"]                    # değer bloğu iz'de görünür
     assert nb["segment_shape"][0].startswith("label:ihale bedeli")
+    # belge-geneli KONUM haritası (yalnız indeks; DEĞER YOK): etiket blok[0], değer blok[3,4]
+    assert nb["label_segment_indexes"] == [0]
+    assert nb["money_segment_indexes"] == [3, 4]
+    assert nb["document_segment_count"] == 6
 
 
 def test_no_whole_document_money_scan():
