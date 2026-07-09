@@ -426,7 +426,7 @@ _FORM_HTML = """
   <input type="radio" name="kategori" value="tasinir"> Taşınır
   <input type="radio" name="kategori" value="tasinmaz"> Taşınmaz
   <input type="radio" name="kategori" value="tasit"> Taşıt
-  <label>İl</label>
+  <label for="ilId">İl</label>
   <select id="ilId" name="il"><option>Seçiniz</option><option>ANKARA</option></select>
   <label>Birim</label>
   <select id="birimId" name="birim"><option>Seçiniz</option></select>
@@ -435,6 +435,7 @@ _FORM_HTML = """
   <label>İhale Bitiş Tarih Aralıklarını Seçiniz</label>
   <input type="text" id="baslangicTarih" name="baslangicTarih" placeholder="gg/aa/yyyy" readonly value="">
   <input type="text" id="bitisTarih" name="bitisTarih" placeholder="gg/aa/yyyy" readonly value="">
+  <a id="araLink" class="btn btn-primary" onclick="doSearch()">Ara</a>
   <button type="button" id="araBtn" class="btn-ara">ARA</button>
 </form>
 """
@@ -455,6 +456,17 @@ def test_summarize_form_controls_exposes_structure_privacy_safe():
     # gizlilik-güvenli: alan DEĞERLERİ yok, yalnızca varlık bayrağı
     assert all("value" not in i for i in d["inputs"])
     assert all(i["value_present"] is False for i in date_inputs)
+
+
+def test_summarize_captures_label_and_action_candidates():
+    d = bulk.summarize_form_controls(_FORM_HTML)
+    # etiket ilişkilendirme (for=)
+    il_select = next(s for s in d["selects"] if s["id"] == "ilId")
+    assert il_select["label"] == "İl"
+    # ARA çoğu zaman <a class=btn> — aksiyon adayı olarak yakalanır (buton olmasa da)
+    acts = d.get("action_candidates", [])
+    assert any(a["id"] == "araLink" and a["tag"] == "a" for a in acts)
+    assert any((a.get("text") or "").strip().lower() == "ara" for a in acts)
 
 
 def test_digits_tolerates_date_mask_format():
