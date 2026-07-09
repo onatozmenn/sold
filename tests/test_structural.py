@@ -457,8 +457,8 @@ def test_predictor_identified_mode_labeling():
 # --- GERÇEK denetlenmiş yapısal veri kümesi (Level-2 türevi) ---------------- #
 def test_genuine_datasets_load_and_reconcile_with_level2():
     g = load_genuine_datasets()
-    # UYAP: 7 denetlenmiş tamamlanmış-satış (2 Level-2 + UYAP Batch 1'in 5'i); hepsi satılan
-    assert len(g["uyap"]) == 7
+    # UYAP: 18 denetlenmiş tamamlanmış-satış (2 Level-2 + Batch-1'in 5'i + Ankara 2026-06 toplu 11); hepsi satılan
+    assert len(g["uyap"]) == 18
     a = g["uyap"].set_index("public_record_id")
     a0 = a.loc["16766356960"]
     assert a0["appraised_value"] == 4_500_000  # doğrulanmış reference_price (Q)
@@ -496,7 +496,7 @@ def test_uyap_evidence_expansion_batch1_admitted():
     win/Q = resmî İhale Bedeli / denetlenmiş ekspertiz (Ödenmesi Gereken Bedel DEĞİL)."""
     g = load_genuine_datasets()
     a = g["uyap"].set_index("public_record_id")
-    assert len(g["uyap"]) == 7 and bool(g["uyap"]["sold"].all())  # 2 Level-2 + 5 Batch-1; hepsi satılan
+    assert len(g["uyap"]) == 18 and bool(g["uyap"]["sold"].all())  # 2 Level-2 + 5 Batch-1 + 11 Ankara toplu; hepsi satılan
     expected = {
         "2026/43 Satış": (4_238_000, 4_400_000),
         "2026/89 Satış": (3_025_000, 3_000_000),   # >1 (asking üstü); P/Q yönü FİLTRELENMEZ
@@ -512,10 +512,9 @@ def test_uyap_evidence_expansion_batch1_admitted():
         assert row["winning_bid"] / row["appraised_value"] == pytest.approx(ihale / appraisal, abs=1e-12)
     # ALACAĞA MAHSUBEN kaydı geçerli açık ihale-fiyat kanıtına sahip (eksik/örtük DEĞİL)
     assert a.loc["2026/263 Esas"]["winning_bid"] == 5_715_000
-    # 7 oranın ortalaması = güncel uyap_win_over_appraisal_mean
+    # tüm genuine oranların ortalaması = güncel uyap_win_over_appraisal_mean (veri-güdümlü; kayıt sayısından bağımsız)
     built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
-    ratios = [1.01, 6_550_000 / 13_000_000, 4_238_000 / 4_400_000, 3_025_000 / 3_000_000,
-              4_575_000 / 5_750_000, 4_654_000 / 5_400_000, 5_715_000 / 6_800_000]
+    ratios = (g["uyap"]["winning_bid"] / g["uyap"]["appraised_value"]).tolist()
     assert built["moments"]["uyap_win_over_appraisal_mean"] == pytest.approx(float(np.mean(ratios)), abs=1e-9)
     # 4-momentlik SMM TAM OLARAK 4 kalır; TOKİ external (SMM'e 0 moment); negatif sınıf YOK
     smm_keys = {k for k in built["moments"] if k.startswith(("uyap_win", "kap_log"))}
@@ -534,14 +533,14 @@ def test_uyap_batch1_excluded_non_terminal_not_admitted():
     assert len(exc) == 1 and exc[0]["audit_status"] == "EXCLUDED_NON_TERMINAL"
     assert exc[0]["enters_genuine_uyap"] is False and exc[0]["enters_smm"] is False
     st = dataset_status()
-    assert st["genuine"]["uyap"]["sold"] == 7  # dışlanan kayıt genuine sayımı ETKİLEMEZ
+    assert st["genuine"]["uyap"]["sold"] == 18  # dışlanan kayıt genuine sayımı ETKİLEMEZ
     assert any(x["file"] == "2026/316 Talimat" for x in st["uyap_excluded_candidates"])
 
 
 def test_dataset_status_genuine_counts():
     st = dataset_status()
     g = st["genuine"]
-    assert g["uyap"]["total_audited_auctions"] == 7 and g["uyap"]["sold"] == 7 and g["uyap"]["unsold"] == 0
+    assert g["uyap"]["total_audited_auctions"] == 18 and g["uyap"]["sold"] == 18 and g["uyap"]["unsold"] == 0
     assert g["uyap"]["exact_legal_floors_observed"] == 0  # tüm tabanlar kısmî (claims/costs yok)
     assert g["kap"]["audited_eligible_disposals"] == 2
     assert g["kap"]["negotiated_calibration_observations"] == 2
@@ -917,16 +916,12 @@ def test_uyap_16662608597_admitted_genuine_audited():
 
 def test_uyap_second_sold_unlocks_win_sd_genuine():
     # >=2 gerçek SATILAN açık artırma → uyap_win_over_appraisal_sd observable
-    # (7 satılan: 2 Level-2 + UYAP Evidence Expansion Batch 1'in 5'i)
+    # (18 satılan: 2 Level-2 + Batch-1'in 5'i + Ankara 2026-06 toplu 11)
     g = load_genuine_datasets()
     built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
     assert "uyap_win_over_appraisal_sd" in built["moments"]
-    # TÜM genuine satılan gözlemlerin sd/mean'i (nüfus, ddof=0)
-    _ratios = [
-        4_545_000 / 4_500_000, 6_550_000 / 13_000_000,        # Level-2 (16766356960, 16662608597)
-        4_238_000 / 4_400_000, 3_025_000 / 3_000_000, 4_575_000 / 5_750_000,
-        4_654_000 / 5_400_000, 5_715_000 / 6_800_000,          # UYAP Batch 1 (5 kayıt)
-    ]
+    # TÜM genuine satılan gözlemlerin sd/mean'i (nüfus, ddof=0; veri-güdümlü, kayıt sayısından bağımsız)
+    _ratios = (g["uyap"]["winning_bid"] / g["uyap"]["appraised_value"]).tolist()
     assert built["moments"]["uyap_win_over_appraisal_sd"] == pytest.approx(float(np.std(_ratios)), abs=1e-12)
     assert built["moments"]["uyap_win_over_appraisal_mean"] == pytest.approx(float(np.mean(_ratios)), abs=1e-12)
     # sale_prob SMM'den KALDIRILDI (geçersiz) → m_obs'ta YOK; ineligible'da dokümante
@@ -960,9 +955,9 @@ def test_genuine_uyap_records_completed_sale_class():
         assert a.loc[pid]["outcome_status"] == "Satıldı"
         assert a.loc[pid]["trade_outcome_class"] == "completed_sale"
         assert bool(a.loc[pid]["sold"]) is True
-    # dataset_status: 2 tamamlanmış satış, 0 censored, 0 gerçek no-trade
+    # dataset_status: tüm genuine tamamlanmış satış, 0 censored, 0 gerçek no-trade
     st = dataset_status()["genuine"]["uyap"]
-    assert st["sold"] == 7 and st["censored_outcomes"] == 0 and st["genuine_no_trade"] == 0
+    assert st["sold"] == 18 and st["censored_outcomes"] == 0 and st["genuine_no_trade"] == 0
 
 
 # --- Kısmi kimliklendirme (partial identification) -------------------------- #

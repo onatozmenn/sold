@@ -120,7 +120,18 @@ def admit(candidate: dict, genuine_path: Path | str | None = None, store_dir: Pa
     path = Path(genuine_path) if genuine_path else _genuine_dir() / "uyap.json"
     records = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
     existing_ids = {str(r.get("public_record_id")) for r in records}
-    if str(rec["public_record_id"]) in existing_ids:
+    # Zaten-mevcut denetimi: (a) public_record_id EŞLEŞMESİ, YA DA (b) aynı (İhale Bedeli, ekspertiz) çifti.
+    # Genuine set KARIŞIK kimlik formatı taşıyor (bazı KAYIT NO, bazı 'Esas'); farklı kimlik altında AYNI açık
+    # artırmayı KOPYALAMAMAK için (P,Q) ile de eşleştirilir (ör. '2026/23 Esas' == batch KAYIT NO 16659682292).
+    def _pq(r: dict):
+        try:
+            return (round(float(r.get("winning_bid")), 2), round(float(r.get("appraised_value")), 2))
+        except (TypeError, ValueError):
+            return None
+
+    existing_pq = {p for p in (_pq(r) for r in records) if p is not None}
+    rec_pq = _pq(rec)
+    if str(rec["public_record_id"]) in existing_ids or (rec_pq is not None and rec_pq in existing_pq):
         candidate["state"] = STATE_ADMITTED
         candidate["admitted_public_record_id"] = rec["public_record_id"]
         store.log_event(candidate, "admit_idempotent", f"already present: {rec['public_record_id']}")

@@ -191,7 +191,7 @@ def test_pilot_structural_freeze_four_moments_no_sale_prob():
         "kap_log_ratio_mean", "kap_log_ratio_sd",
     }
     assert "uyap_sale_prob" not in smm
-    assert fp["genuine_uyap_count"] == 7
+    assert fp["genuine_uyap_count"] == 18
 
 
 def test_compare_to_truth_file_id_alias_accepted():

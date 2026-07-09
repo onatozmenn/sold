@@ -276,7 +276,9 @@ def test_admission_feeds_existing_frozen_schema(tmp_path):
     for f in ("uyap.json", "kap.json", "toki.json"):
         shutil.copyfile(GENUINE_DIR / f, gdir / f)
     before = len(json.loads((gdir / "uyap.json").read_text(encoding="utf-8")))
-    c = _pipeline_to_audit("NEWADM/2026", CASES["CASE1"][0], tmp_path, genuine_path=gdir / "uyap.json")
+    # genuine'de OLMAYAN benzersiz (P,Q) — mevcut vakalarla (P,Q)-dedup ÇAKIŞMASIN (CASE1-5 zaten genuine).
+    uniq = _artifacts("7.777.777,00", "6.666.666,00", odenmesi="5.000.000,00", ada="9999", parsel="9")
+    c = _pipeline_to_audit("NEWADM/2026", uniq, tmp_path, genuine_path=gdir / "uyap.json")
     r = admit_candidate(c, genuine_path=gdir / "uyap.json", store_dir=tmp_path)
     assert r["status"] == "admitted"
     after = len(json.loads((gdir / "uyap.json").read_text(encoding="utf-8")))
@@ -289,6 +291,23 @@ def test_admission_feeds_existing_frozen_schema(tmp_path):
         "kap_log_ratio_mean", "kap_log_ratio_sd",
     }
     assert "uyap_sale_prob" not in built["moments"]   # negatif sınıf üretilmedi
+
+
+def test_admission_dedup_by_pq_across_id_formats(tmp_path):
+    # Genuine set KARIŞIK kimlik (bazı KAYIT NO, bazı 'Esas'); AYNI açık artırma farklı kimlik altında
+    # KOPYALANMAMALI → (P,Q) ile de dedup. CASE4 (4.654.000/5.400.000) genuine'de '2026/23 Esas' olarak VAR.
+    from sold.structural.datasets import GENUINE_DIR
+
+    gdir = tmp_path / "genuine"
+    gdir.mkdir()
+    for f in ("uyap.json", "kap.json", "toki.json"):
+        shutil.copyfile(GENUINE_DIR / f, gdir / f)
+    before = len(json.loads((gdir / "uyap.json").read_text(encoding="utf-8")))
+    c = _pipeline_to_audit("2026/23", CASES["CASE4"][0], tmp_path, genuine_path=gdir / "uyap.json")
+    r = admit_candidate(c, genuine_path=gdir / "uyap.json", store_dir=tmp_path)
+    assert r["status"] == "already_admitted"          # (P,Q) genuine'de var → farklı kimlikle bile KOPYA yok
+    after = len(json.loads((gdir / "uyap.json").read_text(encoding="utf-8")))
+    assert after == before                            # yeni kayıt EKLENMEDİ (frozen set korunur)
 
 
 # --------------------------------------------------------------------------- #
