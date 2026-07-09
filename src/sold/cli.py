@@ -2057,8 +2057,8 @@ def uyap_pilot_cmd(
 def uyap_bulk_cmd(
     cdp_endpoint: Optional[str] = typer.Option(None, "--cdp-endpoint", help="Kendi başlattığınız Chrome'un CDP uç noktası (ör. http://127.0.0.1:9222)"),
     province: str = typer.Option("ANKARA", "--province", help="İl (gerçek UYAP İl seçicisinden; ilk kontrollü koşu ANKARA)"),
-    date_from: str = typer.Option(..., "--date-from", help="Başlangıç (YYYY-MM-DD)"),
-    date_to: str = typer.Option(..., "--date-to", help="Bitiş (YYYY-MM-DD)"),
+    date_from: Optional[str] = typer.Option(None, "--date-from", help="Başlangıç (YYYY-MM-DD); --diagnose dışında gerekli"),
+    date_to: Optional[str] = typer.Option(None, "--date-to", help="Bitiş (YYYY-MM-DD); --diagnose dışında gerekli"),
     resume: bool = typer.Option(False, "--resume", help="Tamamlanmış pencereleri atla, kaldığı yerden devam et"),
     max_records: Optional[int] = typer.Option(None, "--max-records", help="En fazla bu kadar Satıldı açık artırma edin"),
     max_windows: Optional[int] = typer.Option(None, "--max-windows", help="En fazla bu kadar tarih penceresi işle"),
@@ -2113,6 +2113,9 @@ def uyap_bulk_cmd(
         typer.secho("  Bu çıktıyı paylaşın; canlı seçicileri (tarih/İl/kategori/ARA) gerçek DOM'a göre netleştireceğim.",
                     fg=typer.colors.GREEN)
         raise typer.Exit(code=0)
+    if not date_from or not date_to:
+        typer.secho("--date-from ve --date-to gerekli (yalnızca --diagnose bunları gerektirmez).", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
     try:
         s = UyapBulkCollector(
             cdp_endpoint=cdp_endpoint or "", store_dir=store_dir, genuine_path=genuine_path,
