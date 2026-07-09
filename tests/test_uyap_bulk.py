@@ -415,3 +415,48 @@ def test_bulk_layer_defines_no_new_admission_path():
     src = inspect.getsource(bulk)
     assert "admit_candidate" not in src and "build_genuine_record" not in src
     assert "def admit" not in src
+
+
+# --------------------------------------------------------------------------- #
+# 13) Form-yapısı tanısı (read-only) — canlı seçicileri gerçek DOM'a eşlemek için.
+# --------------------------------------------------------------------------- #
+_FORM_HTML = """
+<form>
+  <label>Kategori</label>
+  <input type="radio" name="kategori" value="tasinir"> Taşınır
+  <input type="radio" name="kategori" value="tasinmaz"> Taşınmaz
+  <input type="radio" name="kategori" value="tasit"> Taşıt
+  <label>İl</label>
+  <select id="ilId" name="il"><option>Seçiniz</option><option>ANKARA</option></select>
+  <label>Birim</label>
+  <select id="birimId" name="birim"><option>Seçiniz</option></select>
+  <label>Dosya No</label>
+  <input type="text" id="dosyaNo" name="dosyaNo" placeholder="2026/263">
+  <label>İhale Bitiş Tarih Aralıklarını Seçiniz</label>
+  <input type="text" id="baslangicTarih" name="baslangicTarih" placeholder="gg/aa/yyyy" readonly value="">
+  <input type="text" id="bitisTarih" name="bitisTarih" placeholder="gg/aa/yyyy" readonly value="">
+  <button type="button" id="araBtn" class="btn-ara">ARA</button>
+</form>
+"""
+
+
+def test_summarize_form_controls_exposes_structure_privacy_safe():
+    d = bulk.summarize_form_controls(_FORM_HTML)
+    assert d["markers"]["has_tasinmaz"] is True
+    assert d["markers"]["has_date_label"] is True
+    assert d["markers"]["has_ara_button"] is True
+    ids = {i["id"] for i in d["inputs"]}
+    assert {"baslangicTarih", "bitisTarih", "dosyaNo"} <= ids
+    # readonly tarih kutuları POZİTİF raporlanır (düz fill() çalışmaz → takvim gerekebilir)
+    date_inputs = [i for i in d["inputs"] if i["id"] in ("baslangicTarih", "bitisTarih")]
+    assert len(date_inputs) == 2 and all(i["readonly"] for i in date_inputs)
+    assert {s["id"] for s in d["selects"]} >= {"ilId", "birimId"}
+    assert any(b["text"] == "ARA" for b in d["buttons"])
+    # gizlilik-güvenli: alan DEĞERLERİ yok, yalnızca varlık bayrağı
+    assert all("value" not in i for i in d["inputs"])
+    assert all(i["value_present"] is False for i in date_inputs)
+
+
+def test_digits_tolerates_date_mask_format():
+    assert bulk._digits("10/06/2026") == bulk._digits("10.06.2026") == "10062026"
+
