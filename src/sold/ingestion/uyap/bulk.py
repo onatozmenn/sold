@@ -316,6 +316,15 @@ def parse_result_cards(html: object) -> list[dict]:
     return []
 
 
+def result_card_signature(html: object) -> tuple:
+    """Sonuç sayfasındaki kartların kimlik imzası (KAYIT NO/Esas kümesi) — sayfa GEÇİŞİ doğrulaması.
+
+    Sayfalama tıklaması sonrası kart kümesi GERÇEKTEN değişti mi anlamak için kullanılır (yalnızca
+    'içerik değişti' yeterli değil: spinner/DOM oynaması yanıltabilir). OFFLINE test edilebilir.
+    """
+    return tuple(sorted((c.get("kayit_no") or c.get("file_id") or "") for c in parse_result_cards(html)))
+
+
 def summarize_form_controls(html: object) -> dict:
     """'Geçmiş İlanlar' arama formunun GERÇEK kontrol yapısını KİŞİSEL-OLMAYAN özetler.
 
@@ -924,9 +933,12 @@ class UyapBulkCollector:
         self._print(f"  sonuç={meta.get('result_count')} · geçerli sayfalar={valid_pages} "
                     f"(page 0 hariç) · tamamlanan={rec.get('pages_completed')}")
 
+        processed_ids: set = set()
+        pages_failed: list = []
         for pnum in pages_remaining(rec, valid_pages):
             if not self._goto_page(page, pnum):
-                self._print(f"  sayfa {pnum} aktifleştirilemedi/değişmedi — atlanıyor (sessizce geçilmez).")
+                pages_failed.append(pnum)
+                self._print(f"  sayfa {pnum} yüklenemedi/kart kümesi değişmedi — atlanıyor (pencere COMPLETE değil, tekrar denenir).")
                 continue
             page_html = page.content()
             exp = detect_session_expiration(page_html, page.url)
@@ -937,10 +949,18 @@ class UyapBulkCollector:
                 return "SESSION_EXPIRED"
 
             cards = parse_result_cards(page_html)
-            rec["result_cards_inspected"] += len(cards)
-            summary["result_cards_inspected"] += len(cards)
-            sold = [c for c in cards if c["sold"]]
-            self._print(f"  sayfa {pnum}/{valid_pages[-1] if valid_pages else pnum} · kart={len(cards)} · Satıldı={len(sold)}")
+            # Sayfalar arası KAYIT NO tekilleştirme: aynı kart iki sayfada görünürse tekrar işlenmez.
+            new_cards = []
+            for c in cards:
+                cid = c.get("kayit_no") or c.get("file_id")
+                if cid in processed_ids:
+                    continue
+                processed_ids.add(cid)
+                new_cards.append(c)
+            rec["result_cards_inspected"] += len(new_cards)
+            summary["result_cards_inspected"] += len(new_cards)
+            sold = [c for c in new_cards if c["sold"]]
+            self._print(f"  sayfa {pnum}/{valid_pages[-1] if valid_pages else pnum} · kart={len(new_cards)} · Satıldı={len(sold)}")
 
             for card in sold:
                 if max_records and summary["records_processed"] >= max_records:
@@ -974,6 +994,12 @@ class UyapBulkCollector:
             save_bulk_state(state, self.store_dir)
             self._print(f"  sayfa {pnum} kontrol noktası kaydedildi.")
 
+        if pages_failed:
+            rec["status"] = "PAGINATION_INCOMPLETE"
+            upsert_window_record(state, rec)
+            save_bulk_state(state, self.store_dir)
+            self._print(f"  sayfa(lar) {pages_failed} yüklenemedi — pencere COMPLETE İŞARETLENMEDİ, sonraki koşuda tekrar denenir.")
+            return None
         rec["status"] = "COMPLETE"
         upsert_window_record(state, rec)
         save_bulk_state(state, self.store_dir)
@@ -1179,6 +1205,11 @@ class UyapBulkCollector:
         return pages or [1]
 
     def _goto_page(self, page, pnum):  # pragma: no cover - canlı DOM
+        """Geçerli sayfaya (pnum>0) gider; yalnızca kart KİMLİK İMZASI GERÇEKTEN değişirse başarılı sayar.
+
+        page 0 asla tıklanmaz. Sadece 'içerik değişti' yeterli değil (spinner/DOM oynaması yanıltır):
+        AJAX sayfa 2'yi gerçekten yükleyene (kart kümesi değişene) kadar beklenir; yüklenmezse False.
+        """
         import re as _re
 
         if pnum <= 0:                       # page 0 ASLA tıklanmaz
@@ -1187,23 +1218,39 @@ class UyapBulkCollector:
             before = page.content()
         except Exception:
             before = ""
-        # Zaten aktifse tekrar tıklama; ilk sayfa çoğu zaman ARA sonrası aktiftir.
-        if pnum == 1 and extract_result_metadata(before).get("current_page") in (1, None):
+        before_sig = result_card_signature(before)
+        # İlk sayfa ARA sonrası zaten aktiftir; kart varsa tekrar tıklama.
+        if pnum == 1 and before_sig:
             return True
         for getter in (
             lambda: page.get_by_role("link", name=_re.compile(rf"^\s*{pnum}\s*$")),
             lambda: page.get_by_role("button", name=_re.compile(rf"^\s*{pnum}\s*$")),
+            lambda: page.locator("[class*=pag i] a, [class*=page i] a, ul.pagination a, nav a").filter(
+                has_text=_re.compile(rf"^\s*{pnum}\s*$")),
         ):
             try:
                 loc = getter()
-                if loc.count() > 0:
-                    loc.first.click()
-                    for _ in range(20):
+                for i in range(min(loc.count(), 10)):
+                    el = loc.nth(i)
+                    try:
+                        if not el.is_visible():
+                            continue
+                        el.scroll_into_view_if_needed()
+                    except Exception:
+                        pass
+                    try:
+                        el.click()
+                    except Exception:
+                        continue
+                    for _ in range(30):        # ~9s: kart imzası değişene (gerçek sayfa) kadar bekle
                         page.wait_for_timeout(300)
-                        cur = page.content()
-                        if extract_result_metadata(cur).get("current_page") == pnum or cur != before:
+                        try:
+                            cur_sig = result_card_signature(page.content())
+                        except Exception:
+                            cur_sig = ()
+                        if cur_sig and cur_sig != before_sig:
                             return True
-                    return False
+                    return False               # tıklandı ama kart kümesi değişmedi → gerçek geçiş yok
             except Exception:
                 continue
         return False

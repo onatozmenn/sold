@@ -25,6 +25,7 @@ from .bulk import (
     load_bulk_state,
     parse_result_cards,
     process_sold_auction,
+    result_card_signature,
     save_bulk_state,
     should_acquire,
     summarize_form_controls,
@@ -220,6 +221,7 @@ __all__ = [
     "process_sold_auction",
     "summarize_form_controls",
     "summarize_result_structure",
+    "result_card_signature",
     "load_bulk_state",
     "save_bulk_state",
     # pilot (live browser verification)
