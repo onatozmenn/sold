@@ -1194,18 +1194,31 @@ class UyapBulkCollector:
         return False
 
     def _wait_result_state(self, page):  # pragma: no cover - canlı DOM
+        """ARA sonrası sonuçların TAM yüklenmesini bekler: kart imzası STABİLLEŞENE (art arda aynı)
+        kadar — AJAX kartları kademeli render edebilir (önce 8 görünüp sonra 20 olması gibi). Gerçek
+        0 sonuç / oturum kaybı hemen döner.
+        """
         deadline = self.result_timeout_ms
-        step = 500
+        step = 400
         waited = 0
         html = ""
+        last_sig = None
+        stable = 0
         while waited < deadline:
             try:
                 html = page.content()
             except Exception:
                 html = ""
-            if (self._result_ready(html) or zero_results(html)
-                    or detect_session_expiration(html, page.url)["expired"]):
+            if detect_session_expiration(html, page.url)["expired"] or zero_results(html):
                 return html
+            sig = result_card_signature(html)
+            if sig and sig == last_sig:
+                stable += 1
+                if stable >= 2:            # ~0.8s değişmedi → tam yüklendi
+                    return html
+            else:
+                last_sig = sig
+                stable = 0
             page.wait_for_timeout(step)
             waited += step
         return html
@@ -1217,31 +1230,35 @@ class UyapBulkCollector:
         return bool(parse_result_cards(html))
 
     def _valid_pages(self, page, meta):  # pragma: no cover - canlı DOM
+        """Geçerli sayfa numaraları — gerçek UYAP pagination ``<a id="item-N">N</a>`` (item-0 = geçersiz
+        '0', task gereği atlanır). Yedek: rol-tabanlı numerik linkler; son çare meta total_pages."""
         import re as _re
 
         labels: list[str] = []
         try:
-            loc = page.get_by_role("link", name=_re.compile(r"^\s*\d+\s*$"))
-            for i in range(min(loc.count(), 50)):
+            loc = page.locator("a[id^=item-]")
+            for i in range(min(loc.count(), 60)):
                 labels.append(loc.nth(i).inner_text().strip())
         except Exception:
             pass
-        try:
-            loc2 = page.get_by_role("button", name=_re.compile(r"^\s*\d+\s*$"))
-            for i in range(min(loc2.count(), 50)):
-                labels.append(loc2.nth(i).inner_text().strip())
-        except Exception:
-            pass
-        pages = valid_result_pages(labels)
+        if not labels:
+            for role in ("link", "button"):
+                try:
+                    l2 = page.get_by_role(role, name=_re.compile(r"^\s*\d+\s*$"))
+                    for i in range(min(l2.count(), 60)):
+                        labels.append(l2.nth(i).inner_text().strip())
+                except Exception:
+                    continue
+        pages = valid_result_pages(labels)   # 0 ASLA dahil edilmez
         if not pages and meta.get("total_pages"):
-            pages = list(range(1, int(meta["total_pages"]) + 1))  # 0 ASLA dahil edilmez
+            pages = list(range(1, int(meta["total_pages"]) + 1))
         return pages or [1]
 
     def _goto_page(self, page, pnum):  # pragma: no cover - canlı DOM
-        """Geçerli sayfaya (pnum>0) gider; yalnızca kart KİMLİK İMZASI GERÇEKTEN değişirse başarılı sayar.
+        """Geçerli sayfaya (pnum>0) gider; kart imzası GERÇEKTEN değişip STABİLLEŞENE kadar bekler.
 
-        page 0 asla tıklanmaz. Sadece 'içerik değişti' yeterli değil (spinner/DOM oynaması yanıltır):
-        AJAX sayfa 2'yi gerçekten yükleyene (kart kümesi değişene) kadar beklenir; yüklenmezse False.
+        Gerçek UYAP pagination: ``<a id="item-N">N</a>`` (javascript:; onclick). page 0 asla tıklanmaz.
+        'İçerik değişti' yeterli değil (AJAX kademeli): yeni kart kümesi görünüp sabitlenmeli.
         """
         import re as _re
 
@@ -1255,11 +1272,12 @@ class UyapBulkCollector:
         # İlk sayfa ARA sonrası zaten aktiftir; kart varsa tekrar tıklama.
         if pnum == 1 and before_sig:
             return True
+        num_re = _re.compile(rf"^\s*{pnum}\s*$")
         for getter in (
-            lambda: page.get_by_role("link", name=_re.compile(rf"^\s*{pnum}\s*$")),
-            lambda: page.get_by_role("button", name=_re.compile(rf"^\s*{pnum}\s*$")),
-            lambda: page.locator("[class*=pag i] a, [class*=page i] a, ul.pagination a, nav a").filter(
-                has_text=_re.compile(rf"^\s*{pnum}\s*$")),
+            lambda: page.locator(f"a#item-{pnum}"),
+            lambda: page.locator("a[id^=item-]").filter(has_text=num_re),
+            lambda: page.get_by_role("link", name=num_re),
+            lambda: page.get_by_role("button", name=num_re),
         ):
             try:
                 loc = getter()
@@ -1269,24 +1287,36 @@ class UyapBulkCollector:
                         if not el.is_visible():
                             continue
                         el.scroll_into_view_if_needed()
-                    except Exception:
-                        pass
-                    try:
                         el.click()
                     except Exception:
                         continue
-                    for _ in range(30):        # ~9s: kart imzası değişene (gerçek sayfa) kadar bekle
-                        page.wait_for_timeout(300)
-                        try:
-                            cur_sig = result_card_signature(page.content())
-                        except Exception:
-                            cur_sig = ()
-                        if cur_sig and cur_sig != before_sig:
-                            return True
-                    return False               # tıklandı ama kart kümesi değişmedi → gerçek geçiş yok
+                    if self._wait_page_loaded(page, before_sig):
+                        return True
             except Exception:
                 continue
         return False
+
+    def _wait_page_loaded(self, page, before_sig):  # pragma: no cover - canlı DOM
+        """Tıklama sonrası kart kümesi ÖNCE (before_sig'den) değişsin SONRA stabillessin (tam yüklensin)."""
+        last = None
+        stable = 0
+        changed = False
+        for _ in range(40):                # ~12s
+            page.wait_for_timeout(300)
+            try:
+                s = result_card_signature(page.content())
+            except Exception:
+                s = ()
+            if s and s != before_sig:
+                changed = True
+            if changed and s and s == last:
+                stable += 1
+                if stable >= 2:
+                    return True
+            else:
+                last = s
+                stable = 0
+        return changed                     # değişti ama stabilize olmadıysa da kabul; hiç değişmediyse False
 
     def _close_modal(self, page):  # pragma: no cover - canlı DOM
         import re as _re
