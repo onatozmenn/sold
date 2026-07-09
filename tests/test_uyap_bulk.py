@@ -360,6 +360,44 @@ def test_resume_skips_completed_and_resumes_incomplete(tmp_path):
     assert bulk.should_acquire({"state": STATE_EXCLUDED}) is False           # terminal-red ≠ çekme hatası
 
 
+def test_force_reacquires_known_candidate_but_not_admitted(tmp_path):
+    # --force: bilinen (denetlenmiş) adayı GÜNCEL toplama koduyla YENİDEN edinir. Canlı vaka:
+    # 2026/23 önceki BOZUK koşudan MISSING_APPRAISAL cache'lenmişti; force olmadan atlanıyordu.
+    gp = tmp_path / "genuine_uyap.json"
+    first = bulk.process_sold_auction(
+        _sold_card(), acquire_documents=_fake_acquire_ok, store_dir=tmp_path,
+        genuine_path=gp, province_label="ANKARA",
+    )
+    assert first["outcome"] == "acquired"
+    # force olmadan → bilinen aday atlanır (mevcut sözleşme korunur)
+    skip = bulk.process_sold_auction(
+        _sold_card(), acquire_documents=_fake_acquire_fail, store_dir=tmp_path,
+        genuine_path=gp, province_label="ANKARA",
+    )
+    assert skip["outcome"] == "skipped_already_acquired"
+    # force ile → edinici GERÇEKTEN yeniden çağrılır ve yeniden edinilir
+    calls = {"n": 0}
+
+    def _counting_acquire(file_id, institution):
+        calls["n"] += 1
+        return _fake_acquire_ok(file_id, institution)
+
+    forced = bulk.process_sold_auction(
+        _sold_card(), acquire_documents=_counting_acquire, store_dir=tmp_path,
+        genuine_path=gp, province_label="ANKARA", force=True,
+    )
+    assert forced["outcome"] == "acquired" and calls["n"] == 1
+    # ADMİSYON yapılmış aday force ile BİLE yeniden edinilmez (açık insan admisyonu korunur)
+    cand = store.get_candidate(forced["candidate_id"], tmp_path)
+    cand["admitted_public_record_id"] = "UYAP-ADMITTED-1"
+    store.upsert(cand, tmp_path)
+    guarded = bulk.process_sold_auction(
+        _sold_card(), acquire_documents=_fake_acquire_fail, store_dir=tmp_path,
+        genuine_path=gp, province_label="ANKARA", force=True,
+    )
+    assert guarded["outcome"] == "skipped_already_acquired"
+
+
 # --------------------------------------------------------------------------- #
 # 9) Modal hatası — bir açık artırmanın hatası sonrakinin kimliğini/durumunu bozmaz.
 # --------------------------------------------------------------------------- #

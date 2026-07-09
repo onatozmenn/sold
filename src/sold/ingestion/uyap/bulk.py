@@ -716,6 +716,7 @@ def process_sold_auction(
     store_dir: Path | str | None = None,
     genuine_path: Path | str | None = None,
     discovery_only: bool = False,
+    force: bool = False,
     source_page_ref: str | None = None,
     province_label: str | None = None,
     window: dict | None = None,
@@ -767,8 +768,11 @@ def process_sold_auction(
         return outcome
 
     # 2) Yeniden başlama / tekilleştirme: zaten edinilmiş olanı varsayılan olarak atla.
+    #    --force: bilinen (denetlenmiş) adayı da YENİDEN edin (güncel toplama koduyla tekrar dene).
+    #    ANCAK açıkça ADMİSYON yapılmış (admitted_public_record_id) adaya force ile bile DOKUNMA.
     existing = store.get_candidate(cand["candidate_id"], store_dir) or cand
-    if not should_acquire(existing):
+    already_admitted = bool(existing.get("admitted_public_record_id"))
+    if already_admitted or (not force and not should_acquire(existing)):
         outcome.update({
             "skipped": True,
             "outcome": "skipped_already_acquired",
@@ -1062,7 +1066,8 @@ class UyapBulkCollector:
                     save_bulk_state(state, self.store_dir)
 
                 stop = self._run_window(page, context, _acquire, province, w, rec, state,
-                                        summary, max_records, discovery_only, acquired_total, kayit_no)
+                                        summary, max_records, discovery_only, acquired_total, kayit_no,
+                                        force=force)
                 acquired_total = summary["acquisitions_completed"] + summary["sold_skipped_known"]
                 summary["windows_processed"] += 1
                 if stop == "SESSION_EXPIRED":
@@ -1083,7 +1088,8 @@ class UyapBulkCollector:
         return summary
 
     def _run_window(self, page, context, acquire, province, w, rec, state, summary,
-                    max_records, discovery_only, acquired_total, target_kayit_no=None) -> str | None:  # pragma: no cover
+                    max_records, discovery_only, acquired_total, target_kayit_no=None,
+                    force: bool = False) -> str | None:  # pragma: no cover
         start_ui = format_uyap_ui_date(w["start"])
         end_ui = format_uyap_ui_date(w["end"])
         self._print(f"[UYAP BULK] pencere {w['start']}→{w['end']} · {CATEGORY_TASINMAZ} · {province}")
@@ -1182,6 +1188,7 @@ class UyapBulkCollector:
                     card, acquire_documents=acquire, store_dir=self.store_dir,
                     genuine_path=self.genuine_path, discovery_only=discovery_only,
                     source_page_ref=self._safe_ref(page.url), province_label=province, window=w,
+                    force=force,
                 )
                 summary["records_processed"] += 1
                 rec["sold_discovered"] += 1
