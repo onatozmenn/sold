@@ -548,7 +548,7 @@ def summarize_document_area(html: object) -> list[dict]:
     return out[:30]
 
 
-def document_modal_skeleton(html: object, modal_id: str = "ihale_evraklari_modal", max_depth: int = 5) -> dict | None:
+def document_modal_skeleton(html: object, modal_id: str = "ihale_evraklari_modal", max_depth: int = 8) -> dict | None:
     """Inner element tree of the document-list modal (default id 'ihale_evraklari_modal').
 
     Reveals the real row structure + download/eye control tags/class/href/onclick so the row
@@ -1203,7 +1203,11 @@ class UyapBulkCollector:
         return best or (context.pages[0] if context.pages else None)
 
     def _dismiss_notices(self, page):  # pragma: no cover - canlı DOM
-        """Yalnız bilgilendirme/duyuru pop-up'larını KAPATIR (Tamam/Kapat). Yasal 'Kabul Et' TIKLANMAZ."""
+        """Bilgilendirme/duyuru pop-up'larını + açık kalmış Bootstrap modallarını KAPATIR.
+
+        Yasal 'Kabul Et' TIKLANMAZ; yalnız Tamam/Kapat/X/Escape. Açık kalan bir modal (ör. önceki
+        koşudan ihale_evraklari_modal) bir sonraki aramanın tarih alanlarını bloklar → temizlenir.
+        """
         for sel in ("#closeBtnDuyuru", "#btnCloseTrialOk"):
             try:
                 el = page.locator(sel)
@@ -1212,6 +1216,26 @@ class UyapBulkCollector:
                     page.wait_for_timeout(200)
             except Exception:
                 continue
+        for _ in range(3):
+            try:
+                if page.locator(".modal.in, .modal.show").count() == 0:
+                    break
+                closes = page.locator(".modal.in .close, .modal.show .close, "
+                                      ".modal.in [data-dismiss=modal], .modal.show [data-dismiss=modal]")
+                clicked = False
+                for i in range(min(closes.count(), 5)):
+                    try:
+                        if closes.nth(i).is_visible():
+                            closes.nth(i).click()
+                            clicked = True
+                            page.wait_for_timeout(200)
+                    except Exception:
+                        continue
+                if not clicked:
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(200)
+            except Exception:
+                break
 
     def _select_category_tasinmaz(self, page):  # pragma: no cover - canlı DOM
         """Geçmiş İlanlar (history) formunda Taşınmaz kategorisini seçer.
