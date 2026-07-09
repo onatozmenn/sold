@@ -2013,6 +2013,55 @@ def uyap_status_cmd(store_dir: Optional[str] = typer.Option(None)) -> None:
     typer.echo(f"  inceleme blokerleri: {s['review_blockers']} · admissible: {s['admissible']} · admitte: {s['admitted']} · dışlanan: {s['excluded_non_terminal']}")
 
 
+@uyap_app.command("show")
+def uyap_show_cmd(
+    file_id: Optional[str] = typer.Option(None, "--file-id", help="Dosya/Esas No ile eşleştir (ör. 2026/23)"),
+    kayit_no: Optional[str] = typer.Option(None, "--kayit-no", help="KAYIT NO ile eşleştir"),
+    candidate_id: Optional[str] = typer.Option(None, "--candidate-id", help="Aday kimliği ile eşleştir"),
+    store_dir: Optional[str] = typer.Option(None),
+) -> None:
+    """Bir adayın çıkarım + toplama tanılarını gösterir (neden bloklandığını görmek için; READ-ONLY)."""
+    from .ingestion.uyap import store
+
+    cands = store.load_candidates(store_dir)
+
+    def _match(c: dict) -> bool:
+        if candidate_id and c.get("candidate_id") == candidate_id:
+            return True
+        if kayit_no and (c.get("kayit_no") or (c.get("bulk") or {}).get("kayit_no")) == kayit_no:
+            return True
+        if file_id and str(c.get("file_id")) == file_id:
+            return True
+        return False
+
+    selective = bool(candidate_id or kayit_no or file_id)
+    matches = [c for c in cands if _match(c)] if selective else cands
+    if not matches:
+        typer.secho("Eşleşen aday yok.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    for c in matches[:8]:
+        au = c.get("audit") or {}
+        ev = c.get("extracted") or {}
+        diag = (c.get("bulk") or {}).get("collection_diagnostics") or {}
+        typer.secho(f"# {c.get('candidate_id')} · dosya={c.get('file_id')} · KAYIT NO={c.get('kayit_no')} · durum={c.get('state')}",
+                    fg=typer.colors.CYAN, bold=True)
+        typer.echo(f"  denetim: {au.get('decision')} · P={au.get('auction_price')} · Q={au.get('appraisal_value')}")
+        typer.echo(f"  artifacts: {sorted({a.get('artifact_type') for a in c.get('artifacts', [])})}")
+        typer.echo(f"  çıkarım: ihale_bedeli={ev.get('ihale_bedeli')} · appraisal={ev.get('appraisal_value')} · "
+                   f"appraisal_label_found={ev.get('appraisal_field_label_found')} · appraisal_cands={ev.get('appraisal_candidates')} · "
+                   f"terminal={ev.get('terminal_status_text')}")
+        typer.echo(f"  toplama: page_state={diag.get('page_state')} · entry={diag.get('document_entry_path')} · "
+                   f"card_found={diag.get('target_record_card_found')} · control_found={diag.get('document_list_control_found')} "
+                   f"({diag.get('document_list_control_kind')}) · list_opened={diag.get('document_list_opened')} · "
+                   f"container={diag.get('document_list_container_kind')}")
+        typer.echo(f"  tanınan satırlar: {[r.get('artifact_type') for r in diag.get('recognized_document_rows', [])]}")
+        typer.echo(f"  viewer_pages_opened={diag.get('viewer_pages_opened')} · failures={diag.get('document_collection_failures')}")
+        for att in diag.get("document_collection_attempts", []):
+            typer.echo(f"    - attempt {att.get('artifact_type') or att.get('stage')}: blocking={att.get('blocking_reason')} · "
+                       f"native_attempted={att.get('native_download_attempted')} · native_collected={att.get('native_artifact_collected')} · "
+                       f"doc_source={att.get('document_source_artifact_collected')}")
+
+
 @uyap_app.command("pilot")
 def uyap_pilot_cmd(
     cdp_endpoint: Optional[str] = typer.Option(None, help="Kendi başlattığınız Chrome'un CDP uç noktası (ör. http://127.0.0.1:9222)"),
