@@ -469,6 +469,32 @@ def test_summarize_captures_label_and_action_candidates():
     assert any((a.get("text") or "").strip().lower() == "ara" for a in acts)
 
 
+_RESULTS_HTML = """
+<div class="sonucListe">
+  <div class="ilan-card"><span>KAYIT NO: 16701234</span><span>2026/263 Esas</span>
+    <span>Ankara 12. İcra Dairesi</span><span>Satıldı</span>
+    <a class="btn">İncele</a><a class="btn" id="detailButton">İhale Evrak Listesi</a></div>
+  <div class="ilan-card"><span>KAYIT NO: 16709999</span><span>2026/999 Esas</span>
+    <span>Ankara 5. İcra Dairesi</span><span>Satıldı</span>
+    <a class="btn">İncele</a></div>
+</div>
+<div>32 sonuç bulundu.</div>
+"""
+
+
+def test_summarize_result_structure_reports_cards_and_skeleton():
+    d = bulk.summarize_result_structure(_RESULTS_HTML)
+    assert d["result_count"] == 32
+    assert d["parsed_card_count"] == 2
+    # tekrarlı kart yapısı: tek-dosya-kimlikli + durumlu elemanlar tespit edilir
+    assert any(c["single_file_id"] >= 2 and c["with_status"] >= 2 for c in d["candidates"])
+    # iskelet metin İÇERMEZ, yalnız tag/class
+    sk = d["first_card_skeleton"]
+    assert sk is not None and sk["tag"] == "div"
+    assert "text" not in sk
+
+
+
 def test_digits_tolerates_date_mask_format():
     assert bulk._digits("10/06/2026") == bulk._digits("10.06.2026") == "10062026"
 
