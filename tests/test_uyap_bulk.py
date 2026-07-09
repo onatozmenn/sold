@@ -175,6 +175,32 @@ def _distinct_file_ids(text: str) -> set:
     return {re.sub(r"\s+", "", n) for n in re.findall(r"\b\d{3,4}\s*/\s*\d+\b", text)}
 
 
+# gerçek UYAP sonuç kartı: <li class="incelenen-li {KAYIT_NO}"> ... KAYIT NO class'ta
+_INCELENEN_HTML = """
+<ul>
+  <li class="incelenen-li 16760761856"><i class="incelenen-icon fa fa-asterisk"></i>
+    <article class="box"><figure class="col-sm-5"></figure>
+      <div class="details">2026/263 Esas · Ankara 12. İcra Dairesi · Satıldı · Satış İşlemleri Tamamlandı</div>
+    </article></li>
+  <li class="incelenen-li 16760761999"><i class="incelenen-icon fa fa-asterisk"></i>
+    <article class="box"><div class="details">2026/999 Esas · Ankara 5. İcra Dairesi · İhale Sonucu Girilmemiştir</div></article></li>
+</ul>
+"""
+
+
+def test_parse_result_cards_incelenen_li_kayit_no_from_class():
+    cards = bulk.parse_result_cards(_INCELENEN_HTML)
+    by_fid = {c["file_id"]: c for c in cards}
+    assert set(by_fid) == {"2026/263", "2026/999"}
+    # KAYIT NO metinde yok → kart elementinin class'ından alınır
+    assert by_fid["2026/263"]["kayit_no"] == "16760761856"
+    assert by_fid["2026/999"]["kayit_no"] == "16760761999"
+    # kart-yerel durum: yalnız 2026/263 Satıldı
+    assert by_fid["2026/263"]["sold"] is True
+    assert by_fid["2026/999"]["sold"] is False
+
+
+
 # --------------------------------------------------------------------------- #
 # 5) Uzun sonuç sayfası — görünür alanın altındaki kartlar da işlenir (koordinat YOK).
 # --------------------------------------------------------------------------- #
