@@ -2569,9 +2569,17 @@ class BrowserCollector:
         try:
             dest_dir = Path(store.DEFAULT_STORE_DIR) / "artifacts" / "downloads"
             dest_dir.mkdir(parents=True, exist_ok=True)
-            dest = dest_dir / _safe_name(fname or "uyap_download.udf")
-            download.save_as(str(dest))
-            data = dest.read_bytes()
+            # UYAP tüm indirmelere JENERİK ad verir (ör. 'dosya.udf') → aynı ada kaydetmek auction_result ve
+            # sale_notice'in BİRBİRİNİ EZMESİNE yol açar. İçerik-adresli benzersiz ad (tür + bayt sha) ile önlenir
+            # (aynı belge = aynı dosya, idempotent; farklı belge = farklı dosya). Çıkarım zaten satır-içi baytlardan.
+            _tmp = dest_dir / _safe_name(f"_tmp_{requested_type}_{fname or 'uyap_download.udf'}")
+            download.save_as(str(_tmp))
+            data = _tmp.read_bytes()
+            dest = dest_dir / _safe_name(f"{requested_type}_{_sha256_bytes(data)[:16]}{ext or '.udf'}")
+            try:
+                _tmp.replace(dest)
+            except Exception:
+                dest = _tmp
         except Exception as exc:
             attempt["native_udf_blocking_reason"] = "download_save_failed"
             attempt["blocking_reason"] = str(exc)[:120]

@@ -65,13 +65,26 @@ def inspect(udf_path: Path) -> None:
         txt = "".join(ch.itertext())
         print(f"    - <{_tag(ch)}> len={len(txt)} para={len(MONEY_RE.findall(txt))}")
 
-    # Para-literali İÇEREN eleman tag'lerinin özeti (derin; kendi .text'inde) — DEĞER YOK, yalnız tag+adet
-    holders: dict[str, int] = {}
+    # Para-literali İÇEREN eleman tag'lerinin özeti (derin) — DEĞER YOK, yalnız KONUM (text/tail/attr) + tag + adet.
+    text_holders: dict[str, int] = {}
+    tail_holders: dict[str, int] = {}
+    attr_holders: dict[str, int] = {}
     for el in root.iter():
-        n = len(MONEY_RE.findall(el.text or ""))
-        if n:
-            holders[_tag(el)] = holders.get(_tag(el), 0) + n
-    print("  para-literali İÇEREN eleman tag'leri (tag: adet):", holders or "YOK")
+        t = _tag(el)
+        n_text = len(MONEY_RE.findall(el.text or ""))
+        if n_text:
+            text_holders[t] = text_holders.get(t, 0) + n_text
+        n_tail = len(MONEY_RE.findall(el.tail or ""))
+        if n_tail:
+            tail_holders[t] = tail_holders.get(t, 0) + n_tail
+        for an, av in el.attrib.items():
+            n_attr = len(MONEY_RE.findall(av or ""))
+            if n_attr:
+                key = f"{t}@{an.split('}')[-1]}"
+                attr_holders[key] = attr_holders.get(key, 0) + n_attr
+    print("  para .text içinde (tag: adet):", text_holders or "YOK")
+    print("  para .tail içinde (tag: adet):", tail_holders or "YOK")
+    print("  para ATTRIBUTE içinde (tag@attr: adet):", attr_holders or "YOK")
 
     # Eleman tag histogramı (yapıyı görmek için; en sık 12 tag)
     hist: dict[str, int] = {}
