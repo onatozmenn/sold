@@ -398,6 +398,60 @@ def summarize_form_controls(html: object) -> dict:
     }
 
 
+def summarize_result_structure(html: object) -> dict:
+    """Sonuç sayfasındaki tekrarlı kart yapısını KİŞİSEL-OLMAYAN özetler (parse_result_cards ayarı için).
+
+    Her aday selector için: tek-dosya-kimlikli eleman sayısı + durum-metinli eleman sayısı; ayrıca
+    ilk kartın iskeleti (tag + class'lar; METİN DEĞİL). OFFLINE test edilebilir.
+    """
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html or "", "html.parser")
+    except Exception:
+        return {"parsed_card_count": 0, "result_count": None, "candidates": [], "first_card_skeleton": None}
+    out: dict = {
+        "parsed_card_count": len(parse_result_cards(html)),
+        "result_count": extract_result_metadata(html).get("result_count"),
+        "candidates": [],
+        "first_card_skeleton": None,
+    }
+    best_el = None
+    for sel in ("[class*=card]", "[class*=sonuc]", "[class*=result]", "[class*=ilan]", "li", "tr", "div"):
+        els = soup.select(sel)
+        single = 0
+        with_status = 0
+        first = None
+        for el in els:
+            t = el.get_text(" ", strip=True)
+            fids = {re.sub(r"\s+", "", n) for n in _FILE_ID_RE.findall(t)}
+            if len(fids) == 1:
+                single += 1
+                if _card_status_raw(t):
+                    with_status += 1
+                if first is None:
+                    first = el
+        if single:
+            out["candidates"].append({"selector": sel, "elements": len(els),
+                                      "single_file_id": single, "with_status": with_status})
+            if best_el is None:
+                best_el = first
+
+    def _skel(el, depth=0):
+        if depth > 2 or getattr(el, "name", None) is None:
+            return None
+        kids = [c for c in el.find_all(recursive=False) if getattr(c, "name", None)]
+        return {
+            "tag": el.name,
+            "class": " ".join(el.get("class") or []) or None,
+            "children": [s for c in kids[:10] if (s := _skel(c, depth + 1))],
+        }
+
+    if best_el is not None:
+        out["first_card_skeleton"] = _skel(best_el)
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # 7) Yeniden başlama / tekilleştirme (SAF).
 # --------------------------------------------------------------------------- #
@@ -671,6 +725,37 @@ class UyapBulkCollector:
             summary["session"] = detect_session_expiration(html, page.url)
             return summary
 
+    def diagnose_results(self, province, date_from, date_to):  # pragma: no cover - canlı tarayıcı gerektirir
+        """READ-ONLY sonuç-yapısı tanısı: gerçek aramayı ÇALIŞTIRIR (indirme/mutasyon YOK) ve ilk
+        pencerenin sonuç DOM iskeletini döndürür (parse_result_cards'ı gerçek sonuç kartına göre
+        ayarlamak için). Kart metni/kişisel veri DÖNMEZ; yalnız tag/class iskeleti + sayımlar.
+        """
+        from .collect import BrowserCollector
+
+        w = generate_date_windows(date_from, date_to)[0]
+        start_ui, end_ui = format_uyap_ui_date(w["start"]), format_uyap_ui_date(w["end"])
+        sync_playwright = BrowserCollector._sync_playwright()
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(self.cdp_endpoint)
+            if not browser.contexts:
+                raise RuntimeError("no_usable_browser_context: CDP oturumunda kullanılabilir bağlam yok.")
+            page = self._find_gecmis_page(browser.contexts[0])
+            if page is None:
+                raise RuntimeError("no_gecmis_ilanlar_page: 'Geçmiş İlanlar' sayfasını elle açın.")
+            self._dismiss_notices(page)
+            cat = self._select_category_tasinmaz(page)
+            prov = self._select_province(page, province)
+            dates = self._set_and_verify_dates(page, start_ui, end_ui)
+            ara = self._click_ara(page) if dates else False
+            result_html = self._wait_result_state(page) if ara else page.content()
+            summary = summarize_result_structure(result_html)
+            summary["steps"] = {
+                "window": w, "category_selected": cat, "province_selected": prov,
+                "dates_verified": dates, "ara_clicked": ara,
+                "session": detect_session_expiration(result_html, page.url),
+            }
+            return summary
+
     # -- Canlı koşu (pragma: canlı tarayıcı/DOM gerektirir; ağ testlerinde çalışmaz) ------- #
     def run(
         self,
@@ -741,8 +826,8 @@ class UyapBulkCollector:
                 if rec and rec.get("status") == "COMPLETE" and not force:
                     self._print(f"[UYAP BULK] pencere atlandı (tamamlanmış; yeniden çalıştırmak için --force): {w['start']}→{w['end']}")
                     continue
-                if rec is None:
-                    rec = new_window_record(province, w["start"], w["end"])
+                if rec is None or force:
+                    rec = new_window_record(province, w["start"], w["end"])  # force → sıfırdan (pages_completed sıfırlanır)
                     upsert_window_record(state, rec)
                     save_bulk_state(state, self.store_dir)
 
@@ -803,16 +888,17 @@ class UyapBulkCollector:
             self._print("  0 sonuç. Pencere tamamlandı.")
             return None
 
-        if "sonuc bulundu" not in _fold(result_html):
+        meta = extract_result_metadata(result_html)
+        cards_present = bool(parse_result_cards(result_html))
+        if meta.get("result_count") is None and not cards_present:
             rec["status"] = "RESULT_STATE_UNCONFIRMED"
             upsert_window_record(state, rec)
             save_bulk_state(state, self.store_dir)
-            self._print("  sonuç durumu doğrulanamadı: ARA sonrası 'N sonuç bulundu' metni görünmedi "
-                        "(zaman aşımı / ARA tetiklenmedi / sonuçlar farklı yükleniyor olabilir). "
-                        "Pencere COMPLETE İŞARETLENMEDİ — sonraki koşuda tekrar denenir.")
+            self._print("  sonuç durumu doğrulanamadı: ARA sonrası numaralı 'N sonuç bulundu' ya da sonuç "
+                        "kartı görünmedi (zaman aşımı / ARA tetiklenmedi / sonuçlar farklı yükleniyor olabilir). "
+                        "Pencere COMPLETE İŞARETLENMEDİ — `--diagnose-results` ile sonuç yapısını paylaşın.")
             return None
 
-        meta = extract_result_metadata(result_html)
         rec["result_count"] = meta.get("result_count")
         rec["total_pages"] = meta.get("total_pages")
         upsert_window_record(state, rec)
@@ -1042,13 +1128,18 @@ class UyapBulkCollector:
                 html = page.content()
             except Exception:
                 html = ""
-            fold = _fold(html)
-            if ("sonuc bulundu" in fold or "sonuc bulunamadi" in fold
+            if (self._result_ready(html) or zero_results(html)
                     or detect_session_expiration(html, page.url)["expired"]):
                 return html
             page.wait_for_timeout(step)
             waited += step
         return html
+
+    def _result_ready(self, html):  # pragma: no cover - canlı DOM
+        """Gerçek sonuç durumu: NUMARALI 'N sonuç bulundu' YA DA en az bir sonuç kartı (şablon metni değil)."""
+        if extract_result_metadata(html).get("result_count") is not None:
+            return True
+        return bool(parse_result_cards(html))
 
     def _valid_pages(self, page, meta):  # pragma: no cover - canlı DOM
         import re as _re

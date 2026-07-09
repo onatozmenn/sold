@@ -2066,6 +2066,7 @@ def uyap_bulk_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="Yalnızca tarih-pencere planını yazdır (tarayıcı açmaz)"),
     discovery_only: bool = typer.Option(False, "--discovery-only", help="Yalnızca Satıldı açık artırmaları keşfet+kalıcılaştır (belge edinimi yok)"),
     diagnose: bool = typer.Option(False, "--diagnose", help="READ-ONLY: 'Geçmiş İlanlar' form kontrol yapısını basar (arama/indirme YOK); canlı seçicileri eşlemek için"),
+    diagnose_results: bool = typer.Option(False, "--diagnose-results", help="READ-ONLY: gerçek aramayı çalıştırıp SONUÇ kart yapısını basar (indirme/mutasyon YOK; --date-from/--date-to gerekli)"),
     store_dir: Optional[str] = typer.Option(None, help="Çalışma deposu / kontrol noktası dizini"),
     genuine_path: Optional[str] = typer.Option(None, help="genuine uyap.json yolu (DUPLICATE denetimi; admisyon YOK)"),
 ) -> None:
@@ -2116,6 +2117,32 @@ def uyap_bulk_cmd(
             typer.echo(f"    - <{a.get('tag')}> '{a.get('text')}' id={a.get('id')} "
                        f"class={a.get('class')} onclick={a.get('onclick')}")
         typer.secho("  Bu çıktıyı paylaşın; canlı seçicileri (tarih/İl/kategori/ARA) gerçek DOM'a göre netleştireceğim.",
+                    fg=typer.colors.GREEN)
+        raise typer.Exit(code=0)
+    if diagnose_results:
+        if not cdp_endpoint or not date_from or not date_to:
+            typer.secho("--diagnose-results için --cdp-endpoint, --date-from ve --date-to gerekli.", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        try:
+            d = UyapBulkCollector(
+                cdp_endpoint=cdp_endpoint, store_dir=store_dir, genuine_path=genuine_path,
+            ).diagnose_results(province=province, date_from=date_from, date_to=date_to)
+        except RuntimeError as exc:
+            typer.secho(str(exc), fg=typer.colors.YELLOW)
+            typer.echo(BROWSER_PREREQUISITES)
+            raise typer.Exit(code=1)
+        typer.secho("[UYAP BULK] SONUÇ YAPISI TANI (read-only; indirme/mutasyon YOK)", fg=typer.colors.CYAN, bold=True)
+        st = d.get("steps", {})
+        typer.echo(f"  adımlar: kategori={st.get('category_selected')} il={st.get('province_selected')} "
+                   f"tarih={st.get('dates_verified')} ARA={st.get('ara_clicked')} pencere={st.get('window')}")
+        typer.echo(f"  oturum: {st.get('session')}")
+        typer.echo(f"  sonuç sayısı (banner): {d.get('result_count')} · parse_result_cards kart sayısı: {d.get('parsed_card_count')}")
+        typer.echo("  aday tekrarlı yapılar:")
+        for c in d.get("candidates", []):
+            typer.echo(f"    - selector={c.get('selector')} eleman={c.get('elements')} "
+                       f"tek-dosya-kimlik={c.get('single_file_id')} durumlu={c.get('with_status')}")
+        typer.echo(f"  ilk kart iskeleti: {d.get('first_card_skeleton')}")
+        typer.secho("  Bu çıktıyı paylaşın; parse_result_cards'ı gerçek sonuç kartına göre ayarlayacağım.",
                     fg=typer.colors.GREEN)
         raise typer.Exit(code=0)
     if not date_from or not date_to:
