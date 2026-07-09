@@ -2050,6 +2050,13 @@ def uyap_show_cmd(
         typer.echo(f"  çıkarım: ihale_bedeli={ev.get('ihale_bedeli')} · appraisal={ev.get('appraisal_value')} · "
                    f"appraisal_label_found={ev.get('appraisal_field_label_found')} · appraisal_cands={ev.get('appraisal_candidates')} · "
                    f"terminal={ev.get('terminal_status_text')}")
+        typer.echo(f"  İhale Bedeli tanı: label_found={ev.get('auction_price_field_label_found')} · "
+                   f"cand_count={ev.get('auction_price_candidate_count')} · strategy={ev.get('auction_price_value_relation_strategy')} · "
+                   f"source={ev.get('ihale_bedeli_source')} · kart_tutarı={ev.get('result_card_amount')}")
+        typer.echo(f"  settlement: label_found={ev.get('settlement_field_label_found')} · "
+                   f"alacaga_mahsuben={ev.get('alacaga_mahsuben_detected')} · ödenmesi_gereken={ev.get('odenmesi_gereken_bedel')} · "
+                   f"kdv={ev.get('kdv_rate')} · durum={ev.get('extraction_status')}")
+        typer.echo(f"  yerleşim (neighborhood, gizlilik-güvenli): {ev.get('field_neighborhood')}")
         typer.echo(f"  toplama: page_state={diag.get('page_state')} · entry={diag.get('document_entry_path')} · "
                    f"card_found={diag.get('target_record_card_found')} · control_found={diag.get('document_list_control_found')} "
                    f"({diag.get('document_list_control_kind')}) · list_opened={diag.get('document_list_opened')} · "
