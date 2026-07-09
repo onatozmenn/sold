@@ -67,7 +67,8 @@ def build_genuine_record(candidate: dict) -> dict:
         f"domain=uyap, sale_mechanism=auction, reference_price_type=appraisal -> excluded from asking_to_closing_labels()."
     )
     return {
-        "public_record_id": candidate.get("file_id"),
+        "public_record_id": (candidate.get("kayit_no") or (candidate.get("bulk") or {}).get("kayit_no")
+                             or candidate.get("file_id")),
         "auction_date": _iso_date(ev.get("completion_datetime")),
         "province": ev.get("province") or _bulk_province(candidate),
         "district": ev.get("district"),

@@ -271,7 +271,7 @@ def _sold_card(fid="2026/263", kayit="16701234"):
     }
 
 
-def _fake_acquire_ok(file_id, institution):
+def _fake_acquire_ok(file_id, institution, record_ref=None):
     text = (
         "Artırma Sonuç Tutanağı İhale Bedeli 5.715.000,00 TL "
         "Muhammen Bedel 6.800.000,00 TL Satıldı Satış İşlemleri Tamamlandı "
@@ -281,7 +281,7 @@ def _fake_acquire_ok(file_id, institution):
     return arts, [{"label": "auction_result", "pattern": "native_udf"}], {"ok": True}
 
 
-def _fake_acquire_fail(file_id, institution):
+def _fake_acquire_fail(file_id, institution, record_ref=None):
     raise RuntimeError("same_row_download_control_not_located_uniquely")
 
 
@@ -378,7 +378,7 @@ def test_force_reacquires_known_candidate_but_not_admitted(tmp_path):
     # force ile → edinici GERÇEKTEN yeniden çağrılır ve yeniden edinilir
     calls = {"n": 0}
 
-    def _counting_acquire(file_id, institution):
+    def _counting_acquire(file_id, institution, record_ref=None):
         calls["n"] += 1
         return _fake_acquire_ok(file_id, institution)
 
@@ -396,6 +396,24 @@ def test_force_reacquires_known_candidate_but_not_admitted(tmp_path):
         genuine_path=gp, province_label="ANKARA", force=True,
     )
     assert guarded["outcome"] == "skipped_already_acquired"
+
+
+def test_genuine_public_record_id_uses_kayit_no_not_esas():
+    # PAYLAŞILAN-Esas: genuine kimlik KAYIT NO olmalı (mevcut 7 kayıt 11-haneli KAYIT NO kullanır);
+    # public_record_id=Esas olsaydı aynı Esas'ın farklı açık artırmaları admitte TEK kayda ÇÖKERdi.
+    from sold.ingestion.uyap.admit import build_genuine_record
+    from sold.ingestion.uyap.models import ADMISSIBLE_COMPLETED_SALE
+    cand = {
+        "file_id": "2026/12", "kayit_no": "16760703981",
+        "extracted": {"property_type": "konut", "completion_datetime": "16.06.2026"},
+        "audit": {"decision": ADMISSIBLE_COMPLETED_SALE, "appraisal_value": 2000000.0, "auction_price": 1800000.0},
+        "bulk": {"province_label": "ANKARA", "kayit_no": "16760703981"},
+    }
+    rec = build_genuine_record(cand)
+    assert rec["public_record_id"] == "16760703981"          # KAYIT NO, Esas değil
+    assert rec["province"] == "Ankara"
+    cand2 = dict(cand, kayit_no="16760703976", bulk={"province_label": "ANKARA", "kayit_no": "16760703976"})
+    assert build_genuine_record(cand2)["public_record_id"] == "16760703976"   # aynı Esas, farklı kayıt → çökmez
 
 
 # --------------------------------------------------------------------------- #

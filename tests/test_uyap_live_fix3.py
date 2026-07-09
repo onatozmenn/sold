@@ -149,6 +149,33 @@ def test_multiple_fake_cards_choose_correct_target():
     assert "2025/100" not in card["file_text"] and "2024/99" not in card["file_text"]
 
 
+def _listing_page_shared_esas():
+    """PAYLAŞILAN-Esas: aynı Esas (2026/12) iki farklı açık artırma (KAYIT NO class 'incelenen-li {NO}')."""
+    return (
+        '<html><body><div class="results-list">'
+        '<div class="ilan-card"><span class="incelenen-li 16760703976"></span>'
+        'Ankara İcra Dairesi 2026/12 İcra Muhammen Bedel 1.000.000,00 TL '
+        '<button>İncele</button><button>İhale Evrak Listesi</button></div>'
+        '<div class="ilan-card"><span class="incelenen-li 16760703981"></span>'
+        'Ankara İcra Dairesi 2026/12 İcra Muhammen Bedel 2.000.000,00 TL '
+        '<button>İncele</button><button>İhale Evrak Listesi</button></div>'
+        '</div></body></html>'
+    )
+
+
+def test_shared_esas_selects_card_by_kayit_no():
+    html = _listing_page_shared_esas()
+    # KAYIT NO olmadan → ilk kart (geriye-uyumlu; record_ref eşleşmesi yok)
+    c0 = find_target_record_card(html, "2026/12")
+    assert c0 is not None and "record_ref" not in c0["match_fields"]
+    # KAYIT NO ile → DOĞRU kart (paylaşılan-Esas'ta yanlış-kart edinimini önler)
+    c1 = find_target_record_card(html, "2026/12", target_record_ref="16760703981")
+    assert c1 is not None and "record_ref" in c1["match_fields"]
+    assert "16760703981" in c1["html"] and "16760703976" not in c1["html"]
+    # eşleşmeyen KAYIT NO → yanlış kartı ALMA (dürüstçe None)
+    assert find_target_record_card(html, "2026/12", target_record_ref="99999999999") is None
+
+
 def test_generic_page_level_evrak_text_not_treated_as_target():
     # Hedef kayıt olmayan sayfada genel 'İhale Evrak Listesi' başlığı → hedef kart YOK
     assert find_target_record_card(_listing_page_no_target(), TARGET, INSTITUTION) is None

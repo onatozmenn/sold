@@ -1419,11 +1419,31 @@ def _card_control_labels(card_html: str) -> list[str]:
         return []
 
 
-def find_target_record_card(html: str, target_file_id: str, institution: str | None = None) -> dict | None:
+def _card_matches_record_ref(card_el, record_ref: str | None) -> bool:
+    """Kart, KAYIT NO'yu (record_ref) içeriyor mu — görünür metinde YA DA class/id niteliğinde
+    (UYAP 'incelenen-li {NO}'). PAYLAŞILAN-Esas'ta DOĞRU açık artırma kartını seçmek için."""
+    ref = re.sub(r"\D", "", str(record_ref or ""))
+    if not ref:
+        return False
+    if ref in re.sub(r"\D", "", card_el.get_text(" ", strip=True)):
+        return True
+    for el in [card_el] + card_el.find_all(True):
+        cls = el.get("class") or []
+        if isinstance(cls, str):
+            cls = [cls]
+        for token in list(cls) + [el.get("id") or ""]:
+            if ref in re.sub(r"\D", "", str(token)):
+                return True
+    return False
+
+
+def find_target_record_card(html: str, target_file_id: str, institution: str | None = None,
+                            target_record_ref: str | None = None) -> dict | None:
     """Listeleme sayfasında HEDEF kaydı resmî dosya kimliğiyle bulur (fiyat/P/Q/nth DEĞİL).
 
-    Aynı dosya kimliğine sahip TEK kartı döndürür; birden çok distinkt dosya no içeren container
-    (tüm-liste) satır/kart SAYILMAZ. İlk-global-kart ya da nth-kart seçilmez. OFFLINE testable.
+    ``target_record_ref`` (KAYIT NO) verilmişse aynı Esas'ı paylaşan kartlar arasından o KAYIT NO'lu
+    kartı seçer (PAYLAŞILAN-Esas'ta yanlış-kart edinimini önler; eşleşen kart yoksa dürüstçe None);
+    verilmemişse aynı dosya kimliğine sahip TEK kartı döndürür. Çok-kayıtlı container SAYILMAZ. OFFLINE testable.
     """
     try:
         from bs4 import BeautifulSoup
@@ -1446,16 +1466,25 @@ def find_target_record_card(html: str, target_file_id: str, institution: str | N
                 inst_tok = _ascii_lower(institution).split()
                 if inst_tok and inst_tok[0] in _ascii_lower(text):
                     match_fields.append("institution")
-            matches.append((c, re.sub(r"\s+", " ", text), match_fields))
-        if len(matches) >= 1:
-            c, text, match_fields = matches[0]
-            return {
-                "html": str(c),
-                "file_text": text[:120],
-                "match_fields": match_fields,
-                "control_labels": _card_control_labels(str(c)),
-                "target_file": tnum,
-            }
+            ref_match = _card_matches_record_ref(c, target_record_ref)
+            matches.append((c, re.sub(r"\s+", " ", text), match_fields, ref_match))
+        if not matches:
+            continue
+        if target_record_ref:
+            ref_hits = [m for m in matches if m[3]]
+            if not ref_hits:
+                continue  # bu selector'da KAYIT NO eşleşen kart YOK → yanlış kartı ALMA, sonrakini dene
+            c, text, match_fields, _ = ref_hits[0]
+            match_fields = match_fields + ["record_ref"]
+        else:
+            c, text, match_fields, _ = matches[0]
+        return {
+            "html": str(c),
+            "file_text": text[:120],
+            "match_fields": match_fields,
+            "control_labels": _card_control_labels(str(c)),
+            "target_file": tnum,
+        }
     return None
 
 
@@ -1798,7 +1827,7 @@ class BrowserCollector:
         page = context.pages[idx] if 0 <= idx < len(context.pages) else context.pages[0]
         return page, sel
 
-    def _collect_documents(self, page, context, target_file_id=None, target_institution=None, native_only=False) -> tuple:  # pragma: no cover - canlı DOM/olay gerektirir
+    def _collect_documents(self, page, context, target_file_id=None, target_institution=None, native_only=False, target_record_ref=None) -> tuple:  # pragma: no cover - canlı DOM/olay gerektirir
         """SAYFA-DURUMU FARKINDA, HEDEF-KAYIT-KAPSAMLI belge girişi (iki gerçek gözlenen yol).
 
         ``search_listing`` → HEDEF kayıt kartı dosya kimliğiyle bulunur (fiyat/nth DEĞİL) →
@@ -1851,7 +1880,7 @@ class BrowserCollector:
                 diag["document_collection_attempts"].append({"stage": "target_card", "blocking_reason": "no_target_file_id_provided"})
                 diag["document_collection_failures"] += 1
                 return documents, patterns, diag
-            card = find_target_record_card(html, target_file_id, target_institution)
+            card = find_target_record_card(html, target_file_id, target_institution, target_record_ref)
             if card is None:
                 diag["document_collection_attempts"].append({"stage": "target_card", "blocking_reason": "target_record_card_not_found_on_listing"})
                 diag["document_collection_failures"] += 1
@@ -1869,7 +1898,7 @@ class BrowserCollector:
                 return documents, patterns, diag
             # Kart-yerel kontrolü CANLI DOM'da HEDEF kart kapsamında bul (global text locator DEĞİL —
             # üçüncü canlı hatanın kök nedeni buydu).
-            control = self._locate_card_control(page, target_file_id)
+            control = self._locate_card_control(page, target_file_id, target_record_ref)
         elif page_state == "record_detail":
             if target_file_id and not file_identity_matches(html, target_file_id):
                 diag["document_collection_attempts"].append({"stage": "detail_identity", "blocking_reason": "detail_page_does_not_match_target_file_id"})
@@ -1982,32 +2011,72 @@ class BrowserCollector:
         patterns += p2
         return documents, patterns, diag
 
-    def _locate_card_control(self, page, target_file_id):  # pragma: no cover - canlı DOM
-        """HEDEF kaydın CANLI kartını dosya kimliğiyle bulur; kart-yerel "İhale Evrak Listesi"
-        kontrolünü döner (global metin locator DEĞİL — kart kapsamı zorunlu)."""
+    def _locate_card_control(self, page, target_file_id, target_record_ref=None):  # pragma: no cover - canlı DOM
+        """HEDEF kaydın CANLI kartını bulur; kart-yerel "İhale Evrak Listesi" kontrolünü döner.
+
+        ``target_record_ref`` (KAYIT NO) verilmişse PAYLAŞILAN-Esas'ta kart o KAYIT NO ile daraltılır
+        (yalnız Esas ile filtreleme çok-açık-artırmalı dosyada YANLIŞ kartı seçerdi → RECONCILIATION_FAILED).
+        KAYIT NO görünür metinde YA DA class ('incelenen-li {NO}') olabilir; eşleşen kart yoksa None (yanlış
+        kartı ALMA). Global metin locator DEĞİL — kart kapsamı zorunlu."""
         import re as _re
 
         tnum = normalize_file_identity(target_file_id)
         key = _re.escape(tnum).replace("/", r"\s*/\s*")
-        for csel in ("[class*=card]", "[class*=sonuc]", "[class*=result]", "[class*=ilan]", "li", "tr"):
+        ref = _re.sub(r"\D", "", str(target_record_ref or ""))
+        card_selectors = ("[class*=card]", "[class*=sonuc]", "[class*=result]", "[class*=ilan]", "li", "tr")
+
+        def _control_in(card):
+            for name in ("button", "link"):
+                try:
+                    act = card.get_by_role(name, name=_re.compile("evrak listesi", _re.I))
+                    if act.count() > 0:
+                        return act.first
+                except Exception:
+                    continue
+            try:
+                act = card.get_by_text(_re.compile("evrak listesi", _re.I))
+                if act.count() > 0:
+                    return act.first
+            except Exception:
+                pass
+            return None
+
+        if ref:
+            # (a) KAYIT NO görünür metinde: Esas + KAYIT NO ile daralt
+            for csel in card_selectors:
+                try:
+                    cc = page.locator(csel).filter(has_text=_re.compile(key, _re.I)).filter(has_text=_re.compile(ref))
+                    if cc.count() > 0:
+                        ctrl = _control_in(cc.first)
+                        if ctrl is not None:
+                            return ctrl
+                except Exception:
+                    continue
+            # (b) KAYIT NO class niteliğinde ('incelenen-li {NO}'): o elemanın evrak-kontrolü içeren kart atası
+            try:
+                holder = page.locator(f'[class*="{ref}"]')
+                if holder.count() > 0:
+                    for xp in ('xpath=ancestor-or-self::*[.//*[contains(@id,"detailButton")]][1]',
+                               'xpath=ancestor-or-self::*[.//a or .//button][1]'):
+                        try:
+                            ctrl = _control_in(holder.first.locator(xp))
+                            if ctrl is not None:
+                                return ctrl
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+            return None  # KAYIT NO verildi ama DOĞRU kart bulunamadı → yanlış kartı ALMA (dürüst)
+
+        # KAYIT NO yok → orijinal Esas-yalnız davranış (pilot geriye-uyumlu)
+        for csel in card_selectors:
             try:
                 cards = page.locator(csel).filter(has_text=_re.compile(key, _re.I))
                 if cards.count() == 0:
                     continue
-                card = cards.first
-                for name in ("button", "link"):
-                    try:
-                        act = card.get_by_role(name, name=_re.compile("evrak listesi", _re.I))
-                        if act.count() > 0:
-                            return act.first
-                    except Exception:
-                        continue
-                try:
-                    act = card.get_by_text(_re.compile("evrak listesi", _re.I))
-                    if act.count() > 0:
-                        return act.first
-                except Exception:
-                    pass
+                ctrl = _control_in(cards.first)
+                if ctrl is not None:
+                    return ctrl
             except Exception:
                 continue
         return None

@@ -782,7 +782,7 @@ def process_sold_auction(
 
     # 3) ÇALIŞAN belge-edinim yolunu yeniden kullan (yeni bir parser DEĞİL).
     try:
-        artifacts, patterns, diag = acquire_documents(file_id, institution)
+        artifacts, patterns, diag = acquire_documents(file_id, institution, record_ref=kayit_no)
     except Exception as exc:  # edinim hatası kaydı; sonraki açık artırmanın kimliğini BOZMAZ
         existing.setdefault("bulk", {})["last_acquisition_error"] = str(exc)[:160]
         store.log_event(existing, "bulk_acquisition_failed", str(exc)[:160])
@@ -958,7 +958,7 @@ class UyapBulkCollector:
                 target = next((c for c in cards if c.get("sold")), None)
             fid = target.get("file_id") if target else None
             pre_tabs = [self._safe_ref(p.url) for p in context.pages]
-            docs, patterns, diag = collector._collect_documents(page, context, fid, province, native_only=True)
+            docs, patterns, diag = collector._collect_documents(page, context, fid, province, native_only=True, target_record_ref=target_kayit_no)
             post_tabs = [self._safe_ref(p.url) for p in context.pages]
             keys = ("page_state", "document_entry_path", "target_record_card_found",
                     "document_list_control_found", "document_list_control_kind", "document_list_opened",
@@ -1051,8 +1051,9 @@ class UyapBulkCollector:
                     "Önce UYAP e-Satış → İhaleler → Geçmiş İlanlar sayfasını elle açın."
                 )
 
-            def _acquire(file_id, institution):
-                return collector._collect_documents(page, context, file_id, institution, native_only=True)
+            def _acquire(file_id, institution, record_ref=None):
+                return collector._collect_documents(page, context, file_id, institution,
+                                                    native_only=True, target_record_ref=record_ref)
 
             state = load_bulk_state(self.store_dir)
             for w in windows:
