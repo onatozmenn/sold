@@ -473,6 +473,39 @@ def summarize_result_structure(html: object) -> dict:
 
     if best_el is not None:
         out["first_card_skeleton"] = _skel(best_el)
+
+    # Sayfalama kontrolleri (numara / Sonraki / Önceki) — gerçek page-nav DOM'unu görmek için.
+    pagination: list[dict] = []
+    seen_pg: set = set()
+    for el in soup.find_all(["a", "button", "li"]):
+        t = el.get_text(" ", strip=True)
+        if not t or len(t) > 16:
+            continue
+        ft = _fold(t)
+        if re.fullmatch(r"\d+", t) or ft in ("sonraki", "onceki", "ileri", "geri", "next", "prev", "previous", "...", "\u00bb", "\u00ab"):
+            key = (el.name, el.get("id"), t, " ".join(el.get("class") or []))
+            if key in seen_pg:
+                continue
+            seen_pg.add(key)
+            pagination.append({
+                "tag": el.name, "id": el.get("id"),
+                "class": " ".join(el.get("class") or []) or None,
+                "text": t, "onclick": el.has_attr("onclick"), "href": el.get("href") or None,
+            })
+    out["pagination"] = pagination[:40]
+
+    # Sayım/sayfa banner (kişisel-olmayan: sonuç/toplam/sayfa/kayıt içeren KISA metin; KAYIT NO hariç).
+    banners: list[str] = []
+    for el in soup.find_all(["div", "span", "p", "small", "label", "strong", "b"]):
+        t = el.get_text(" ", strip=True)
+        if not t or len(t) > 80 or not re.search(r"\d", t):
+            continue
+        ft = _fold(t)
+        if "kayit no" in ft:
+            continue
+        if re.search(r"(sonuc bulundu|toplam|her sayfada|sayfa)", ft):
+            banners.append(t[:80])
+    out["count_banners"] = list(dict.fromkeys(banners))[:12]
     return out
 
 

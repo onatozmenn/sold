@@ -2142,6 +2142,8 @@ def uyap_bulk_cmd(
             typer.echo(f"    - selector={c.get('selector')} eleman={c.get('elements')} "
                        f"tek-dosya-kimlik={c.get('single_file_id')} durumlu={c.get('with_status')}")
         typer.echo(f"  ilk kart iskeleti: {d.get('first_card_skeleton')}")
+        typer.echo(f"  sayfalama kontrolleri: {d.get('pagination')}")
+        typer.echo(f"  sayım/sayfa banner: {d.get('count_banners')}")
         typer.secho("  Bu çıktıyı paylaşın; parse_result_cards'ı gerçek sonuç kartına göre ayarlayacağım.",
                     fg=typer.colors.GREEN)
         raise typer.Exit(code=0)
