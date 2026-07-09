@@ -569,6 +569,20 @@ def test_summarize_document_area_detects_evrak_modal():
     assert "text" not in m  # kişisel metin dönmez, yalnız token varlığı
 
 
+def test_document_modal_skeleton_reveals_rows():
+    html = ('<div id="ihale_evraklari_modal" class="modal fade in"><div class="modal-body">'
+            '<table><tr class="evrak-row"><td>Satış İlanı</td>'
+            '<td><a href="javascript:;" onclick="dl()" class="indir">indir</a>'
+            '<a href="javascript:;" onclick="gor()" class="goruntule">gör</a></td></tr>'
+            '<tr class="evrak-row"><td>1- Bilirkişi Raporu</td>'
+            '<td><a href="javascript:;" onclick="dl2()">indir</a></td></tr></table></div></div>')
+    sk = bulk.document_modal_skeleton(html)
+    assert sk is not None and sk["id"] == "ihale_evraklari_modal"
+    flat = str(sk)
+    assert "evrak-row" in flat            # satır yapısı görünür
+    assert "onclick" in flat and "indir" in flat  # indirme/göz kontrolleri + onclick görünür
+
+
 
 def test_digits_tolerates_date_mask_format():
     assert bulk._digits("10/06/2026") == bulk._digits("10.06.2026") == "10062026"

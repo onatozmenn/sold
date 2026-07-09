@@ -2223,6 +2223,7 @@ def uyap_bulk_cmd(
         for att in dg.get("document_collection_attempts", []):
             typer.echo(f"    - attempt {att.get('artifact_type') or att.get('stage')}: blocking={att.get('blocking_reason')}")
         typer.echo(f"  tıklama-sonrası alan (modal/panel/evrak): {d.get('post_click_area')}")
+        typer.echo(f"  belge-modalı iç yapısı: {d.get('document_modal_skeleton')}")
         typer.secho("  Bu çıktıyı paylaşın; evrak-listesi açılışını (modal/yeni-sekme/yönlendirme) buna göre bağlarım.", fg=typer.colors.GREEN)
         raise typer.Exit(code=0)
     if not date_from or not date_to:

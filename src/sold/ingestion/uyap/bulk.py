@@ -548,6 +548,53 @@ def summarize_document_area(html: object) -> list[dict]:
     return out[:30]
 
 
+def document_modal_skeleton(html: object, modal_id: str = "ihale_evraklari_modal", max_depth: int = 5) -> dict | None:
+    """Inner element tree of the document-list modal (default id 'ihale_evraklari_modal').
+
+    Reveals the real row structure + download/eye control tags/class/href/onclick so the row
+    extraction can be bound to it. Document names (Satis Ilani, Bilirkisi...) are non-personal,
+    so short own-text is included; no personal data. OFFLINE testable.
+    """
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html or "", "html.parser")
+    except Exception:
+        return None
+    modal = soup.find(id=modal_id)
+    if modal is None:
+        for m in soup.select("[class*=modal i]"):
+            if "evrak" in _fold(m.get_text(" ", strip=True)) and len(m.get_text(" ", strip=True)) > 60:
+                modal = m
+                break
+    if modal is None:
+        return None
+
+    def _node(el, depth=0):
+        if depth > max_depth or getattr(el, "name", None) is None:
+            return None
+        node: dict = {"tag": el.name}
+        if el.get("id"):
+            node["id"] = el.get("id")
+        cls = " ".join(el.get("class") or [])
+        if cls:
+            node["class"] = cls[:60]
+        if el.name in ("a", "button"):
+            node["href"] = (el.get("href") or "")[:48] or None
+            node["onclick"] = bool(el.has_attr("onclick"))
+        own = el.find(string=True, recursive=False)
+        txt = str(own).strip()[:40] if own and str(own).strip() else None
+        if txt:
+            node["text"] = txt
+        kids = [c for c in el.find_all(recursive=False) if getattr(c, "name", None)]
+        children = [n for c in kids[:14] if (n := _node(c, depth + 1))]
+        if children:
+            node["children"] = children
+        return node
+
+    return _node(modal)
+
+
 # --------------------------------------------------------------------------- #
 # 7) Yeniden başlama / tekilleştirme (SAF).
 # --------------------------------------------------------------------------- #
@@ -911,6 +958,7 @@ class UyapBulkCollector:
                 "documents_collected": len(docs),
                 "diag": {k: diag.get(k) for k in keys},
                 "post_click_area": summarize_document_area(page.content()),
+                "document_modal_skeleton": document_modal_skeleton(page.content()),
             }
 
     # -- Canlı koşu (pragma: canlı tarayıcı/DOM gerektirir; ağ testlerinde çalışmaz) ------- #
