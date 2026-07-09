@@ -1798,7 +1798,7 @@ class BrowserCollector:
         page = context.pages[idx] if 0 <= idx < len(context.pages) else context.pages[0]
         return page, sel
 
-    def _collect_documents(self, page, context, target_file_id=None, target_institution=None) -> tuple:  # pragma: no cover - canlı DOM/olay gerektirir
+    def _collect_documents(self, page, context, target_file_id=None, target_institution=None, native_only=False) -> tuple:  # pragma: no cover - canlı DOM/olay gerektirir
         """SAYFA-DURUMU FARKINDA, HEDEF-KAYIT-KAPSAMLI belge girişi (iki gerçek gözlenen yol).
 
         ``search_listing`` → HEDEF kayıt kartı dosya kimliğiyle bulunur (fiyat/nth DEĞİL) →
@@ -1922,7 +1922,7 @@ class BrowserCollector:
                 diag["document_list_container_kind"] = container_kind
                 diag["document_list_opened"] = True
                 diag["document_modal_opened"] = (container_kind == "listing_modal")
-                d0, p0 = self._collect_from_container(page, context, preopen_rows, container_kind, diag)
+                d0, p0 = self._collect_from_container(page, context, preopen_rows, container_kind, diag, native_only)
                 documents += d0
                 patterns += p0
                 return documents, patterns, diag
@@ -1977,7 +1977,7 @@ class BrowserCollector:
         diag["document_list_opened"] = True
         diag["document_modal_opened"] = (container_kind == "listing_modal")
 
-        d2, p2 = self._collect_from_container(page, context, rows, container_kind, diag)
+        d2, p2 = self._collect_from_container(page, context, rows, container_kind, diag, native_only)
         documents += d2
         patterns += p2
         return documents, patterns, diag
@@ -2012,7 +2012,7 @@ class BrowserCollector:
                 continue
         return None
 
-    def _collect_from_container(self, page, context, rows, container_kind, diag) -> tuple:  # pragma: no cover - canlı DOM
+    def _collect_from_container(self, page, context, rows, container_kind, diag, native_only=False) -> tuple:  # pragma: no cover - canlı DOM
         """İki yolun BİRLEŞTİĞİ ortak belge-satırı toplayıcı: verilen (semantik) satırlar → satır-yerel
         eye (indirme oku DEĞİL; belirsizse KEYFİ tıklama YOK) → YENİ-SEKME UDF görüntüleyici.
 
@@ -2053,6 +2053,8 @@ class BrowserCollector:
         diag["recognized_document_rows"] = recognized
         diag["action_resolution_strategy"] = "icon_accessibility_href_precedence"
         diag["row_boundary_strategy"] = next((r.get("row_boundary_strategy") for r in recognized if r.get("row_boundary_strategy")), None)
+        if native_only:  # bulk: yalnız denetime gereken native belgeler (auction_result/sale_notice); yavaş viewer/ek YOK
+            selected = [s for s in selected if s["artifact_type"] in NATIVE_DOWNLOAD_TYPES]
         selected.sort(key=lambda s: _DOC_PRIORITY.get(s["artifact_type"], 9))  # öncelik: auction_result önce
 
         for sel in selected:
@@ -2166,6 +2168,12 @@ class BrowserCollector:
                 if self._collect_native_udf_download(page, label, sel, resolution, attempt, diag, documents):
                     diag["document_collection_attempts"].append(attempt)
                     continue
+            if native_only:
+                # bulk native_only: viewer/yeni-sekme yoluna GİRME (yavaş + sekme yarışı/TargetClosed riski)
+                attempt["blocking_reason"] = attempt.get("blocking_reason") or "native_only:native_download_unresolved_or_failed"
+                diag["document_collection_failures"] += 1
+                diag["document_collection_attempts"].append(attempt)
+                continue
             if not resolution.get("resolved") or resolution.get("view_action") is None:
                 attempt["blocking_reason"] = f"row_action_unresolved:{resolution.get('reason')}"
                 diag["document_collection_failures"] += 1

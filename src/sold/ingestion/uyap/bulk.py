@@ -942,7 +942,7 @@ class UyapBulkCollector:
                 target = next((c for c in cards if c.get("sold")), None)
             fid = target.get("file_id") if target else None
             pre_tabs = [self._safe_ref(p.url) for p in context.pages]
-            docs, patterns, diag = collector._collect_documents(page, context, fid, province)
+            docs, patterns, diag = collector._collect_documents(page, context, fid, province, native_only=True)
             post_tabs = [self._safe_ref(p.url) for p in context.pages]
             keys = ("page_state", "document_entry_path", "target_record_card_found",
                     "document_list_control_found", "document_list_control_kind", "document_list_opened",
@@ -1024,7 +1024,7 @@ class UyapBulkCollector:
                 )
 
             def _acquire(file_id, institution):
-                return collector._collect_documents(page, context, file_id, institution)
+                return collector._collect_documents(page, context, file_id, institution, native_only=True)
 
             state = load_bulk_state(self.store_dir)
             for w in windows:
