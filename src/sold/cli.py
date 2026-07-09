@@ -2059,8 +2059,9 @@ def uyap_bulk_cmd(
     province: str = typer.Option("ANKARA", "--province", help="İl (gerçek UYAP İl seçicisinden; ilk kontrollü koşu ANKARA)"),
     date_from: Optional[str] = typer.Option(None, "--date-from", help="Başlangıç (YYYY-MM-DD); --diagnose dışında gerekli"),
     date_to: Optional[str] = typer.Option(None, "--date-to", help="Bitiş (YYYY-MM-DD); --diagnose dışında gerekli"),
-    resume: bool = typer.Option(False, "--resume", help="Tamamlanmış pencereleri atla, kaldığı yerden devam et"),
-    max_records: Optional[int] = typer.Option(None, "--max-records", help="En fazla bu kadar Satıldı açık artırma edin"),
+    resume: bool = typer.Option(False, "--resume", help="Kontrol noktasından devam (varsayılan; tamamlanmış pencereler atlanır)"),
+    force: bool = typer.Option(False, "--force", help="Tamamlanmış (COMPLETE) pencereleri de YENİDEN çalıştır"),
+    max_records: Optional[int] = typer.Option(None, "--max-records", help="En fazla bu kadar Satıldı açık artırma işle"),
     max_windows: Optional[int] = typer.Option(None, "--max-windows", help="En fazla bu kadar tarih penceresi işle"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Yalnızca tarih-pencere planını yazdır (tarayıcı açmaz)"),
     discovery_only: bool = typer.Option(False, "--discovery-only", help="Yalnızca Satıldı açık artırmaları keşfet+kalıcılaştır (belge edinimi yok)"),
@@ -2126,7 +2127,7 @@ def uyap_bulk_cmd(
         ).run(
             province=province, date_from=date_from, date_to=date_to,
             max_records=max_records, max_windows=max_windows,
-            dry_run=dry_run, discovery_only=discovery_only, resume=resume,
+            dry_run=dry_run, discovery_only=discovery_only, resume=resume, force=force,
         )
     except RuntimeError as exc:
         typer.secho(str(exc), fg=typer.colors.YELLOW)

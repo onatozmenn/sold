@@ -682,6 +682,7 @@ class UyapBulkCollector:
         dry_run: bool = False,
         discovery_only: bool = False,
         resume: bool = False,
+        force: bool = False,
     ) -> dict:  # pragma: no cover - canlı tarayıcı gerektirir
         from .collect import BrowserCollector
 
@@ -700,6 +701,7 @@ class UyapBulkCollector:
             "sold_skipped_known": 0,
             "acquisitions_completed": 0,
             "acquisition_failures": 0,
+            "records_processed": 0,
             "audit_decisions": {},
             "session_interruptions": 0,
             "stopped_reason": None,
@@ -736,8 +738,8 @@ class UyapBulkCollector:
             state = load_bulk_state(self.store_dir)
             for w in windows:
                 rec = get_window_record(state, province, w["start"], w["end"])
-                if rec and rec.get("status") == "COMPLETE" and not resume:
-                    self._print(f"[UYAP BULK] pencere atlandı (tamamlanmış): {w['start']}→{w['end']}")
+                if rec and rec.get("status") == "COMPLETE" and not force:
+                    self._print(f"[UYAP BULK] pencere atlandı (tamamlanmış; yeniden çalıştırmak için --force): {w['start']}→{w['end']}")
                     continue
                 if rec is None:
                     rec = new_window_record(province, w["start"], w["end"])
@@ -801,6 +803,15 @@ class UyapBulkCollector:
             self._print("  0 sonuç. Pencere tamamlandı.")
             return None
 
+        if "sonuc bulundu" not in _fold(result_html):
+            rec["status"] = "RESULT_STATE_UNCONFIRMED"
+            upsert_window_record(state, rec)
+            save_bulk_state(state, self.store_dir)
+            self._print("  sonuç durumu doğrulanamadı: ARA sonrası 'N sonuç bulundu' metni görünmedi "
+                        "(zaman aşımı / ARA tetiklenmedi / sonuçlar farklı yükleniyor olabilir). "
+                        "Pencere COMPLETE İŞARETLENMEDİ — sonraki koşuda tekrar denenir.")
+            return None
+
         meta = extract_result_metadata(result_html)
         rec["result_count"] = meta.get("result_count")
         rec["total_pages"] = meta.get("total_pages")
@@ -830,13 +841,14 @@ class UyapBulkCollector:
             self._print(f"  sayfa {pnum}/{valid_pages[-1] if valid_pages else pnum} · kart={len(cards)} · Satıldı={len(sold)}")
 
             for card in sold:
-                if max_records and (summary["acquisitions_completed"] >= max_records):
+                if max_records and summary["records_processed"] >= max_records:
                     return "MAX_RECORDS"
                 res = process_sold_auction(
                     card, acquire_documents=acquire, store_dir=self.store_dir,
                     genuine_path=self.genuine_path, discovery_only=discovery_only,
                     source_page_ref=self._safe_ref(page.url), province_label=province, window=w,
                 )
+                summary["records_processed"] += 1
                 rec["sold_discovered"] += 1
                 summary["sold_discovered"] += 1
                 self._report_auction(res)
