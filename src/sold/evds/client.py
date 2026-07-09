@@ -71,6 +71,21 @@ def _parse_evds_date(raw: object) -> pd.Timestamp:
         return pd.to_datetime(text, errors="coerce", dayfirst=True)
 
 
+def _parse_evds_number(raw: object) -> float:
+    """Parse EVDS dot-decimal or Turkish grouped-decimal numeric values."""
+    if raw is None:
+        return float("nan")
+    text = str(raw).strip()
+    if not text:
+        return float("nan")
+    if "," in text:
+        text = text.replace(".", "").replace(",", ".")
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
 class EvdsClient:
     """TCMB EVDS REST istemcisi (seri verisi + katalog uçları)."""
 
@@ -217,7 +232,7 @@ class EvdsClient:
 
         for code in codes:
             if code in df.columns:
-                df[code] = pd.to_numeric(df[code], errors="coerce")
+                df[code] = df[code].map(_parse_evds_number)
 
         keep = [c for c in ("date", "Tarih") if c in df.columns]
         keep += [c for c in codes if c in df.columns]

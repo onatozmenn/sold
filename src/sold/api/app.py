@@ -229,7 +229,6 @@ class OutcomeIn(BaseModel):
     source: str = "web"
     label_source: str | None = None
     evidence_type: str | None = "none"
-    evidence_verified: bool = False
 
 
 @app.post("/outcome")
@@ -361,9 +360,8 @@ class StructuralValuationIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     asking_price: float = Field(..., gt=0, description="İlan (asking) fiyatı, TL")
-    province: str | None = "İstanbul"
+    province: str = Field("İstanbul", min_length=1)
     gross_m2: float | None = Field(100.0, gt=0, description="Brüt m²")
-    property_type: str | None = "konut"
     tightness: float = 0.0
 
 
@@ -379,9 +377,12 @@ def structural_valuate(prop: StructuralValuationIn) -> dict:
 
     if prop.asking_price <= 0:
         raise HTTPException(status_code=422, detail="asking_price > 0 olmalı")
-    result = structural_valuation(
-        prop.asking_price, province=prop.province, gross_m2=prop.gross_m2, tightness=prop.tightness
-    )
+    try:
+        result = structural_valuation(
+            prop.asking_price, province=prop.province, gross_m2=prop.gross_m2, tightness=prop.tightness
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(
             status_code=422,
@@ -413,9 +414,12 @@ def structural_stability() -> dict:
     Artan aday yoğunluklarında parametre bant-payları + duyarlılık zarfını karşılaştırır →
     STABLE / SEARCH_SENSITIVE / INSUFFICIENT_COVERAGE. Tolerans/bound/moment değişmez.
     """
-    from .structural_product import search_budget_stability
+    from .structural_product import stability_snapshot
 
-    return search_budget_stability()
+    try:
+        return stability_snapshot()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -492,8 +496,6 @@ _INDEX_HTML = """<!DOCTYPE html>
           <input name="province" value="İstanbul" />
           <label>Brüt m²</label>
           <input name="gross_m2" type="number" value="100" />
-          <label>Taşınmaz türü</label>
-          <select name="property_type"><option value="konut">konut</option></select>
           <button type="submit">Estimate inferred transaction outcome</button>
         </form>
       </div>

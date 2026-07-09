@@ -10,6 +10,7 @@ UYAP/KAP/TOKİ kazıma YOKTUR. Her kayıt audit durumunu ve kamu kayıt kimliği
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -18,8 +19,24 @@ from .auction import load_auctions
 from .kap import load_kap_disposals
 from .toki import difference_disclosures
 
-# repo_kökü/validation/structural
-GENUINE_DIR = Path(__file__).resolve().parents[3] / "validation" / "structural"
+_REPO_GENUINE_DIR = Path(__file__).resolve().parents[3] / "validation" / "structural"
+_PACKAGED_GENUINE_DIR = Path(__file__).resolve().parents[1] / "evidence"
+
+
+class StructuralEvidenceError(RuntimeError):
+    """Required audited structural evidence is absent or internally inconsistent."""
+
+
+def _default_genuine_dir() -> Path:
+    configured = os.environ.get("SOLD_EVIDENCE_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    if _REPO_GENUINE_DIR.is_dir():
+        return _REPO_GENUINE_DIR
+    return _PACKAGED_GENUINE_DIR
+
+
+GENUINE_DIR = _default_genuine_dir()
 
 
 def _load_records(path: Path) -> list[dict]:
@@ -34,7 +51,32 @@ def _load_records(path: Path) -> list[dict]:
 
 
 def _audited(records: list[dict]) -> list[dict]:
-    return [r for r in records if bool(r.get("source_audited"))]
+    return [r for r in records if r.get("source_audited") is True]
+
+
+def _require_audited(records: list[dict], source: str, path: Path) -> list[dict]:
+    audited = _audited(records)
+    if not audited:
+        raise StructuralEvidenceError(
+            f"Required audited {source.upper()} evidence is missing or empty: {path}"
+        )
+
+    if source == "uyap":
+        identities = [str(r.get("public_record_id") or "").strip() for r in audited]
+    elif source == "kap":
+        identities = [str(r.get("official_record_id") or "").strip() for r in audited]
+    else:
+        identities = [
+            f"{r.get('project_id') or ''}|{r.get('as_of_date') or ''}" for r in audited
+        ]
+    if any(not identity.strip("|") for identity in identities):
+        raise StructuralEvidenceError(f"Audited {source.upper()} evidence has a missing identity: {path}")
+    duplicates = sorted({identity for identity in identities if identities.count(identity) > 1})
+    if duplicates:
+        raise StructuralEvidenceError(
+            f"Audited {source.upper()} evidence has duplicate identities: {', '.join(duplicates)}"
+        )
+    return audited
 
 
 def load_uyap_records(directory: Path | None = None) -> list[dict]:
@@ -65,9 +107,16 @@ def load_uyap_candidates(directory: Path | None = None) -> list[dict]:
 
 def load_genuine_datasets(directory: Path | None = None) -> dict:
     """Yalnızca ``source_audited=true`` kayıtlardan gerçek yapısal veri kümeleri kurar."""
-    uyap_df = load_auctions(_audited(load_uyap_records(directory)))
-    kap_df = load_kap_disposals(_audited(load_kap_records(directory)))
-    toki_disclosures = _audited(load_toki_records(directory))
+    root = Path(directory or GENUINE_DIR)
+    uyap_records = _require_audited(load_uyap_records(root), "uyap", root / "uyap.json")
+    kap_records = _require_audited(load_kap_records(root), "kap", root / "kap.json")
+    toki_disclosures = _require_audited(load_toki_records(root), "toki", root / "toki.json")
+    uyap_df = load_auctions(uyap_records)
+    kap_df = load_kap_disposals(kap_records)
+    if uyap_df.empty or kap_df.empty:
+        raise StructuralEvidenceError(
+            "Audited structural evidence exists but no UYAP/KAP records survived normalization"
+        )
     toki_result = difference_disclosures(toki_disclosures)
     return {
         "uyap": uyap_df,

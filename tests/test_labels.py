@@ -173,7 +173,7 @@ def _mixed_labels() -> pd.DataFrame:
                 {"domain": "broker", "sale_mechanism": "arm_length", "reference_price_type": "asking", "label_source": "broker_closing", "reference_price": 6_500_000, "realized_price": 5_950_000}
             ),
             normalize_label(
-                {"domain": "consumer", "sale_mechanism": "arm_length", "reference_price_type": "asking", "label_source": "seller_self_reported", "reference_price": 6_250_000, "realized_price": 6_050_000}
+                {"domain": "consumer", "sale_mechanism": "arm_length", "reference_price_type": "asking", "label_source": "seller_self_reported", "reference_price": 6_250_000, "realized_price": 6_050_000, "origin": "consumer_submission"}
             ),
         ]
     )
@@ -187,6 +187,18 @@ def test_asking_to_closing_excludes_public_domains():
     # UYAP/KAP ASLA girmez
     assert "uyap" not in set(a2c["label_source"])
     assert "kap" not in set(a2c["label_source"])
+
+
+def test_public_domain_cannot_be_disguised_as_direct_closing_label():
+    with pytest.raises(LabelError, match="Public evidence domains"):
+        normalize_label({
+            "domain": "uyap",
+            "label_source": "manual",
+            "sale_mechanism": "arm_length",
+            "reference_price_type": "asking",
+            "reference_price": 100,
+            "realized_price": 90,
+        })
 
 
 def test_fair_value_labels_are_public_domains():

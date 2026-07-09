@@ -4,7 +4,7 @@
 [![Data refresh](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml/badge.svg)](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-678%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-743%20passing-brightgreen.svg)](tests/)
 [![Data](https://img.shields.io/badge/evidence-UYAP%20%C2%B7%20KAP%20%C2%B7%20TCMB%20%C2%B7%20TOK%C4%B0-informational.svg)](#provenance-audited-public-structural-evidence)
 
 > A **mechanism-aware structural econometric prototype** that infers a **structural transaction-price distribution** for a Turkish home from an **asking-price signal** and public economic evidence.
@@ -15,8 +15,8 @@
 - **TCMB** provides the **fair-value level anchor** (appraisal TL/m²), not transactions.
 - Genuine **audited UYAP completed-sale auctions** and **KAP negotiated corporate disposals** provide **source-specific structural moments**.
 - **TOKİ** is an **external cross-mechanism benchmark**, not an SMM moment source.
-- The current **local Jacobian rank is 4** for a **six-dimensional** parameter vector, so the identification status is **`STRUCTURALLY_UNDERIDENTIFIED`**.
-- Prediction sensitivity is evaluated across the **`admissible_near_fit_set` (`Θ_A`)**, and every transaction-price distribution is **`conditional_on_trade`** (`B ≥ S`).
+- The current **local Jacobian rank is 4** for a **ten-dimensional** structural primitive vector, so the identification status is **`STRUCTURALLY_UNDERIDENTIFIED`**.
+- Prediction sensitivity is evaluated across the **`admissible_near_fit_set` (`Θ_A`)** and across documented bounds for fixed structural assumptions; every transaction-price distribution is **`conditional_on_trade`** (`B ≥ S`).
 - The reported **structural sensitivity range is not a confidence interval** and carries **no frequentist coverage claim**.
 
 No fabricated data is ever served, and the system never reports a measured ordinary-resale prediction accuracy.
@@ -63,7 +63,7 @@ So the ordinary-resale closing price is genuinely unobserved, and any model trai
 - trade occurs **iff `B ≥ S`**
 - the closing price is `P = η·B + (1 − η)·S`, where `η` (seller bargaining power) is **estimated, never hard-coded**
 
-The **asking price is a noisy strategic seller-side signal** of the seller reservation — it is **not** ground truth and **not** a ceiling. Public sources enter the model through **source-specific structural moments under their own mechanism** — never pooled as ordinary-resale labels. The six-dimensional structural parameter vector is fit by **Simulated Method of Moments** to those genuine moments; identification and near-fit search sensitivity are then reported honestly (the current fit is **structurally underidentified**).
+The **asking price is a noisy strategic seller-side signal** of the seller reservation — it is **not** ground truth and **not** a ceiling. Public sources enter the model through **source-specific structural moments under their own mechanism** — never pooled as ordinary-resale labels. All ten structural primitives remain in the bounded near-fit search; identification and prediction sensitivity are reported honestly (the current fit is **structurally underidentified**).
 
 ## How It Works
 
@@ -77,7 +77,7 @@ flowchart TD
     MU --> SMM["Simulated Method of Moments"]
     MK --> SMM
 
-    SMM --> IDENT["Jacobian identification diagnostics<br/>rank 4 / dim 6 -> STRUCTURALLY_UNDERIDENTIFIED"]
+    SMM --> IDENT["Jacobian identification diagnostics<br/>rank 4 / dim 10 -> STRUCTURALLY_UNDERIDENTIFIED"]
     SMM --> THETAA["admissible_near_fit_set (Theta_A)"]
 
     ASK["asking price<br/>noisy strategic seller signal"] --> SIM
@@ -113,7 +113,7 @@ The core lives in [`src/sold/structural/`](src/sold/structural/). Each module ma
 
 #### The structural parameter vector `θ`
 
-`θ` is **six-dimensional** and is exactly the free set in [`params.py`](src/sold/structural/params.py) (`DEFAULT_FREE`, `dim(θ) = 6`). These are the parameters SMM estimates:
+`θ` contains **ten structural primitives** and is exactly the bounded free set in [`params.py`](src/sold/structural/params.py) (`DEFAULT_FREE`, `dim(θ) = 10`). The four observed moments do not uniquely estimate this vector; the code therefore reports a bounded near-fit sensitivity set rather than a point estimate:
 
 | Free parameter | Meaning |
 |---|---|
@@ -123,14 +123,18 @@ The core lives in [`src/sold/structural/`](src/sold/structural/). Each module ma
 | `sigma_s` | Seller-reservation dispersion (log) |
 | `eta` | Seller bargaining power `η ∈ (0, 1)` in `P = η·B + (1−η)·S` |
 | `auction_shift` | UYAP forced-sale / auction buyer-valuation shift (log) |
+| `arrival_rate` | UYAP bidder-arrival intensity |
+| `tightness_beta` | Market-tightness loading |
+| `kap_shift` | KAP corporate-mechanism shift |
+| `asking_signal` | Asking-to-seller-reservation signal weight |
 
-Additional **fixed** context parameters (buyer-arrival intensity, market-tightness sensitivity, the KAP corporate mechanism shift, and the asking→reservation signal weight) are held constant in the current frozen configuration and are **not** part of the estimated six-dimensional vector — they are documented as fixed inputs, not free parameters.
+All ten enter the reported structural sensitivity analysis. `tightness_beta` at the zero-tightness calibration context and `asking_signal` in public-source calibration are exact null directions; their documented endpoint sensitivity is included explicitly in the product price range.
 
 ## Structural inference engine
 
 Convergence of the optimizer is **not** identification, so the engine separates estimation, identification diagnostics, and prediction sensitivity.
 
-**Estimation.** The six-dimensional `θ` is fit by Simulated Method of Moments to the genuinely-observed public moments:
+**Estimation.** The ten-dimensional `θ` is searched by Simulated Method of Moments against the genuinely-observed public moments:
 
 $$\hat\theta = \arg\min_\theta\; (m_{obs} - m_{sim}(\theta))' \, W \, (m_{obs} - m_{sim}(\theta))$$
 
@@ -151,15 +155,17 @@ The **four** SMM moments currently in `m_obs` are:
 
 **Five** genuine TOKİ external-benchmark moments are observed, but **zero** enter the current SMM objective — the simulator has **no primary-market mechanism** to produce a model-implied counterpart for them. UYAP, KAP and TOKİ records are **never** converted into synthetic ordinary-resale `asking → closing` ground truth.
 
-**Identification.** `sold structural identify` computes a numerical moment Jacobian `J(θ) = ∂m_sim/∂θ'` (central differences, common random numbers) **restricted to genuinely-observed moments**, and reports per-source Jacobian ranks, singular values, condition number, weak directions, and per-parameter profiles. The current fit has **`rank(J) = 4`** for **`dim(θ) = 6`**, so the reported status is:
+**Identification.** `sold structural identify` computes a numerical moment Jacobian `J(θ) = ∂m_sim/∂θ'` (central differences, common random numbers) **restricted to genuinely-observed moments**, and reports per-source Jacobian ranks, singular values, condition number, weak and exact-null directions, and per-parameter profiles. The current fit has **`rank(J) = 4`** for **`dim(θ) = 10`**, so the reported status is:
 
 > **`identification_status = STRUCTURALLY_UNDERIDENTIFIED`** (an econometric statement about the moment structure — `rank(J) < dim(θ)`).
 
 Because the model is underidentified, prediction runs in **sensitivity mode** across the **`admissible_near_fit_set` (`Θ_A`)**, defined as *the set of economically admissible structural parameter vectors whose SMM criterion lies within the documented near-fit tolerance of the best observed-moment fit*. `Θ_A` is explicitly **not** a formally estimated identified set, **not** a confidence region, and **not** a set with nominal coverage; it is an admissible near-fit region used only to expose parameter sensitivity.
 
-**Search stability is reported separately from identification, and never conflated with it.** The numerical coverage of `Θ_A` by the descent-based sampler is a distinct question from econometric identification. The accepted cumulative, incumbent-preserving, common-threshold experiment (commit `3ef1208`) preserves the global incumbent as the search budget grows, so `cumulative_best_objective` **is monotone non-increasing** across increasing budgets. Its current diagnostic is:
+Partially observed UYAP legal floors are treated as interval-censored thresholds between the known statutory lower bound and the observed completed-sale price; they are never substituted as exact reserves. **Search stability is reported separately from identification, and never conflated with it.** The numerical coverage of `Θ_A` by the descent-based sampler is a distinct question from econometric identification. The accepted cumulative, incumbent-preserving, common-threshold experiment preserves the global incumbent as the search budget grows, so `cumulative_best_objective` **is monotone non-increasing** across increasing budgets. Its current diagnostic is:
 
-> **`near_fit_search_stability = STABLE`** — at the current audited budget the accepted cumulative, incumbent-preserving, common-threshold search no longer materially expands its accepted parameter support, so the numerical near-fit search is reported as stable. This is a **numerical search-coverage** statement only. It is **separate from and does not establish** econometric identification: the model remains `STRUCTURALLY_UNDERIDENTIFIED` (`rank(J) = 4 < dim(θ) = 6`).
+> **`near_fit_search_stability = INSUFFICIENT_COVERAGE`** — after enforcing a fixed four-moment objective for every candidate, the current bounded cumulative search still expands the accepted support. This is a **numerical search-coverage** statement only. It is separate from econometric identification: the model remains `STRUCTURALLY_UNDERIDENTIFIED` (`rank(J) = 4 < dim(θ) = 10`).
+
+The current structural moments pool audited residential, commercial and land records because the KAP sample is too small to support a four-moment property-type-specific calibration. The API therefore exposes this honestly as mixed-property structural evidence and does not accept a `property_type` selector that would falsely imply type-specific estimates.
 
 **Prediction semantics.** For an ordinary listing, the asking price conditions the seller reservation; `B`/`S` are drawn; trades (`B ≥ S`) are retained; and a **`conditional_on_trade`** closing distribution is returned.
 
@@ -254,13 +260,13 @@ A **non-mutating verification** workflow that checks, end to end, whether the pi
 | `alacaga_mahsuben` / `kdv_rate` | `true` / `20.0` |
 | same-asset reconciliation | `reconciled` (ada, parsel, floor, section_no) |
 | audit | `ADMISSIBLE_COMPLETED_SALE` |
-| mutation guard | `uyap.json` SHA256 unchanged, `genuine_uyap_count = 7` |
+| mutation guard | `uyap.json` SHA256 unchanged during the live pilot; the subsequently expanded genuine set now contains 18 records |
 
 No OCR, ML, weak supervision, or known-truth injection is used at any stage; no e-Devlet login, MFA, or CAPTCHA is automated; no credentials, cookies, tokens, or browser profiles are committed; and the pilot never calls `admit`. This is **one** live PASS on **one** known record: it demonstrates interoperability for that record, not production readiness or universal UYAP compatibility.
 
 **Native UDF source path.** For the live-verified document format, a UYAP `.udf` is a **ZIP-compatible container** with a root `content.xml`. The collector reads the native artifact safely (no `extractall`, path-traversal members rejected, bounded decompressed size), validates the container, parses the XML **without external-entity or network behaviour**, takes the `content` element text/CDATA, **corroborates the requested document type** (a mismatched type is preserved for diagnostics but never promoted as evidence), and feeds the text into the existing deterministic extractor. The exact native bytes are kept only in **gitignored** artifact storage. This describes the supported native format **observed and live-verified by the pilot**, not a guarantee that every possible UYAP `.udf` uses the same layout.
 
-**Outcome semantics.** `PASS` (real live session reached, required evidence extracted, reconciliation passed, audit `ADMISSIBLE_COMPLETED_SALE`, known-truth matched, `uyap.json` unchanged, count still 7); `PARTIAL` (live session worked but a required artifact/parser path was unsupported, reconciliation ambiguous, or terminal evidence not collected); `FAIL` (a real live run produced incorrect required evidence or an incorrect audit decision); `NOT_RUN` (no real user-controlled UYAP browser session was available). Offline regression success does **not** convert `NOT_RUN` into `PASS`.
+**Outcome semantics.** `PASS` (real live session reached, required evidence extracted, reconciliation passed, audit `ADMISSIBLE_COMPLETED_SALE`, known-truth matched, and `uyap.json` remained byte-unchanged during that run); `PARTIAL` (live session worked but a required artifact/parser path was unsupported, reconciliation ambiguous, or terminal evidence not collected); `FAIL` (a real live run produced incorrect required evidence or an incorrect audit decision); `NOT_RUN` (no real user-controlled UYAP browser session was available). Offline regression success does **not** convert `NOT_RUN` into `PASS`.
 
 **Live milestone summary** (the detailed Fix 1 to Fix 14 chronology lives in [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md)):
 
@@ -359,7 +365,7 @@ sold structural dataset      # genuine audited UYAP / KAP / TOKİ counts, separa
 
 ```bash
 sold structural identify     # numerical moment-Jacobian: rank, condition, weak directions
-                             # → STRUCTURALLY_UNDERIDENTIFIED (rank 4 / dim 6)
+                             # → STRUCTURALLY_UNDERIDENTIFIED (rank 4 / dim 10)
 sold structural partial      # admissible_near_fit_set (Θ_A) + tolerance sensitivity
 ```
 
@@ -452,7 +458,7 @@ tests/               # offline unit / end-to-end tests
 ## Testing
 
 ```bash
-pytest -q             # 678 tests, fully offline (no network or API key required)
+pytest -q             # 743 tests, fully offline (no network or API key required)
 ```
 
 The automated suite is fully offline. The **UYAP live browser pilot is a separate, operator-run verification** (a real user-controlled session against the live site) and is **not** part of the offline CI suite.
@@ -464,9 +470,9 @@ The methodology is a **structural econometric** one; the following foundations d
 - **Generalized Nash bargaining** — the closing price `P = η·B + (1 − η)·S` with trade iff `B ≥ S`, and `η` estimated rather than assumed.
 - **Simulated Method of Moments (SMM)** — parameters fit by minimizing a weighted distance between observed and simulated moments; used because the ordinary-resale closing price is unobserved.
 - **Housing search-and-bargaining models** — the economic framing of buyer/seller valuations, market tightness, and negotiated trade.
-- **Local (moment-Jacobian) identification** — assessing identification numerically via the rank/conditioning of `∂m_sim/∂θ'`, and reporting structural underidentification honestly (`rank(J) = 4 < dim(θ) = 6`).
+- **Local (moment-Jacobian) identification** — assessing identification numerically via the rank/conditioning of `∂m_sim/∂θ'`, and reporting structural underidentification honestly (`rank(J) = 4 < dim(θ) = 10`).
 - **Set / near-fit sensitivity analysis** — reporting an admissible near-fit region (`Θ_A`) and prediction sensitivity across it, explicitly *not* a confidence region.
-- **Cumulative, incumbent-preserving numerical-search diagnostics** — a common-threshold search-coverage study kept **separate** from econometric identification; `cumulative_best_objective` is monotone non-increasing across increasing budgets, and the current diagnostic is `near_fit_search_stability = STABLE` (a numerical-search statement that does not establish identification).
+- **Cumulative, incumbent-preserving numerical-search diagnostics** — a common-threshold search-coverage study kept **separate** from econometric identification; `cumulative_best_objective` is monotone non-increasing across increasing budgets, and the corrected four-moment diagnostic currently reports `near_fit_search_stability = INSUFFICIENT_COVERAGE`.
 - **Appraisal-anchored (hedonic) fair value** — using TCMB appraisal levels as the fair-value anchor, with relative characteristic premiums only.
 - **Source-specific mechanism moments** — UYAP completed-sale auctions and KAP negotiated corporate disposals contribute moments under their own mechanism; TOKİ is an external cross-mechanism benchmark.
 
@@ -481,7 +487,7 @@ The structural and prediction-semantics core is frozen. After the first single-r
 - [ ] Expand the genuine, provenance-audited **UYAP completed-sale auction** evidence set
 - [ ] Expand the genuine **KAP negotiated-disposal** evidence set (manual audit; KAP does not use the UYAP browser / native-UDF path)
 - [ ] Recompute the observed four-moment SMM vector, Jacobian diagnostics (rank, singular values, condition, weak directions), and `Theta_A` after each **explicit evidence-admission batch** (more records do not automatically raise `rank(J)`; the fit stays `STRUCTURALLY_UNDERIDENTIFIED` unless the diagnostics actually change)
-- [ ] Re-audit whether `near_fit_search_stability` remains `STABLE` after each admission batch, kept **separate from** econometric identification
+- [ ] Increase the bounded search budget until `near_fit_search_stability` no longer reports `INSUFFICIENT_COVERAGE`, and re-audit it after every admission batch
 - [ ] Run UYAP and KAP leave-one-out and source-removal robustness analyses
 - [ ] Run structural-assumption sensitivity analyses for the asking-to-seller-signal specification, parameter bounds, distributional assumptions, and TCMB anchor perturbations
 - [ ] Compare structural behavior with transparent baselines (asking price, fixed-markdown rules, the TCMB fair-value anchor) without making unsupported accuracy claims

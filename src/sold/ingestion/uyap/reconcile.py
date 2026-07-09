@@ -60,9 +60,10 @@ def reconcile(
     if conflicts:
         return ReconciliationResult(status="failed", same_asset=False, matched_on=matched, conflicts=conflicts)
 
-    # En az bir güçlü tanımlayıcı (ada+parsel ya da bağımsız-bölüm) her iki tarafta eşleşmeli
-    strong = {"ada", "parsel", "section_no"}
-    if shared_keys & strong and matched:
+    # Kadastro kimliği birlikte eşleşmeli; bağımsız bölüm tek başına yeterli değildir.
+    cadastral_match = {"ada", "parsel"}.issubset(shared_keys)
+    unit_match = "section_no" in shared_keys and bool({"block", "floor"} & shared_keys)
+    if cadastral_match or unit_match:
         return ReconciliationResult(status="reconciled", same_asset=True, matched_on=matched, conflicts=[])
 
     # Tanımlayıcılar yalnızca tek grupta ya da yetersiz → belirsiz (insan incelemesi)
@@ -71,8 +72,10 @@ def reconcile(
         reasons.append("no asset descriptors in appraisal-bearing artifacts")
     if not auc:
         reasons.append("no asset descriptors in auction-bearing artifacts")
-    if appr and auc and not (shared_keys & strong):
-        reasons.append("no shared strong descriptor (ada/parsel/section) across appraisal and auction evidence")
+    if appr and auc and not (cadastral_match or unit_match):
+        reasons.append(
+            "same asset requires matching ada+parsel or section_no plus block/floor across evidence"
+        )
     return ReconciliationResult(
         status="ambiguous",
         same_asset=False,

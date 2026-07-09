@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -22,6 +24,61 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 # Güvenlik: httpx/httpcore INFO logları istek URL'sini (EVDS anahtarını) sızdırabilir.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+def _validate_refresh_frame(
+    new_frame,
+    output_path: Path,
+    *,
+    scope_column: str | None = None,
+    period_column: str = "period",
+    expected_scope: int | None = None,
+) -> None:
+    import pandas as pd
+
+    if new_frame.empty:
+        raise ValueError("refresh returned no usable rows")
+    if scope_column:
+        actual_scope = int(new_frame[scope_column].nunique())
+        baseline_scope = expected_scope or 0
+        if output_path.exists():
+            try:
+                existing = pd.read_csv(output_path)
+                if scope_column in existing.columns:
+                    baseline_scope = max(baseline_scope, int(existing[scope_column].nunique()))
+            except (OSError, ValueError):
+                pass
+        minimum_scope = max(1, int(baseline_scope * 0.95)) if baseline_scope else 0
+        if minimum_scope and actual_scope < minimum_scope:
+            raise ValueError(
+                f"refresh scope regressed: {actual_scope} {scope_column} values, "
+                f"expected at least {minimum_scope}"
+            )
+    if output_path.exists() and period_column in new_frame.columns:
+        try:
+            existing = pd.read_csv(output_path)
+            if period_column in existing.columns and len(existing):
+                new_max = pd.to_datetime(new_frame[period_column], errors="coerce").max()
+                old_max = pd.to_datetime(existing[period_column], errors="coerce").max()
+                if pd.notna(new_max) and pd.notna(old_max) and new_max < old_max:
+                    raise ValueError(f"refresh period regressed: {new_max.date()} < {old_max.date()}")
+        except (OSError, pd.errors.ParserError):
+            pass
+
+
+def _atomic_to_csv(frame, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", newline="", dir=output_path.parent,
+        delete=False, prefix=f".{output_path.name}.", suffix=".tmp",
+    ) as handle:
+        temp_path = Path(handle.name)
+    try:
+        frame.to_csv(temp_path, index=False)
+        os.replace(temp_path, output_path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
 
 
 # --------------------------------------------------------------------------- #
@@ -52,8 +109,12 @@ def evds_kfe(
         )
         raise typer.Exit(code=1)
 
-    out.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(out, index=False)
+    try:
+        _validate_refresh_frame(df, out, period_column="date")
+    except ValueError as exc:
+        typer.secho(f"Yenileme reddedildi: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    _atomic_to_csv(df, out)
     typer.secho(f"{len(df)} satır -> {out}", fg=typer.colors.GREEN)
     typer.echo(df.tail(6).to_string(index=False))
 
@@ -91,8 +152,17 @@ def evds_house_sales(
         raise typer.Exit(code=1)
 
     long_df = to_long(df, name_map)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    long_df.to_csv(out, index=False)
+    try:
+        _validate_refresh_frame(
+            long_df,
+            out,
+            scope_column="province",
+            expected_scope=len(DEFAULT_HOUSE_SALES_SERIES),
+        )
+    except ValueError as exc:
+        typer.secho(f"Yenileme reddedildi: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    _atomic_to_csv(long_df, out)
     typer.secho(f"{len(long_df)} satır -> {out}", fg=typer.colors.GREEN)
     typer.echo(long_df.tail(8).to_string(index=False))
 
@@ -126,8 +196,12 @@ def evds_unit_prices(
         )
         raise typer.Exit(code=1)
 
-    out.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(out, index=False)
+    try:
+        _validate_refresh_frame(df, out, scope_column="province", expected_scope=77)
+    except ValueError as exc:
+        typer.secho(f"Yenileme reddedildi: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    _atomic_to_csv(df, out)
     n_prov = df["province"].nunique()
     typer.secho(f"{len(df)} satır ({n_prov} il) -> {out}", fg=typer.colors.GREEN)
     typer.echo(df.tail(8).to_string(index=False))
@@ -1049,7 +1123,6 @@ def flywheel_record_cmd(
     source: str = typer.Option("broker", help="Broker kimliği"),
     label_source: str = typer.Option("", help="broker_closing/bank_transfer_observed/deed_declared/..."),
     evidence_type: str = typer.Option("none", help="none/screenshot/contract/bank_receipt/deed"),
-    verified: bool = typer.Option(False, "--verified", help="Bağımsız doğrulandı (güven A)"),
 ) -> None:
     """Bir ilan SONUCU kaydeder (sadece satış değil). Kapanış alanları yalnızca 'sold'da geçerli."""
     from .db import get_engine, get_sessionmaker, init_db
@@ -1070,7 +1143,7 @@ def flywheel_record_cmd(
         "source": source,
         "label_source": label_source or None,
         "evidence_type": evidence_type,
-        "evidence_verified": verified,
+        "evidence_verified": False,
     }
     engine = get_engine()
     init_db(engine)
@@ -1084,8 +1157,8 @@ def flywheel_record_cmd(
         raise typer.Exit(code=1)
 
     typer.secho(f"Kaydedildi: outcome={outcome} · güven={conf}", fg=typer.colors.GREEN)
-    if outcome == "sold" and conf != "A":
-        typer.echo("Not: öz-beyan güveni B; bağımsız doğrulamada --verified ile A olur.")
+    if outcome == "sold":
+        typer.echo("Not: bu giriş öz-beyandır ve güveni B olarak kalır.")
 
 
 @flywheel_app.command("analytics")
@@ -1815,7 +1888,7 @@ def structural_partial_cmd(
                 f"|Θ_A|={row['n_admissible']} · geniş-aralık={row['wide_parameters'] or '—'}"
             )
     typer.secho(
-        "  DURUM: STRUCTURALLY_UNDERIDENTIFIED (rank(J)=4 < dim=6) — θ nokta olarak tanımlanmaz. "
+        f"  DURUM: STRUCTURALLY_UNDERIDENTIFIED (rank(J)=4 < dim={len(DEFAULT_FREE)}) — θ nokta olarak tanımlanmaz. "
         "Θ_A bir identified set / güven bölgesi DEĞİL; dürüst yakın-uyum duyarlılığı taşır "
         "(θ rank için KÜÇÜLTÜLMEDİ).",
         fg=typer.colors.YELLOW,

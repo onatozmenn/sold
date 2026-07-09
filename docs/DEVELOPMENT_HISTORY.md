@@ -855,3 +855,42 @@ milestones:
   yet run live, so a post-Fix-14 operator rerun is required.** Structural core, four SMM moments,
   `conditional_on_trade`, `Θ_A`, TOKİ external status (5 observed / 0 SMM), and the numerical-search convention
   are unchanged; the pilot remains non-mutating (genuine count stays 7).
+
+## 2026-07-09 — Repository-wide integrity remediation
+
+A full-system audit identified fifteen correctness, provenance, packaging and operational-integrity
+issues. They were closed together so the public product, offline evidence workflow and installed wheel
+share the same fail-closed contracts:
+
+- every near-fit candidate is scored against the same four finite SMM moments; candidates may no longer
+  improve their objective by dropping KAP moments;
+- all ten structural primitives remain in the bounded near-fit space (`rank(J)=4 < dim(theta)=10`), exact
+  null-space directions are reported, and direct prediction sensitivity over `asking_signal` and
+  zero-context `tightness_beta` is included in the price envelope;
+- required audited evidence and all 77 current province anchors ship in the wheel; missing, empty,
+  duplicate or stale evidence/snapshots fail closed rather than producing a fallback price;
+- the corrected production near-fit snapshot contains 28 admissible configurations and is fingerprinted
+  to the current four-moment vector; public valuation/evidence/stability requests do not launch searches;
+- the corrected bounded search diagnostic is `INSUFFICIENT_COVERAGE`, kept separate from structural
+  underidentification and never relabeled as stable;
+- partial UYAP legal floors are modeled as interval-censored thresholds between the known statutory lower
+  bound and observed completed-sale price, never as exact auction reserves;
+- PostgreSQL DDL splitting is comment-safe, ORM metadata creates all current tables, and additive legacy
+  ground-truth provenance columns are applied idempotently;
+- UYAP admission re-extracts, reconciles and audits verified store-local artifacts; one-field asset
+  matches, mutable cached audits, P/Q identity dedupe and pilot report/evidence path aliasing are rejected;
+- UYAP operational JSON contains no inline document bodies; artifact paths are store-confined, carry full
+  SHA-256 hashes, and candidate/bulk/admission/exclusion/report writes are locked and atomic;
+- partial crawler runs cannot delist unseen inventory, and EVDS refreshes cannot replace canonical files
+  after material scope or date regression; all refresh writes are atomic;
+- public-domain labels cannot be disguised as direct resale labels, malformed dates are rejected,
+  duplicate/flagged rows cannot unlock benchmarks, and callers cannot self-award confidence A;
+- the unsupported property-type selector was removed, mixed-property calibration scope is explicit,
+  null provinces are rejected, and every official province in the current anchor snapshot is supported;
+- API extras declare eager model-import dependencies, cache initialization is synchronized, and the
+  distributable wheel is smoke-tested outside the repository working directory.
+
+Validation after the remediation: **743 passed** in one complete offline run. The genuine structural set
+contains 18 UYAP completed sales, 2 KAP negotiated disposals and 3 TOKI disclosures. The remaining
+`INSUFFICIENT_COVERAGE` status is an explicit numerical-search limitation, not an unresolved software
+failure or an identification claim.

@@ -282,6 +282,14 @@ def run_pilot(
     ASLA admit çağırmaz (8. gözlem oluşmaz). Canlı yol başarısız olursa (Playwright yok / CDP yok /
     sayfa yok) UYDURMA YAPMAZ → NOT_RUN + bloklayıcı neden. Rapor gitignored data yoluna yazılır.
     """
+    genuine_file = Path(genuine_path).resolve() if genuine_path else (_genuine_dir() / "uyap.json").resolve()
+    output_file = (
+        Path(report_path).resolve()
+        if report_path
+        else (Path(store_dir or "data/ingestion/uyap") / "pilot_report.json").resolve()
+    )
+    if genuine_file == output_file:
+        raise ValueError("report_path must not point to the genuine UYAP evidence file")
     before = genuine_fingerprint(genuine_path)
     artifacts: list[dict] = []
     source_refs: list = []
@@ -321,9 +329,11 @@ def run_pilot(
         "smm_moments_unchanged": before["smm_moments"] == after["smm_moments"],
         "uyap_sale_prob_absent": "uyap_sale_prob" not in after["smm_moments"],
     }
-    path = Path(report_path) if report_path else Path(store_dir or "data/ingestion/uyap") / "pilot_report.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    path = output_file
+    from .io import atomic_write_json, locked
+
+    with locked(path):
+        atomic_write_json(path, report)
     report["report_path"] = str(path)
     return report
 

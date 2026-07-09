@@ -50,6 +50,7 @@ def crawl_once(
             errors += 1
             continue
         if not page_html:
+            errors += 1
             continue
 
         for listing_url in adapter.extract_listing_urls(page_html, page_url):
@@ -60,6 +61,7 @@ def crawl_once(
                 errors += 1
                 continue
             if not detail_html:
+                errors += 1
                 continue
 
             if archive:
@@ -75,6 +77,7 @@ def crawl_once(
                 errors += 1
                 continue
             if record is None:
+                errors += 1
                 continue
 
             listing = upsert_listing(session, record, now=captured_at)
@@ -83,7 +86,11 @@ def crawl_once(
 
         session.flush()
 
-    delisted = mark_delisted(session, adapter.source_name, seen_ids, now=captured_at)
+    delisted = (
+        mark_delisted(session, adapter.source_name, seen_ids, now=captured_at)
+        if errors == 0
+        else 0
+    )
     session.flush()
 
     price_changes_after = session.scalar(select(func.count()).select_from(PriceChange)) or 0

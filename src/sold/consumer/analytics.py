@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from ..labels.registry import NON_PRODUCTION_ORIGINS
+from ..labels.registry import GENUINE_ORIGIN, QUALITY_ACCEPTED
 from .collector import DEFAULT_PROPERTY_TYPE, load_consumer_sales
 
 # Bir segmentin benchmark gösterebilmesi için gereken en az gerçek gözlem sayısı
@@ -101,8 +101,11 @@ def segment_benchmark(
     """
     province, property_type = segment_key(sale)
     df = load_consumer_sales(session)
-    if not df.empty and "origin" in df.columns:
-        df = df[~df["origin"].astype(str).isin(NON_PRODUCTION_ORIGINS)]
+    if not df.empty and {"origin", "quality_status"}.issubset(df.columns):
+        df = df[
+            df["origin"].astype(str).eq(GENUINE_ORIGIN)
+            & df["quality_status"].astype(str).eq(QUALITY_ACCEPTED)
+        ]
     seg = _segment_frame(df, province, property_type)
     n = int(len(seg))
     segment_info = {"province": province, "property_type": property_type}

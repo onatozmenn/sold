@@ -62,18 +62,22 @@ DIRECT_RESALE_MECHANISMS = frozenset({"arm_length", "ordinary_resale"})
 # 'genuine' (gerçek) doğrudan-etiket sayısını ASLA şişirmemelidir. Köken belirtilmeyen ham
 # etiket 'manual_import' sayılır (ne gerçek tüketici gönderimi ne test/demo).
 ORIGIN_CONSUMER_SUBMISSION = "consumer_submission"  # TEK gerçek üretim kökeni (genuine)
+ORIGIN_BROKER_SUBMISSION = "broker_submission"
 ORIGIN_TEST_FIXTURE = "test_fixture"
 ORIGIN_DEMO_SEED = "demo_seed"
 ORIGIN_MANUAL_IMPORT = "manual_import"
 ORIGINS = (
     ORIGIN_CONSUMER_SUBMISSION,
+    ORIGIN_BROKER_SUBMISSION,
     ORIGIN_TEST_FIXTURE,
     ORIGIN_DEMO_SEED,
     ORIGIN_MANUAL_IMPORT,
 )
 DEFAULT_ORIGIN = ORIGIN_MANUAL_IMPORT
 GENUINE_ORIGIN = ORIGIN_CONSUMER_SUBMISSION
+GENUINE_ORIGINS = frozenset({ORIGIN_CONSUMER_SUBMISSION, ORIGIN_BROKER_SUBMISSION})
 NON_PRODUCTION_ORIGINS = frozenset({ORIGIN_TEST_FIXTURE, ORIGIN_DEMO_SEED})
+PUBLIC_DOMAINS = frozenset({"uyap", "kap", "toki"})
 
 # Kalite durumu — tüketici gönderimlerinde kalite kapısı. Yalnızca 'accepted' model
 # eğitimine girer; 'flagged' provenance'ıyla SAKLANIR ama a2c'den varsayılan dışlanır;
@@ -135,7 +139,16 @@ def normalize_label(raw: dict) -> dict:
         raise LabelError(f"Geçersiz sale_mechanism: {mechanism!r}.")
     if ref_type not in REFERENCE_PRICE_TYPES:
         raise LabelError(f"Geçersiz reference_price_type: {ref_type!r}.")
-    origin = str(raw.get("origin") or DEFAULT_ORIGIN).strip()
+    if domain in PUBLIC_DOMAINS and (
+        ref_type == "asking"
+        or mechanism in DIRECT_RESALE_MECHANISMS
+        or source in DIRECT_CLOSING_SOURCES
+    ):
+        raise LabelError("Public evidence domains cannot be normalized as direct asking-to-closing labels.")
+    if source is None:
+        raise LabelError("label_source zorunludur.")
+    inferred_origin = ORIGIN_BROKER_SUBMISSION if domain == "broker" else DEFAULT_ORIGIN
+    origin = str(raw.get("origin") or inferred_origin).strip()
     if origin not in ORIGINS:
         raise LabelError(f"Geçersiz origin: {origin!r}. Geçerli: {', '.join(ORIGINS)}")
     quality_status = str(raw.get("quality_status") or DEFAULT_QUALITY_STATUS).strip()
@@ -267,10 +280,20 @@ def asking_to_closing_labels(
     """
     if df.empty:
         return df
+    required = {
+        "domain",
+        "label_source",
+        "sale_mechanism",
+        "reference_price_type",
+        "related_party",
+    }
+    if not required.issubset(df.columns):
+        return df.iloc[0:0].copy()
     src = df["label_source"].fillna("").astype(str)
     mask = (
         (df["reference_price_type"] == "asking")
         & (df["sale_mechanism"].isin(DIRECT_RESALE_MECHANISMS))
+        & (df["domain"].isin({"broker", "consumer"}))
         & (~df["related_party"].fillna(False).astype(bool))
         & (src.isin(DIRECT_CLOSING_SOURCES))
     )
@@ -280,9 +303,7 @@ def asking_to_closing_labels(
             == QUALITY_ACCEPTED
         )
     if not include_non_production and "origin" in df.columns:
-        mask &= ~df["origin"].fillna(DEFAULT_ORIGIN).astype(str).isin(
-            NON_PRODUCTION_ORIGINS
-        )
+        mask &= df["origin"].fillna(DEFAULT_ORIGIN).astype(str).isin(GENUINE_ORIGINS)
     return df[mask].reset_index(drop=True)
 
 

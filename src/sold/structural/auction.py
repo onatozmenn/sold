@@ -232,7 +232,9 @@ def simulate_auctions(
             continue
         bids = Q[i] * np.exp(rng.normal(mean, params.sigma_b, k))
         top = float(bids.max())
-        if top >= L[i]:
+        # NaN floor yalnız hiçbir geçerli threshold aralığı kurulamadığında kullanılır.
+        # Kısmî gözlemli tamamlanmış satışlarda caller interval quadrature eşiği sağlar.
+        if not np.isfinite(L[i]) or top >= L[i]:
             sold[i] = True
             win_over_Q[i] = top / Q[i]
     return {"sold": sold, "win_over_appraisal": win_over_Q, "bidder_count": counts}

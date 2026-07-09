@@ -1,0 +1,42 @@
+[
+  {
+    "official_record_id": "963554",
+    "appraisal_value": 5200000,
+    "reference_price_type": "prior_appraisal",
+    "appraisal_date": "2020-12-28",
+    "sale_price": 5508474.6,
+    "sale_date": "2021-09-13",
+    "province": "İstanbul",
+    "district": "Şişli",
+    "property_type": "konut",
+    "gross_m2": null,
+    "value_method": "negotiation",
+    "related_party": false,
+    "source_audited": true
+  },
+  {
+    "official_record_id": "265789-312317",
+    "source_record_ids": [265789, 312317],
+    "appraisal_value_original": 15487102.0,
+    "appraisal_currency": "TRY",
+    "appraisal_vat_basis": "excluding_vat",
+    "reference_price_type": "appraisal",
+    "appraisal_date": null,
+    "sale_price_original": 7533161.0,
+    "sale_currency": "USD",
+    "sale_vat_basis": "excluding_vat",
+    "exchange_rate": 2.0365,
+    "exchange_rate_series": "TP.DK.USD.A.YTL",
+    "conversion_date": "2013-10-01",
+    "sale_date": "2013-10-01",
+    "province": "İstanbul",
+    "district": "Esenyurt",
+    "property_type": "arsa",
+    "gross_m2": null,
+    "value_method": "negotiation",
+    "sale_mechanism": "corporate_negotiated_non_related",
+    "related_party": false,
+    "related_party_basis": "official_old_form_relation_none",
+    "source_audited": true
+  }
+]

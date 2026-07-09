@@ -117,8 +117,8 @@ def _date(v: object) -> dt.date | None:
         return v
     try:
         return dt.date.fromisoformat(str(v)[:10])
-    except ValueError:
-        return None
+    except ValueError as exc:
+        raise ConsumerSaleError(f"Geçersiz tarih; YYYY-MM-DD bekleniyor: {v!r}") from exc
 
 
 # --------------------------------------------------------------------------- #
@@ -249,6 +249,7 @@ def record_consumer_sale(
             select(func.count())
             .select_from(ConsumerSale)
             .where(ConsumerSale.fingerprint == fp)
+            .where(ConsumerSale.origin == origin)
         )
         or 0
     ) > 0

@@ -78,8 +78,6 @@ def assign_confidence(label_source: str | None, evidence_verified: bool = False)
     """
     if label_source == "deed_declared":
         return "C"
-    if evidence_verified:
-        return "A"
     return "B"
 
 
@@ -106,7 +104,7 @@ def validate_outcome(rec: dict) -> dict:
         out.setdefault("sale_mode", ARM_LENGTH)
         out["sale_mode"] = out.get("sale_mode") or ARM_LENGTH
 
-    out["evidence_verified"] = bool(out.get("evidence_verified"))
+    out["evidence_verified"] = False
     out.setdefault("evidence_type", "none")
     out["evidence_type"] = out.get("evidence_type") or "none"
     if not out.get("label_source"):

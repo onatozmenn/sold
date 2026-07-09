@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from sold.evds.client import EvdsAuthError, EvdsClient, _parse_evds_date
+from sold.evds.client import EvdsAuthError, EvdsClient, _parse_evds_date, _parse_evds_number
 
 
 def test_parse_evds_date_variants():
@@ -13,6 +13,12 @@ def test_parse_evds_date_variants():
     assert _parse_evds_date("2019-3") == pd.Timestamp(2019, 3, 1)
     assert _parse_evds_date("2019-03") == pd.Timestamp(2019, 3, 1)
     assert _parse_evds_date("2020-Q2") == pd.Timestamp(2020, 4, 1)
+
+
+def test_parse_evds_number_supports_turkish_grouped_decimal():
+    assert _parse_evds_number("79.305,8") == pytest.approx(79305.8)
+    assert _parse_evds_number("100.5") == pytest.approx(100.5)
+    assert pd.isna(_parse_evds_number("--"))
 
 
 def test_get_series_parses_underscored_keys(monkeypatch):

@@ -226,10 +226,9 @@ def test_consumer_sale_rejects_extra_personal_field(tmp_path, monkeypatch):
 # --- Yapısal ürün yüzeyi (final productization; DONMUŞ çekirdek) ------------ #
 @pytest.fixture(scope="module")
 def structural_ready():
-    """Yapısal önbelleği KÜÇÜK aday sayısıyla kurar (test hızı) — ekonometrik çekirdek değişmez."""
+    """Yapısal snapshot önbelleğini her modül için temiz başlatır."""
     import sold.api.structural_product as sp
 
-    sp.NEAR_FIT_CANDIDATES = 500
     sp.reset_near_fit_cache()
     yield
     sp.reset_near_fit_cache()
@@ -244,13 +243,31 @@ def test_structural_evidence_reports_genuine_counts(structural_ready):
         "uyap_win_over_appraisal_mean", "uyap_win_over_appraisal_sd",
         "kap_log_ratio_mean", "kap_log_ratio_sd",
     }
-    assert d["jacobian_rank"] == 4 and d["parameter_dimension"] == 6
+    assert d["jacobian_rank"] == 4 and d["parameter_dimension"] == 10
     # test sayıları (ör. "192 passed") KANIT olarak GÖSTERİLMEZ
     assert "passed" not in json.dumps(d)
     # açıklamalar: UYAP koşullu, KAP kurumsal (ordinary resale GT DEĞİL), TOKİ external (0 moment)
     assert "conditional" in d["explanations"]["uyap"].lower()
     assert "not ordinary residential resale ground truth" in d["explanations"]["kap"].lower()
     assert "zero moments" in d["explanations"]["toki"].lower()
+    assert "not property-type-specific" in d["property_scope"]
+
+
+def test_structural_evidence_does_not_run_near_fit_search(monkeypatch):
+    import sold.api.structural_product as sp
+
+    sp.reset_near_fit_cache()
+    monkeypatch.setattr(
+        sp,
+        "admissible_near_fit_set",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("near-fit search called")),
+    )
+
+    response = client.get("/structural/evidence")
+
+    assert response.status_code == 200
+    assert response.json()["n_smm_moments_used"] == 4
+    sp.reset_near_fit_cache()
 
 
 def test_structural_method_view(structural_ready):
@@ -280,7 +297,57 @@ def test_structural_valuate_machine_readable(structural_ready):
         assert k in d
     # YASAK alanlar YOK
     assert "confidence_interval" not in d and "accuracy" not in d
-    assert d["jacobian_rank"] == 4 and d["parameter_dimension"] == 6
+    assert d["jacobian_rank"] == 4 and d["parameter_dimension"] == 10
+    assert d["between_assumption_sensitivity_band"][0] is not None
+    assert set(d["assumption_sensitivity_parameters"]) == {
+        "tightness_beta", "asking_signal",
+    }
+
+
+def test_structural_valuate_does_not_run_request_time_near_fit_search(structural_ready, monkeypatch):
+    import sold.api.structural_product as sp
+
+    sp.reset_near_fit_cache()
+    monkeypatch.setattr(
+        sp,
+        "admissible_near_fit_set",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("near-fit search called")),
+    )
+
+    response = client.post("/structural/valuate", json={
+        "asking_price": 5_000_000,
+        "province": "İstanbul",
+        "gross_m2": 100,
+    })
+
+    assert response.status_code == 200
+    assert response.json()["near_fit_parameter_count"] == len(
+        json.loads(sp.NEAR_FIT_SNAPSHOT.read_text(encoding="utf-8"))["admissible_params"]
+    )
+
+
+def test_structural_valuate_supports_all_official_provinces_and_rejects_unsupported_fields(structural_ready):
+    supported = client.post("/structural/valuate", json={
+        "asking_price": 5_000_000,
+        "province": "Aydın",
+        "gross_m2": 100,
+    })
+    null_province = client.post("/structural/valuate", json={
+        "asking_price": 5_000_000,
+        "province": None,
+        "gross_m2": 100,
+    })
+    unsupported_type = client.post("/structural/valuate", json={
+        "asking_price": 5_000_000,
+        "province": "İstanbul",
+        "gross_m2": 100,
+        "property_type": "arsa",
+    })
+
+    assert supported.status_code == 200
+    assert supported.json()["fair_value"] == pytest.approx(4_608_060.0)
+    assert null_province.status_code == 422
+    assert unsupported_type.status_code == 422
 
 
 def test_structural_valuate_input_conflict_warns_not_clamped(structural_ready):
@@ -293,6 +360,21 @@ def test_structural_valuate_input_conflict_warns_not_clamped(structural_ready):
     assert len(d["input_conflict_candidate_explanations"]) == 6
     # KIRPILMADI/reddedilmedi: yapısal alanlar + coverage_claim=None yine döner
     assert "structural_sensitivity_range" in d and d["coverage_claim"] is None
+
+
+def test_structural_stability_endpoint_uses_precomputed_snapshot(monkeypatch):
+    import sold.api.structural_product as sp
+
+    monkeypatch.setattr(
+        sp,
+        "search_budget_stability",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("live search called")),
+    )
+
+    response = client.get("/structural/stability")
+
+    assert response.status_code == 200
+    assert response.json()["near_fit_search_stability"] == "INSUFFICIENT_COVERAGE"
 
 
 def test_structural_index_page_action_wording(structural_ready):

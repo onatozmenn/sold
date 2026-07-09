@@ -10,6 +10,7 @@ hizalı kalır, tutarlar orijinal Türk sayı biçiminden okunur).
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -36,7 +37,16 @@ def _artifact_raw(artifact: dict) -> str:
     if text is None and artifact.get("local_path"):
         p = Path(artifact["local_path"])
         if p.exists():
-            text = p.read_text(encoding="utf-8", errors="ignore")
+            data = p.read_bytes()
+            declared = artifact.get("sha256")
+            if declared and hashlib.sha256(data).hexdigest() != str(declared):
+                raise ValueError(f"artifact sha256 mismatch: {p}")
+            if p.suffix.lower() == ".udf":
+                from .udf import extract_udf_source_text
+
+                text, _ = extract_udf_source_text(data)
+            else:
+                text = data.decode("utf-8", errors="ignore")
     return text or ""
 
 

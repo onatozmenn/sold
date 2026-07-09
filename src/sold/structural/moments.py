@@ -34,6 +34,8 @@ class MomentContext:
     auction_appraised: np.ndarray  # gerçek Q dizisi (muhammen_bedel = ekspertiz)
     auction_floors: np.ndarray     # gerçek yasal tabanlar
     kap_appraisal: np.ndarray      # KAP ekspertiz/emsal-ekspertiz referansları
+    auction_floor_exact: np.ndarray | None = None  # yalnız True ise kabul eşiği gözlenmiştir
+    auction_floor_upper: np.ndarray | None = None  # kısmî taban için gözlenen tamamlanmış-fiyat üst sınırı
     tightness: float = 0.0         # TÜİK hacminden piyasa sıkılığı
     reps: int = 200                # her gözlem için simülasyon tekrarı (moment stabilitesi)
     auction_bidders: np.ndarray | None = None  # gözlemli teklif sayısı (KORUNUR)
@@ -93,7 +95,27 @@ def simulated_moments(
     # --- UYAP açık artırmaları (gerçek Q + yasal taban üzerinde) ---
     if ctx.auction_appraised is not None and len(ctx.auction_appraised):
         Q = np.repeat(np.asarray(ctx.auction_appraised, float), ctx.reps)
-        L = np.repeat(np.asarray(ctx.auction_floors, float), ctx.reps)
+        floors = np.asarray(ctx.auction_floors, float)
+        if ctx.auction_floor_exact is None:
+            exact = np.ones(len(floors), dtype=bool)
+        else:
+            exact = np.asarray(ctx.auction_floor_exact, bool)
+        upper = (
+            np.asarray(ctx.auction_floor_upper, float)
+            if ctx.auction_floor_upper is not None
+            else np.full(len(floors), np.nan)
+        )
+        threshold_blocks = []
+        midpoint_fractions = (np.arange(ctx.reps, dtype=float) + 0.5) / ctx.reps
+        for lower, upper_bound, is_exact in zip(floors, upper, exact):
+            if is_exact:
+                threshold_blocks.append(np.full(ctx.reps, lower))
+            elif np.isfinite(upper_bound) and upper_bound >= lower:
+                # Exact floor interval-censored: lower <= floor <= observed winning bid.
+                threshold_blocks.append(lower + midpoint_fractions * (upper_bound - lower))
+            else:
+                threshold_blocks.append(np.full(ctx.reps, np.nan))
+        L = np.concatenate(threshold_blocks) if threshold_blocks else np.array([], dtype=float)
         bidders = (
             np.repeat(np.asarray(ctx.auction_bidders, int), ctx.reps)
             if ctx.auction_bidders is not None
@@ -126,12 +148,16 @@ def context_from_datasets(
     """
     aQ = np.array([], dtype=float)
     aF = np.array([], dtype=float)
+    floor_exact = np.array([], dtype=bool)
+    floor_upper = np.array([], dtype=float)
     bidders = None
     if auctions is not None and len(auctions):
         q = pd.to_numeric(auctions["appraised_value"], errors="coerce")
         adf = auctions[q > 0]
         aQ = pd.to_numeric(adf["appraised_value"], errors="coerce").to_numpy(float)
         aF = pd.to_numeric(adf["legal_floor"], errors="coerce").to_numpy(float)
+        floor_exact = adf["legal_floor_exact"].fillna(False).astype(bool).to_numpy()
+        floor_upper = pd.to_numeric(adf["winning_bid"], errors="coerce").to_numpy(float)
         bc = pd.to_numeric(adf["bidder_count"], errors="coerce")
         if len(adf) and bc.notna().all():
             bidders = bc.to_numpy(int)
@@ -142,6 +168,8 @@ def context_from_datasets(
         auction_appraised=aQ,
         auction_floors=aF,
         kap_appraisal=kV,
+        auction_floor_exact=floor_exact,
+        auction_floor_upper=floor_upper,
         tightness=tightness,
         reps=reps,
         auction_bidders=bidders,

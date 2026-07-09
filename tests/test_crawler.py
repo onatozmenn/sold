@@ -74,3 +74,30 @@ def test_two_day_crawl_longitudinal():
     assert float(demo1_snaps[0].price) == 3_200_000
     assert float(demo1_snaps[1].price) == 2_950_000
     assert demo1_snaps[1].days_on_market == 14
+
+
+def test_partial_crawl_does_not_delist_existing_inventory():
+    class BrokenAdapter:
+        source_name = "local-example"
+
+        def list_page_urls(self):
+            return ["https://example.invalid/list"]
+
+        def fetch(self, url):
+            raise RuntimeError("temporary outage")
+
+    session = _make_session()
+    session.add(Listing(source="local-example", source_listing_id="ACTIVE", status="active"))
+    session.commit()
+
+    run = crawl_once(
+        session,
+        BrokenAdapter(),
+        captured_at=dt.datetime(2026, 2, 1, tzinfo=dt.timezone.utc),
+    )
+    listing = session.scalar(select(Listing).where(Listing.source_listing_id == "ACTIVE"))
+
+    assert run.status == "partial"
+    assert run.delisted == 0
+    assert listing.status == "active"
+    assert listing.delisted_at is None

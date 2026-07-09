@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import shutil
 
+import pytest
+
 from sold.ingestion.uyap import (
     KNOWN_TRUTH,
     compare_to_truth,
@@ -179,6 +181,14 @@ def test_already_admitted_2026_263_cannot_create_eighth(tmp_path):
     recs = json.loads(gp.read_text(encoding="utf-8"))
     assert len(recs) == before
     assert sum(1 for x in recs if str(x.get("public_record_id")) == "2026/263 Esas") == 1
+
+
+def test_pilot_rejects_report_path_equal_to_genuine_path(tmp_path):
+    gp = tmp_path / "uyap.json"
+    gp.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="report_path"):
+        run_pilot(genuine_path=gp, report_path=gp, offline_artifacts=[])
 
 
 # --------------------------------------------------------------------------- #

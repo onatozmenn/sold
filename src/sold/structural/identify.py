@@ -295,7 +295,7 @@ def identification_report(
     smallest_nonzero_sv = float(nz.min()) if nz.size else None
 
     # Zayıf yönler: küçük tekil değerlere karşılık gelen sağ-tekil vektörler
-    _, s_full, vt = np.linalg.svd(J, full_matrices=False)
+    _, s_full, vt = np.linalg.svd(J, full_matrices=True)
     weak_dirs = []
     for i, sv in enumerate(s_full):
         if smax > 0 and sv / smax < WEAK_SINGULAR_REL:
@@ -305,6 +305,17 @@ def identification_report(
                 for k in np.argsort(-np.abs(vec))[:3]
             }
             weak_dirs.append({"singular_value": float(sv), "direction": loading})
+    for i in range(len(s_full), vt.shape[0]):
+        vec = vt[i]
+        loading = {
+            free_names[k]: round(float(vec[k]), 4)
+            for k in np.argsort(-np.abs(vec))[:3]
+        }
+        weak_dirs.append({
+            "singular_value": 0.0,
+            "exact_nullspace": True,
+            "direction": loading,
+        })
 
     # Profil tanılaması: en az eta + mekanizma-kaymaları (m_obs varsa)
     profiles: dict = {}

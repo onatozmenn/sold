@@ -1,0 +1,239 @@
+{
+  "model_semantics_version": "2026-07-09.interval-floor-v1",
+  "diagnostic": "near_fit_search_stability",
+  "design": "cumulative incumbent-preserving (nested candidate pools; global incumbent retained; common Q_ref/tol_ref across budgets)",
+  "note": "numerical approximation diagnostic of the reproducible CUMULATIVE search over the bounded theta space — NOT an econometric identification classification. Tolerance rule, SMM moments and bounds are unchanged.",
+  "identification_separation": "The rank-deficient structural system may produce extended near-fit directions, which can make numerical coverage more demanding. The search-stability diagnostic measures computational approximation quality separately and does NOT establish underidentification. identification_status (STRUCTURALLY_UNDERIDENTIFIED, Jacobian rank 4 / dim 10) is a separate econometric/local-identification diagnostic.",
+  "reference_scenario": {
+    "asking_price": 5000000.0,
+    "province": "İstanbul",
+    "gross_m2": 100.0,
+    "fair_value": 7930580.0
+  },
+  "budgets": [
+    200,
+    400,
+    800
+  ],
+  "Q_ref": 0.256921,
+  "tol_ref": 0.06423,
+  "cumulative_best_objective": [
+    0.634675,
+    0.459062,
+    0.256921
+  ],
+  "cumulative_best_objective_monotone_nonincreasing": true,
+  "deterministic_objective_reproducible": true,
+  "incumbent_reeval_delta": 0.0,
+  "best_theta": {
+    "mu_b": -0.16194435587691663,
+    "sigma_b": 0.23277494108923166,
+    "mu_s": 0.4,
+    "sigma_s": 0.03,
+    "eta": 0.7075847886176492,
+    "arrival_rate": 4.78001441835257,
+    "tightness_beta": 0.2739637422780489,
+    "kap_shift": -0.4,
+    "auction_shift": 0.13811373108922778,
+    "asking_signal": 1.0
+  },
+  "table": [
+    {
+      "budget": 200,
+      "new_candidates_added": 206,
+      "cumulative_unique_candidate_count": 206,
+      "cumulative_best_objective": 0.634675,
+      "production_near_fit_count": 2,
+      "common_threshold_stability_near_fit_count": 0,
+      "common_threshold_param_ranges": {
+        "mu_b": [
+          null,
+          null
+        ],
+        "sigma_b": [
+          null,
+          null
+        ],
+        "mu_s": [
+          null,
+          null
+        ],
+        "sigma_s": [
+          null,
+          null
+        ],
+        "eta": [
+          null,
+          null
+        ],
+        "arrival_rate": [
+          null,
+          null
+        ],
+        "tightness_beta": [
+          null,
+          null
+        ],
+        "kap_shift": [
+          null,
+          null
+        ],
+        "auction_shift": [
+          null,
+          null
+        ],
+        "asking_signal": [
+          null,
+          null
+        ]
+      },
+      "eta_range": [
+        null,
+        null
+      ],
+      "trading_theta_count": 0,
+      "nontrading_theta_count": 0,
+      "central_structural_estimate": null,
+      "between_theta_near_fit_band": [
+        null,
+        null
+      ],
+      "structural_sensitivity_range": [
+        null,
+        null
+      ]
+    },
+    {
+      "budget": 400,
+      "new_candidates_added": 206,
+      "cumulative_unique_candidate_count": 412,
+      "cumulative_best_objective": 0.459062,
+      "production_near_fit_count": 2,
+      "common_threshold_stability_near_fit_count": 0,
+      "common_threshold_param_ranges": {
+        "mu_b": [
+          null,
+          null
+        ],
+        "sigma_b": [
+          null,
+          null
+        ],
+        "mu_s": [
+          null,
+          null
+        ],
+        "sigma_s": [
+          null,
+          null
+        ],
+        "eta": [
+          null,
+          null
+        ],
+        "arrival_rate": [
+          null,
+          null
+        ],
+        "tightness_beta": [
+          null,
+          null
+        ],
+        "kap_shift": [
+          null,
+          null
+        ],
+        "auction_shift": [
+          null,
+          null
+        ],
+        "asking_signal": [
+          null,
+          null
+        ]
+      },
+      "eta_range": [
+        null,
+        null
+      ],
+      "trading_theta_count": 0,
+      "nontrading_theta_count": 0,
+      "central_structural_estimate": null,
+      "between_theta_near_fit_band": [
+        null,
+        null
+      ],
+      "structural_sensitivity_range": [
+        null,
+        null
+      ]
+    },
+    {
+      "budget": 800,
+      "new_candidates_added": 406,
+      "cumulative_unique_candidate_count": 817,
+      "cumulative_best_objective": 0.256921,
+      "production_near_fit_count": 1,
+      "common_threshold_stability_near_fit_count": 1,
+      "common_threshold_param_ranges": {
+        "mu_b": [
+          -0.162,
+          -0.162
+        ],
+        "sigma_b": [
+          0.233,
+          0.233
+        ],
+        "mu_s": [
+          0.4,
+          0.4
+        ],
+        "sigma_s": [
+          0.03,
+          0.03
+        ],
+        "eta": [
+          0.708,
+          0.708
+        ],
+        "arrival_rate": [
+          4.78,
+          4.78
+        ],
+        "tightness_beta": [
+          0.274,
+          0.274
+        ],
+        "kap_shift": [
+          -0.4,
+          -0.4
+        ],
+        "auction_shift": [
+          0.138,
+          0.138
+        ],
+        "asking_signal": [
+          1.0,
+          1.0
+        ]
+      },
+      "eta_range": [
+        0.708,
+        0.708
+      ],
+      "trading_theta_count": 1,
+      "nontrading_theta_count": 0,
+      "central_structural_estimate": 8158404.0,
+      "between_theta_near_fit_band": [
+        8158404.0,
+        8158404.0
+      ],
+      "structural_sensitivity_range": [
+        7508911.0,
+        9468813.0
+      ]
+    }
+  ],
+  "near_fit_search_stability": "INSUFFICIENT_COVERAGE",
+  "rule": "cumulative best-objective still improving (44.0% > 10%) — stability judgment premature"
+}

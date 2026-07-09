@@ -17,6 +17,7 @@ açık artırmalar edinim hedefidir. Fiyat/İncele/eksik-metin ASLA "satıldı" 
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import json
 import os
 import re
@@ -635,6 +636,20 @@ def bulk_state_path(store_dir: Path | str | None = None) -> Path:
     return Path(store_dir or store.DEFAULT_STORE_DIR) / BULK_STATE_FILE
 
 
+def _exclusive_bulk_run(method):
+    @functools.wraps(method)
+    def wrapped(self, *args, **kwargs):
+        if kwargs.get("dry_run", False):
+            return method(self, *args, **kwargs)
+        from .io import locked
+
+        run_guard = bulk_state_path(self.store_dir).with_suffix(".run")
+        with locked(run_guard):
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
+
 def load_bulk_state(store_dir: Path | str | None = None) -> dict:
     p = bulk_state_path(store_dir)
     if not p.exists():
@@ -648,9 +663,10 @@ def load_bulk_state(store_dir: Path | str | None = None) -> dict:
 
 def save_bulk_state(state: dict, store_dir: Path | str | None = None) -> Path:
     p = bulk_state_path(store_dir)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    return p
+    from .io import atomic_write_json, locked
+
+    with locked(p):
+        return atomic_write_json(p, state)
 
 
 def window_key(province: object, start: object, end: object) -> str:
@@ -791,12 +807,17 @@ def process_sold_auction(
         return outcome
 
     # status_card (terminal-durum kanıtı) + toplanan belgeler.
-    status_card = {
-        "artifact_type": "status_card",
-        "text": card.get("card_text") or status_raw or "",
-        "source_ref": source_page_ref,
-    }
-    existing["artifacts"] = [status_card] + list(artifacts or [])
+    from .collect import import_artifact
+
+    existing["artifacts"] = list(artifacts or [])
+    import_artifact(
+        existing,
+        "status_card",
+        text=card.get("card_text") or status_raw or "",
+        source_ref=source_page_ref,
+        store_dir=store_dir,
+        persist=True,
+    )
     existing["state"] = STATE_COLLECTED
     bm = existing.setdefault("bulk", {})
     bm["document_access_patterns"] = patterns or []
@@ -978,6 +999,7 @@ class UyapBulkCollector:
             }
 
     # -- Canlı koşu (pragma: canlı tarayıcı/DOM gerektirir; ağ testlerinde çalışmaz) ------- #
+    @_exclusive_bulk_run
     def run(
         self,
         province: str,

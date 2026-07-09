@@ -11,12 +11,14 @@ simüledir. MEVA/Endeksa/TCMB de ground-truth olarak ekspertize dayanır.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-UNIT_PRICES_CSV = Path("datasets/unit_prices.csv")
+UNIT_PRICES_CSV = Path(__file__).resolve().parents[3] / "datasets" / "unit_prices.csv"
+PACKAGED_PPM2_JSON = Path(__file__).resolve().parents[1] / "evidence" / "province_ppm2.json"
 
 # Gerçek TCMB ekspertiz TL/m² (2026-Q1, EVDS bie_birimfiyat). datasets/unit_prices.csv
 # mevcutsa CANLI değerler kullanılır; yoksa bu snapshot'a (hermetik test) düşülür.
@@ -39,20 +41,27 @@ MARKET_WEIGHTS: dict[str, float] = {
 }
 
 
-def load_province_ppm2(path: Path = UNIT_PRICES_CSV) -> dict[str, float]:
-    """İl -> gerçek TL/m² (en güncel). CSV yoksa/bozuksa baked snapshot'a düşer."""
+def load_province_ppm2(path: Path | None = None) -> dict[str, float]:
+    """İl -> gerçek TL/m² (en güncel). Repo CSV'si yoksa paketlenmiş resmî snapshot."""
+    source = Path(path) if path is not None else UNIT_PRICES_CSV
     try:
-        if path.exists():
-            df = pd.read_csv(path)
+        if source.exists():
+            df = pd.read_csv(source)
             if not df.empty and {"province", "period", "tl_m2"}.issubset(df.columns):
                 latest = df.sort_values("period").groupby("province").tail(1)
                 live = {
-                    str(r["province"]): float(r["tl_m2"]) for _, r in latest.iterrows()
+                    str(r["province"]): float(r["tl_m2"])
+                    for _, r in latest.iterrows()
+                    if pd.notna(r["province"]) and pd.notna(r["tl_m2"])
                 }
-                out = {p: live[p] for p in MARKET_WEIGHTS if p in live}
-                if out:
-                    return out
-    except Exception:  # noqa: BLE001 — dosya bozuksa yedeğe düş
+                if live:
+                    return live
+    except (OSError, ValueError, TypeError):
+        pass
+    try:
+        packaged = json.loads(PACKAGED_PPM2_JSON.read_text(encoding="utf-8"))
+        return {str(province): float(value) for province, value in packaged.items()}
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
         pass
     return {p: v for p, v in REAL_PPM2_SNAPSHOT.items() if p in MARKET_WEIGHTS}
 

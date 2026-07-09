@@ -1,5 +1,5 @@
 {
-  "n_structural_parameters": 6,
+  "n_structural_parameters": 10,
   "n_observed_moments": 4,
   "available_moments": [
     "kap_log_ratio_mean",
@@ -13,8 +13,8 @@
     "uyap_win_over_appraisal_sd"
   ],
   "sample_sizes": {
-    "uyap_win_over_appraisal_mean": 2,
-    "uyap_win_over_appraisal_sd": 2,
+    "uyap_win_over_appraisal_mean": 18,
+    "uyap_win_over_appraisal_sd": 18,
     "kap_log_ratio_mean": 2,
     "kap_log_ratio_sd": 2,
     "toki_cohort_moments": 4,
@@ -25,8 +25,39 @@
     "toki_share_4+1": 4
   },
   "rank": 4,
-  "smallest_nonzero_singular_value": 0.02849650987474659,
-  "condition_number": 61.77430080737121,
-  "weak_directions": [],
+  "smallest_nonzero_singular_value": 0.12310480289380486,
+  "condition_number": 26.971761398262483,
+  "weak_directions": [
+    {
+      "eta": 0.9879,
+      "sigma_s": -0.0758,
+      "kap_shift": -0.0752
+    },
+    {
+      "sigma_s": -0.7285,
+      "mu_s": 0.4339,
+      "auction_shift": -0.3411
+    },
+    {
+      "tightness_beta": 1.0,
+      "mu_b": 0.0,
+      "mu_s": 0.0
+    },
+    {
+      "sigma_s": -0.6027,
+      "kap_shift": 0.4864,
+      "mu_s": -0.4815
+    },
+    {
+      "mu_s": 0.6851,
+      "mu_b": -0.5198,
+      "auction_shift": 0.491
+    },
+    {
+      "asking_signal": 1.0,
+      "mu_b": 0.0,
+      "mu_s": 0.0
+    }
+  ],
   "status": "STRUCTURALLY_UNDERIDENTIFIED"
 }

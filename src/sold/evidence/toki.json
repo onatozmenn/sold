@@ -1,0 +1,41 @@
+[
+  {
+    "project_id": "PMVR3",
+    "as_of_date": "2019-10-31",
+    "observation_role": "cumulative_realized_sales",
+    "table_semantics": "cumulative_realized_sales_by_room_type",
+    "source_audited": true,
+    "strata": [
+      {"room_type":"2+1","cum_count":153,"cum_total":106285859.62},
+      {"room_type":"3+1","cum_count":76,"cum_total":74899258.35},
+      {"room_type":"4+1","cum_count":23,"cum_total":27248070.9},
+      {"room_type":"5+1","cum_count":120,"cum_total":151217720.11}
+    ]
+  },
+  {
+    "project_id": "PMVR3",
+    "as_of_date": "2019-11-30",
+    "observation_role": "cumulative_realized_sales",
+    "table_semantics": "cumulative_realized_sales_by_room_type",
+    "source_audited": true,
+    "strata": [
+      {"room_type":"2+1","cum_count":160,"cum_total":113399569.69},
+      {"room_type":"3+1","cum_count":78,"cum_total":77769708.35},
+      {"room_type":"4+1","cum_count":23,"cum_total":27248070.9},
+      {"room_type":"5+1","cum_count":120,"cum_total":157192890.09}
+    ]
+  },
+  {
+    "project_id": "PMVR3",
+    "as_of_date": "2019-12-31",
+    "observation_role": "cumulative_realized_sales",
+    "table_semantics": "cumulative_realized_sales_by_room_type",
+    "source_audited": true,
+    "strata": [
+      {"room_type":"2+1","cum_count":165,"cum_total":118418019.69},
+      {"room_type":"3+1","cum_count":78,"cum_total":78003128.35},
+      {"room_type":"4+1","cum_count":24,"cum_total":28932145.55},
+      {"room_type":"5+1","cum_count":120,"cum_total":160630903.93}
+    ]
+  }
+]

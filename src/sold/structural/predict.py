@@ -62,6 +62,11 @@ REPRESENTATIVE_THETA_RULE = (
 # trade-share alanı: model-implied simüle B≥S payı — GÖZLENEN UYAP no-trade'e KALİBRE DEĞİL.
 TRADE_SHARE_CALIBRATION = "not_empirically_calibrated_to_observed_uyap_no_trade_outcomes"
 
+FIXED_ASSUMPTION_BOUNDS = {
+    "tightness_beta": (-0.3, 0.3),
+    "asking_signal": (0.0, 1.0),
+}
+
 # Girdi-çelişki tanılaması: asking ile TCMB-çıpalı fair value CİDDİ biçimde uyuşmuyorsa
 # AÇIK uyarı verilir (tahmin REDDEDİLMEZ/KIRPILMAZ). Sınırlar belgeli ve yapılandırılabilir.
 INPUT_CONFLICT_LOW = 0.5
@@ -227,7 +232,9 @@ class IdentificationAwarePredictor:
 
     def __init__(self, admissible_params, best_params=None) -> None:
         self.admissible = list(admissible_params)
-        self.best = best_params or (self.admissible[0] if self.admissible else StructuralParams())
+        if not self.admissible:
+            raise ValueError("At least one admissible structural parameter configuration is required")
+        self.best = best_params or self.admissible[0]
 
     def _draw(self, params, asking, fair_value, tightness, n, rng):
         B = draw_buyer_values(rng, fair_value, params, n, tightness)
@@ -244,9 +251,11 @@ class IdentificationAwarePredictor:
         n: int = 20000,
         seed: int = 0,
         max_thetas: int = 300,
+        include_assumption_sensitivity: bool = False,
     ) -> dict:
         thetas = self.admissible[:max_thetas] if self.admissible else [self.best]
         trading: list[tuple[float, float, float, float]] = []  # (median, p10, p90, share) — YALNIZCA ticaret eden θ
+        assumption_trading: list[tuple[float, float, float, float]] = []
         all_shares: list[float] = []                            # her θ'nın simüle B≥S payı (ticaret etmeyenler dahil)
         for th in thetas:
             # ORTAK rastgele sayılar: her θ AYNI tohum → fark θ'dan
@@ -255,6 +264,26 @@ class IdentificationAwarePredictor:
             if prices.size:
                 lo, hi = np.percentile(prices, [10, 90])
                 trading.append((float(np.median(prices)), float(lo), float(hi), float(share)))
+            if include_assumption_sensitivity:
+                for name, (lower, upper) in FIXED_ASSUMPTION_BOUNDS.items():
+                    for value in (lower, upper):
+                        variant = replace(th, **{name: value})
+                        variant_prices, variant_share = self._draw(
+                            variant,
+                            asking_price,
+                            fair_value,
+                            tightness,
+                            n,
+                            np.random.default_rng(seed),
+                        )
+                        if variant_prices.size:
+                            variant_lo, variant_hi = np.percentile(variant_prices, [10, 90])
+                            assumption_trading.append((
+                                float(np.median(variant_prices)),
+                                float(variant_lo),
+                                float(variant_hi),
+                                float(variant_share),
+                            ))
         conflict = input_conflict_diagnostic(asking_price, fair_value)
         n_total = len(thetas)
         n_trading = len(trading)
@@ -279,6 +308,11 @@ class IdentificationAwarePredictor:
             "trading_near_fit_parameter_count": n_trading,
             "nontrading_near_fit_parameter_count": n_total - n_trading,
             "price_envelope_theta_count": n_trading,
+            "assumption_sensitivity_parameters": list(FIXED_ASSUMPTION_BOUNDS),
+            "assumption_sensitivity_ranges": {
+                name: list(bounds) for name, bounds in FIXED_ASSUMPTION_BOUNDS.items()
+            },
+            "assumption_sensitivity_scenario_count": len(assumption_trading),
             # model-implied simüle B≥S payı — GÖZLENEN UYAP no-trade'e KALİBRE DEĞİL (olasılık İDDİA edilmez)
             "simulated_trade_share_band": share_band,
             "trade_probability_band": share_band,  # geriye uyumluluk (AYNI değer; ampirik olasılık DEĞİL)
@@ -299,12 +333,14 @@ class IdentificationAwarePredictor:
             })
             return base
         medians = [r[0] for r in trading]
+        assumption_medians = [r[0] for r in assumption_trading]
         cross_theta_median = float(np.median(medians))
         # TEMSİLİ ticaret eden θ: koşullu medyanı cross-theta medyanına EN YAKIN; tie-break en küçük medyan.
         rep = min(trading, key=lambda r: (abs(r[0] - cross_theta_median), r[0]))
         central, w_lo, w_hi, _ = rep  # central ∈ [w_lo, w_hi] İNŞA GEREĞİ (aynı θ'nın medyanı+aralığı)
-        env_lo = round(min(r[1] for r in trading), 0)
-        env_hi = round(max(r[2] for r in trading), 0)
+        envelope_rows = trading + assumption_trading
+        env_lo = round(min(r[1] for r in envelope_rows), 0)
+        env_hi = round(max(r[2] for r in envelope_rows), 0)
         base.update({
             # merkezi yapısal tahmin = TEMSİLİ ticaret eden θ'nın KOŞULLU medyanı (kendi aralığında)
             "central_structural_estimate": round(central, 0),
@@ -313,6 +349,10 @@ class IdentificationAwarePredictor:
             "within_theta_negotiation_interval": (round(w_lo, 0), round(w_hi, 0)),
             # between-θ (YALNIZCA yakın-uyum parametre belirsizliği; ticaret eden θ-medyanları bandı)
             "between_theta_near_fit_band": (round(min(medians), 0), round(max(medians), 0)),
+            "between_assumption_sensitivity_band": (
+                (round(min(assumption_medians), 0), round(max(assumption_medians), 0))
+                if assumption_medians else (None, None)
+            ),
             # yapısal duyarlılık zarfı (İKİ belirsizlik birlikte) = structural sensitivity range
             "sensitivity_envelope_lower": env_lo,
             "sensitivity_envelope_upper": env_hi,

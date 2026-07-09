@@ -116,3 +116,8 @@ CREATE TABLE IF NOT EXISTS ground_truth_sales (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_gt_district ON ground_truth_sales(district);
+
+-- Additive upgrade for databases created before label provenance was introduced.
+ALTER TABLE ground_truth_sales ADD COLUMN IF NOT EXISTS sale_mode VARCHAR(24);
+ALTER TABLE ground_truth_sales ADD COLUMN IF NOT EXISTS label_source VARCHAR(32);
+ALTER TABLE ground_truth_sales ADD COLUMN IF NOT EXISTS label_confidence VARCHAR(1);

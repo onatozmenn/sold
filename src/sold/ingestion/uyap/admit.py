@@ -99,14 +99,42 @@ def admit(candidate: dict, genuine_path: Path | str | None = None, store_dir: Pa
     Yalnızca denetim kararı ADMISSIBLE_COMPLETED_SALE ise yazar. ``normalize_auction`` ile
     şema doğrulaması yapar; ``public_record_id`` zaten varsa KOPYA OLUŞTURMAZ.
     """
+    public_record_id = (
+        candidate.get("kayit_no")
+        or (candidate.get("bulk") or {}).get("kayit_no")
+        or candidate.get("file_id")
+    )
+    if public_record_id in (None, ""):
+        return {"status": "error", "reason": "missing public_record_id (file_id)"}
+
+    path = Path(genuine_path) if genuine_path else _genuine_dir() / "uyap.json"
+    from .io import atomic_write_json, locked
+
+    records = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    existing_ids = {str(r.get("public_record_id")) for r in records}
+    if str(public_record_id) in existing_ids:
+        candidate["state"] = STATE_ADMITTED
+        candidate["admitted_public_record_id"] = public_record_id
+        store.log_event(candidate, "admit_idempotent", f"already present: {public_record_id}")
+        store.upsert(candidate, store_dir)
+        return {"status": "already_admitted", "public_record_id": public_record_id,
+                "genuine_uyap_total": len(records)}
+
+    if not candidate.get("artifacts"):
+        return {"status": "error", "reason": "source artifacts are required for admission"}
+
+    from .pipeline import run_audit
+
+    try:
+        candidate = run_audit(candidate, store_dir=store_dir, genuine_path=path)
+    except (OSError, ValueError) as exc:
+        return {"status": "error", "reason": f"artifact verification failed: {exc}"}
     audit = candidate.get("audit") or {}
     if audit.get("decision") != ADMISSIBLE_COMPLETED_SALE:
         return {"status": "not_admissible", "decision": audit.get("decision"),
-                "reason": "only ADMISSIBLE_COMPLETED_SALE candidates may be admitted"}
+                "reason": "fresh artifact audit did not establish ADMISSIBLE_COMPLETED_SALE"}
 
     rec = build_genuine_record(candidate)
-    if rec["public_record_id"] in (None, ""):
-        return {"status": "error", "reason": "missing public_record_id (file_id)"}
     if rec["appraised_value"] in (None, 0) or rec["winning_bid"] in (None, 0):
         return {"status": "error", "reason": "missing appraisal or auction price for genuine schema"}
 
@@ -117,31 +145,14 @@ def admit(candidate: dict, genuine_path: Path | str | None = None, store_dir: Pa
     if not bool(normalized["sold"]) or normalized["winning_bid"] is None:
         return {"status": "error", "reason": "record failed genuine UYAP schema validation"}
 
-    path = Path(genuine_path) if genuine_path else _genuine_dir() / "uyap.json"
-    records = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
-    existing_ids = {str(r.get("public_record_id")) for r in records}
-    # Zaten-mevcut denetimi: (a) public_record_id EŞLEŞMESİ, YA DA (b) aynı (İhale Bedeli, ekspertiz) çifti.
-    # Genuine set KARIŞIK kimlik formatı taşıyor (bazı KAYIT NO, bazı 'Esas'); farklı kimlik altında AYNI açık
-    # artırmayı KOPYALAMAMAK için (P,Q) ile de eşleştirilir (ör. '2026/23 Esas' == batch KAYIT NO 16659682292).
-    def _pq(r: dict):
-        try:
-            return (round(float(r.get("winning_bid")), 2), round(float(r.get("appraised_value")), 2))
-        except (TypeError, ValueError):
-            return None
-
-    existing_pq = {p for p in (_pq(r) for r in records) if p is not None}
-    rec_pq = _pq(rec)
-    if str(rec["public_record_id"]) in existing_ids or (rec_pq is not None and rec_pq in existing_pq):
-        candidate["state"] = STATE_ADMITTED
-        candidate["admitted_public_record_id"] = rec["public_record_id"]
-        store.log_event(candidate, "admit_idempotent", f"already present: {rec['public_record_id']}")
-        store.upsert(candidate, store_dir)
-        return {"status": "already_admitted", "public_record_id": rec["public_record_id"],
-                "genuine_uyap_total": len(records)}
-
-    records.append(rec)  # non-destructive append
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+    with locked(path):
+        records = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        existing_ids = {str(row.get("public_record_id")) for row in records}
+        if str(rec["public_record_id"]) in existing_ids:
+            return {"status": "already_admitted", "public_record_id": rec["public_record_id"],
+                    "genuine_uyap_total": len(records)}
+        records.append(rec)
+        atomic_write_json(path, records)
 
     candidate["state"] = STATE_ADMITTED
     candidate["admitted_public_record_id"] = rec["public_record_id"]
@@ -162,10 +173,9 @@ def record_exclusion(candidate: dict, candidates_path: Path | str | None = None,
         return {"status": "skip", "reason": "only EXCLUDED_NON_TERMINAL candidates are recorded here"}
     ev = candidate.get("extracted") or {}
     path = Path(candidates_path) if candidates_path else _genuine_dir() / "uyap_candidates.json"
-    manifest = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    from .io import atomic_write_json, locked
+
     cid = candidate.get("candidate_id")
-    if any(c.get("candidate_id") == cid for c in manifest):
-        return {"status": "already_recorded", "candidate_id": cid}
     entry = {
         "candidate_id": cid,
         "batch": INGESTION_BATCH,
@@ -183,9 +193,12 @@ def record_exclusion(candidate: dict, candidates_path: Path | str | None = None,
                  "uyap_win_over_appraisal, not converted into a negative sale-probability observation; "
                  "uyap_sale_prob is not created.",
     }
-    manifest.append(entry)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    with locked(path):
+        manifest = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        if any(c.get("candidate_id") == cid for c in manifest):
+            return {"status": "already_recorded", "candidate_id": cid}
+        manifest.append(entry)
+        atomic_write_json(path, manifest)
     candidate["state"] = STATE_EXCLUDED
     store.log_event(candidate, "excluded_recorded", f"{cid} -> uyap_candidates.json")
     store.upsert(candidate, store_dir)

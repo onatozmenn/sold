@@ -114,6 +114,15 @@ def test_structural_reject_closing_before_listing():
         validate_consumer_sale(raw)
 
 
+def test_rejects_malformed_non_iso_dates_instead_of_erasing_them():
+    raw = _valid()
+    raw["listing_date"] = "01.03.2024"
+    raw["closing_date"] = "01.01.2024"
+
+    with pytest.raises(ConsumerSaleError, match="YYYY-MM-DD"):
+        validate_consumer_sale(raw)
+
+
 # ---- olağandışı oranlar RED DEĞİL, yalnızca BAYRAK ------------------------- #
 def test_closing_above_asking_is_not_rejected():
     raw = _valid()
@@ -270,6 +279,24 @@ def test_duplicate_candidate_flagged_on_repeat():
         assert FLAG_DUPLICATE in list(second.quality_flags or [])
 
 
+def test_duplicate_flagged_rows_do_not_unlock_segment_benchmark():
+    with _session() as session:
+        rows = [record_consumer_sale(session, _valid()) for _ in range(5)]
+        session.commit()
+
+        benchmark = segment_benchmark(session, sale_as_dict(rows[-1]))
+
+        assert [row.quality_status for row in rows] == [
+            QUALITY_ACCEPTED,
+            QUALITY_FLAGGED,
+            QUALITY_FLAGGED,
+            QUALITY_FLAGGED,
+            QUALITY_FLAGGED,
+        ]
+        assert benchmark["enough_observations"] is False
+        assert benchmark["observations"] == 1
+
+
 # ---- anlık analitik -------------------------------------------------------- #
 def test_sale_analytics_gaps_and_days():
     a = sale_analytics(validate_consumer_sale(_valid()))
@@ -310,8 +337,10 @@ def test_segment_benchmark_excludes_test_fixtures():
 
 def test_segment_benchmark_enough_returns_aggregates():
     with _session() as session:
-        for _ in range(3):
-            record_consumer_sale(session, _valid(), origin=ORIGIN_CONSUMER_SUBMISSION)
+        for offset in range(3):
+            raw = _valid()
+            raw["closing_price"] -= offset * 100_000
+            record_consumer_sale(session, raw, origin=ORIGIN_CONSUMER_SUBMISSION)
         session.commit()
         bench = segment_benchmark(
             session, {"province": "İstanbul", "property_type": "konut"}, min_observations=3

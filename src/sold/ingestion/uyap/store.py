@@ -10,10 +10,14 @@ data/ .gitignore'dadır). Testler ``store_dir`` ile geçici dizin verir (ağ/kal
 from __future__ import annotations
 
 import datetime as dt
+import copy
+import hashlib
 import json
+import re
 from pathlib import Path
 
 from .models import STATE_DISCOVERED, deterministic_candidate_id
+from .io import atomic_write_json, locked
 
 DEFAULT_STORE_DIR = Path("data/ingestion/uyap")
 CANDIDATES_FILE = "candidates.json"
@@ -40,11 +44,26 @@ def save_candidates(candidates: list[dict], store_dir: Path | str | None = None)
     """Aday listesini deterministik (sıralı anahtar) JSON olarak yazar."""
     path = store_path(store_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(candidates, ensure_ascii=False, indent=2, sort_keys=False),
-        encoding="utf-8",
-    )
-    return path
+    sanitized = copy.deepcopy(candidates)
+    for candidate in sanitized:
+        candidate_id = re.sub(r"[^A-Za-z0-9._-]", "_", str(candidate.get("candidate_id") or "candidate"))
+        for artifact in candidate.get("artifacts", []):
+            text = artifact.get("text")
+            if text is not None and not artifact.get("local_path"):
+                data = str(text).encode("utf-8")
+                digest = hashlib.sha256(data).hexdigest()
+                artifact_type = re.sub(
+                    r"[^A-Za-z0-9._-]", "_", str(artifact.get("artifact_type") or "artifact")
+                )
+                artifact_dir = path.parent / "artifacts" / candidate_id
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                artifact_path = artifact_dir / f"{artifact_type}_{digest[:16]}.txt"
+                if not artifact_path.exists():
+                    artifact_path.write_bytes(data)
+                artifact["local_path"] = str(artifact_path)
+                artifact["sha256"] = digest
+            artifact.pop("text", None)
+    return atomic_write_json(path, sanitized)
 
 
 def get_candidate(candidate_id: str, store_dir: Path | str | None = None) -> dict | None:
@@ -94,13 +113,14 @@ def log_event(candidate: dict, event: str, detail: str = "") -> None:
 
 def upsert(candidate: dict, store_dir: Path | str | None = None) -> dict:
     """Adayı candidate_id ile IDEMPOTENT ekler/günceller (kopya oluşturmaz)."""
-    candidates = load_candidates(store_dir)
-    cid = candidate.get("candidate_id")
-    for i, c in enumerate(candidates):
-        if c.get("candidate_id") == cid:
-            candidates[i] = candidate
-            save_candidates(candidates, store_dir)
-            return candidate
-    candidates.append(candidate)
-    save_candidates(candidates, store_dir)
+    with locked(store_path(store_dir)):
+        candidates = load_candidates(store_dir)
+        cid = candidate.get("candidate_id")
+        for i, current in enumerate(candidates):
+            if current.get("candidate_id") == cid:
+                candidates[i] = candidate
+                save_candidates(candidates, store_dir)
+                return candidate
+        candidates.append(candidate)
+        save_candidates(candidates, store_dir)
     return candidate

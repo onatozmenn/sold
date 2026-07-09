@@ -293,9 +293,8 @@ def test_admission_feeds_existing_frozen_schema(tmp_path):
     assert "uyap_sale_prob" not in built["moments"]   # negatif sınıf üretilmedi
 
 
-def test_admission_dedup_by_pq_across_id_formats(tmp_path):
-    # Genuine set KARIŞIK kimlik (bazı KAYIT NO, bazı 'Esas'); AYNI açık artırma farklı kimlik altında
-    # KOPYALANMAMALI → (P,Q) ile de dedup. CASE4 (4.654.000/5.400.000) genuine'de '2026/23 Esas' olarak VAR.
+def test_admission_does_not_treat_equal_prices_as_record_identity(tmp_path):
+    # Farklı resmî kayıtlar aynı P/Q çiftine sahip olabilir; kimlik yalnız public_record_id'dir.
     from sold.structural.datasets import GENUINE_DIR
 
     gdir = tmp_path / "genuine"
@@ -305,9 +304,43 @@ def test_admission_dedup_by_pq_across_id_formats(tmp_path):
     before = len(json.loads((gdir / "uyap.json").read_text(encoding="utf-8")))
     c = _pipeline_to_audit("2026/23", CASES["CASE4"][0], tmp_path, genuine_path=gdir / "uyap.json")
     r = admit_candidate(c, genuine_path=gdir / "uyap.json", store_dir=tmp_path)
-    assert r["status"] == "already_admitted"          # (P,Q) genuine'de var → farklı kimlikle bile KOPYA yok
+    assert r["status"] == "admitted"
     after = len(json.loads((gdir / "uyap.json").read_text(encoding="utf-8")))
-    assert after == before                            # yeni kayıt EKLENMEDİ (frozen set korunur)
+    assert after == before + 1
+
+
+def test_admission_rejects_cached_decision_without_artifacts(tmp_path):
+    gp = _seed_genuine(tmp_path)
+    candidate = {
+        "candidate_id": "tampered",
+        "file_id": "2099/1 Esas",
+        "institution": "Example",
+        "artifacts": [],
+        "extracted": {},
+        "audit": {
+            "decision": ADMISSIBLE_COMPLETED_SALE,
+            "appraisal_value": 1_000_000,
+            "auction_price": 800_000,
+        },
+    }
+
+    result = admit_candidate(candidate, genuine_path=gp, store_dir=tmp_path)
+
+    assert result["status"] == "error"
+    assert "artifacts" in result["reason"]
+    assert json.loads(gp.read_text(encoding="utf-8")) == []
+
+
+def test_reconciliation_requires_more_than_one_matching_ada():
+    from sold.ingestion.uyap.reconcile import reconcile
+
+    result = reconcile([
+        {"artifact_type": "sale_notice", "text": "Taşınmaz 123 ada üzerindedir"},
+        {"artifact_type": "auction_result", "text": "İhale 123 ada üzerindedir"},
+    ])
+
+    assert result.status == "ambiguous"
+    assert result.same_asset is False
 
 
 # --------------------------------------------------------------------------- #

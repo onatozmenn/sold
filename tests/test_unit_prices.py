@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
+
+from sold.cli import _atomic_to_csv, _validate_refresh_frame
 
 from sold.evds.unit_prices import (
     discover_unit_price_codes,
@@ -84,3 +87,34 @@ def test_fetch_empty_when_no_series():
     df = fetch_unit_prices(_Empty())
     assert df.empty
     assert list(df.columns) == ["province", "period", "tl_m2"]
+
+
+def test_refresh_rejects_partial_scope_and_date_regression(tmp_path):
+    output = tmp_path / "unit_prices.csv"
+    existing = pd.DataFrame({
+        "province": [f"P{i}" for i in range(77)],
+        "period": ["2026-01-01"] * 77,
+        "tl_m2": [100.0] * 77,
+    })
+    existing.to_csv(output, index=False)
+    partial = pd.DataFrame({
+        "province": ["P0"],
+        "period": ["2026-04-01"],
+        "tl_m2": [101.0],
+    })
+    stale = existing.copy()
+    stale["period"] = "2025-10-01"
+
+    with pytest.raises(ValueError, match="scope regressed"):
+        _validate_refresh_frame(partial, output, scope_column="province", expected_scope=77)
+    with pytest.raises(ValueError, match="period regressed"):
+        _validate_refresh_frame(stale, output, scope_column="province", expected_scope=77)
+
+
+def test_atomic_refresh_writes_parseable_csv(tmp_path):
+    output = tmp_path / "unit_prices.csv"
+    frame = pd.DataFrame({"province": ["Aydın"], "period": ["2026-01-01"], "tl_m2": [46080.6]})
+
+    _atomic_to_csv(frame, output)
+
+    assert pd.read_csv(output).to_dict("records") == frame.to_dict("records")

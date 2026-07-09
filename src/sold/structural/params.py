@@ -20,6 +20,8 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
+STRUCTURAL_MODEL_SEMANTICS_VERSION = "2026-07-09.interval-floor-v1"
+
 # Alan → kısıt türü ("id" özdeş, "pos" pozitif, "unit" (0,1))
 _TRANSFORM: dict[str, str] = {
     "mu_b": "id",
@@ -88,12 +90,17 @@ class StructuralParams:
         return {n: float(getattr(self, n)) for n in _TRANSFORM}
 
 
-# SMM'de tipik serbest alt küme (kaynak momentleri bunları tanımlar)
+# Tüm yapısal primitive'ler yakın-uyum uzayında tutulur. Momentlere duyarsız yönler
+# rank eksikliği/null-space olarak görünür; tek bir varsayılan değere gizlice sabitlenmez.
 DEFAULT_FREE = (
     "mu_b",
     "sigma_b",
     "mu_s",
     "sigma_s",
     "eta",
+    "arrival_rate",
+    "tightness_beta",
+    "kap_shift",
     "auction_shift",
+    "asking_signal",
 )

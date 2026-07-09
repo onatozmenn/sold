@@ -47,6 +47,7 @@ from sold.structural import (
     negotiated_price,
     normalize_auction,
     normalize_kap_disposal,
+    objective_value,
     observed_moments,
     roll_unit_price,
     simulate_auctions,
@@ -960,6 +961,14 @@ def test_genuine_uyap_records_completed_sale_class():
     assert st["sold"] == 18 and st["censored_outcomes"] == 0 and st["genuine_no_trade"] == 0
 
 
+def test_partial_legal_floors_are_interval_censored_in_context():
+    g = load_genuine_datasets()
+    ctx = context_from_datasets(g["uyap"], g["kap"], reps=5)
+
+    assert not ctx.auction_floor_exact.any()
+    assert np.all(ctx.auction_floor_upper >= ctx.auction_floors)
+
+
 # --- Kısmi kimliklendirme (partial identification) -------------------------- #
 def test_admissible_near_fit_set():
     g = load_genuine_datasets()
@@ -977,8 +986,26 @@ def test_admissible_near_fit_set():
     res2 = admissible_near_fit_set(built["moments"], ctx, n_candidates=2000, seed=7, rel=0.5)
     assert res2.n_admissible == res.n_admissible
     assert res2.best_objective == pytest.approx(res.best_objective)
-    # θ rank için KÜÇÜLTÜLMEZ: tüm 6 serbest parametre korunur
-    assert len(res.free_names) == 6
+    # θ rank için KÜÇÜLTÜLMEZ: tüm yapısal primitive'ler korunur
+    assert len(res.free_names) == len(DEFAULT_FREE) == 10
+    assert res.n_admissible >= 2
+    assert "asking_signal" in res.wide_parameters()
+
+
+def test_objective_rejects_candidate_that_drops_kap_moments():
+    g = load_genuine_datasets()
+    built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+    ctx = context_from_datasets(g["uyap"], g["kap"])
+    no_kap_trade = StructuralParams(
+        mu_b=-0.4,
+        sigma_b=0.03,
+        mu_s=0.4,
+        sigma_s=0.03,
+        eta=0.05,
+        auction_shift=-0.6,
+    )
+
+    assert objective_value(no_kap_trade, built["moments"], ctx, seed=12345) == float("inf")
 
 
 def test_tolerance_sensitivity_is_explicit_and_monotone():
@@ -1104,7 +1131,7 @@ def test_no_coverage_claim_in_predictor_output():
 
 
 def test_frozen_smm_moments_and_rank_unchanged():
-    # (9) donmuş SMM momentleri + rank 4/6 kimliklendirme sonucu DEĞİŞMEZ
+    # Donmuş dört SMM momenti, on primitive üzerinde rank 4 kimliklendirme sonucu verir.
     g = load_genuine_datasets()
     built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
     ctx = context_from_datasets(g["uyap"], g["kap"])
@@ -1114,11 +1141,16 @@ def test_frozen_smm_moments_and_rank_unchanged():
         provenance=built["provenance"], unavailable=built["unavailable"], ineligible=built["ineligible"],
     )
     assert rep["status"] == "STRUCTURALLY_UNDERIDENTIFIED"
-    assert rep["rank"] == 4 and rep["n_structural_parameters"] == 6
+    assert rep["rank"] == 4 and rep["n_structural_parameters"] == 10
     assert set(rep["moment_keys"]) == {
         "uyap_win_over_appraisal_mean", "uyap_win_over_appraisal_sd",
         "kap_log_ratio_mean", "kap_log_ratio_sd",
     }
+    exact_nullspace = [
+        direction for direction in rep["weakly_identified_directions"]
+        if direction.get("exact_nullspace")
+    ]
+    assert len(exact_nullspace) >= rep["n_structural_parameters"] - rep["rank"]
 
 
 # --- Kümülatif (iç-içe, incumbent-koruyan) arama-bütçesi kararlılık denetimi --- #

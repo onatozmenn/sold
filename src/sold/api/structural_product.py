@@ -14,6 +14,11 @@ duyarlılık kuralıdır.
 
 from __future__ import annotations
 
+import json
+import threading
+from dataclasses import replace
+from pathlib import Path
+
 from ..model.synthetic import load_province_ppm2
 from ..structural import (
     CENTRAL_ESTIMATE_DEFINITION,
@@ -22,8 +27,10 @@ from ..structural import (
     FUTURE_METHODOLOGY_NOTE,
     PRICE_ESTIMATE_CONDITION,
     REPRESENTATIVE_THETA_RULE,
+    STRUCTURAL_MODEL_SEMANTICS_VERSION,
     TRADE_SHARE_CALIBRATION,
     IdentificationAwarePredictor,
+    AdmissibleNearFitResult,
     StructuralParams,
     admissible_near_fit_set,
     build_observed_moments,
@@ -50,35 +57,88 @@ PRODUCT_DISCLAIMER = (
 NO_COVERAGE_STATEMENT = "This is not a confidence interval and carries no frequentist coverage claim."
 
 _CACHE: dict = {}
+_CACHE_LOCK = threading.RLock()
+STABILITY_SNAPSHOT = Path(__file__).resolve().parents[1] / "evidence" / "stability.json"
+NEAR_FIT_SNAPSHOT = Path(__file__).resolve().parents[1] / "evidence" / "near_fit.json"
 
 
 def reset_near_fit_cache() -> None:
     """Önbelleği temizler (testler küçük aday sayısıyla yeniden kurmak için kullanır)."""
-    _CACHE.clear()
+    with _CACHE_LOCK:
+        _CACHE.clear()
 
 
 def _near_fit():
     """Θ_A + identification raporunu BİR KEZ kurup önbelleğe alır (gerçek momentlerden)."""
-    if "res" not in _CACHE:
-        g = load_genuine_datasets()
-        built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
-        ctx = context_from_datasets(g["uyap"], g["kap"])
-        res = admissible_near_fit_set(
-            built["moments"], ctx, n_candidates=NEAR_FIT_CANDIDATES, seed=NEAR_FIT_SEED
-        )
-        rep = identification_report(
-            ctx, StructuralParams(), DEFAULT_FREE, m_obs=built["moments"],
-            auctions=g["uyap"], kap=g["kap"], toki_result=g["toki_result"],
-            provenance=built["provenance"], unavailable=built["unavailable"],
-            ineligible=built["ineligible"],
-        )
-        _CACHE.update({"res": res, "rep": rep, "status": dataset_status()})
+    with _CACHE_LOCK:
+        if "res" not in _CACHE:
+            g = load_genuine_datasets()
+            built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+            ctx = context_from_datasets(g["uyap"], g["kap"])
+            if not NEAR_FIT_SNAPSHOT.exists():
+                raise RuntimeError("Structural near-fit snapshot is not available")
+            snapshot = json.loads(NEAR_FIT_SNAPSHOT.read_text(encoding="utf-8"))
+            current_moments = {
+                key: float(value) for key, value in built["moments"].items()
+                if key.startswith(("uyap_win", "kap_log"))
+            }
+            stored_moments = {
+                key: float(value) for key, value in snapshot.get("evidence_moments", {}).items()
+            }
+            if current_moments != stored_moments:
+                raise RuntimeError("Structural near-fit snapshot is stale for the current evidence")
+            if tuple(snapshot.get("free_names", ())) != tuple(DEFAULT_FREE):
+                raise RuntimeError("Structural near-fit snapshot parameter space is stale")
+            if snapshot.get("model_semantics_version") != STRUCTURAL_MODEL_SEMANTICS_VERSION:
+                raise RuntimeError("Structural near-fit snapshot model semantics are stale")
+            base = StructuralParams()
+            admissible = [replace(base, **params) for params in snapshot["admissible_params"]]
+            best = replace(base, **snapshot["best_params"])
+            res = AdmissibleNearFitResult(
+                free_names=tuple(snapshot["free_names"]),
+                best_objective=float(snapshot["best_objective"]),
+                tolerance=float(snapshot["tolerance"]),
+                tolerance_rule=str(snapshot["tolerance_rule"]),
+                n_candidates=int(snapshot["n_candidates"]),
+                n_admissible=int(snapshot["n_admissible"]),
+                admissible_params=admissible,
+                best_params=best,
+                param_ranges=snapshot["param_ranges"],
+                correlations=snapshot["correlations"],
+                bounds={key: tuple(value) for key, value in snapshot["bounds"].items()},
+            )
+            rep = identification_report(
+                ctx, StructuralParams(), DEFAULT_FREE, m_obs=built["moments"],
+                auctions=g["uyap"], kap=g["kap"], toki_result=g["toki_result"],
+                provenance=built["provenance"], unavailable=built["unavailable"],
+                ineligible=built["ineligible"],
+            )
+            _CACHE.update({"res": res, "rep": rep, "status": dataset_status()})
     return _CACHE["res"], _CACHE["rep"], _CACHE["status"]
+
+
+def _evidence_report():
+    """Evidence and identification metadata without running the near-fit search."""
+    with _CACHE_LOCK:
+        if "rep" not in _CACHE:
+            g = load_genuine_datasets()
+            built = build_observed_moments(g["uyap"], g["kap"], g["toki_result"])
+            ctx = context_from_datasets(g["uyap"], g["kap"])
+            rep = identification_report(
+                ctx, StructuralParams(), DEFAULT_FREE, m_obs=built["moments"],
+                auctions=g["uyap"], kap=g["kap"], toki_result=g["toki_result"],
+                provenance=built["provenance"], unavailable=built["unavailable"],
+                ineligible=built["ineligible"],
+            )
+            _CACHE.update({"rep": rep, "status": dataset_status()})
+    return _CACHE["rep"], _CACHE["status"]
 
 
 def fair_value_for(province: str | None, gross_m2: float | None) -> float | None:
     """TCMB çağdaş ekspertiz TL/m² çıpasından fair value (EK KFE çarpanı YOK)."""
-    ppm2 = load_province_ppm2().get(province or "İstanbul")
+    if not province:
+        return None
+    ppm2 = load_province_ppm2().get(province)
     return tcmb_fair_value(ppm2, gross_m2 or 0.0)
 
 
@@ -109,7 +169,7 @@ def structural_valuation(
         return None
     res, rep, status = _near_fit()
     pred = IdentificationAwarePredictor(res.admissible_params, res.best_params).predict(
-        asking_price, fv, tightness=tightness
+        asking_price, fv, tightness=tightness, include_assumption_sensitivity=True
     )
     ic = pred["input_conflict"]
     counts = _genuine_counts(rep, status)
@@ -129,6 +189,9 @@ def structural_valuation(
         "central_structural_estimate": pred["central_structural_estimate"],
         "within_theta_negotiation_interval": list(pred["within_theta_negotiation_interval"]),
         "between_theta_near_fit_band": list(pred["between_theta_near_fit_band"]),
+        "between_assumption_sensitivity_band": list(pred["between_assumption_sensitivity_band"]),
+        "assumption_sensitivity_parameters": pred["assumption_sensitivity_parameters"],
+        "assumption_sensitivity_ranges": pred["assumption_sensitivity_ranges"],
         "structural_sensitivity_range": list(pred["structural_sensitivity_range"]),
         # model-implied simüle B≥S payı — ampirik satış olasılığı DEĞİL
         "simulated_trade_share_band": list(pred["simulated_trade_share_band"]),
@@ -156,7 +219,7 @@ def structural_valuation(
 
 def model_evidence() -> dict:
     """Gerçek kamu yapısal kanıtı — DÜRÜST, fixture/test'ten AYRI. Test sayıları GÖSTERİLMEZ."""
-    res, rep, status = _near_fit()
+    rep, status = _evidence_report()
     counts = _genuine_counts(rep, status)
     return {
         **counts,
@@ -165,6 +228,7 @@ def model_evidence() -> dict:
         "jacobian_rank": int(rep["rank"]),
         "parameter_dimension": int(rep["n_structural_parameters"]),
         "identification_status": rep["status"],
+        "property_scope": "mixed_property_structural_evidence; not property-type-specific",
         "explanations": {
             "uyap": "UYAP moments (uyap_win_over_appraisal_mean/sd) are conditional on OBSERVED "
                     "COMPLETED auction sales — not unconditional auction-market moments.",
@@ -184,6 +248,7 @@ def model_evidence() -> dict:
 
 def method_overview() -> dict:
     """Yapısal mekanizmanın özlü açıklaması (Method görünümü)."""
+    report, _ = _evidence_report()
     return {
         "pipeline": [
             "TCMB appraisal anchor -> fair value",
@@ -207,9 +272,9 @@ def method_overview() -> dict:
             "asking price is a noisy strategic seller signal, not a ground-truth ceiling.",
         ],
         "identification": {
-            "jacobian_rank": 4,
-            "parameter_dimension": 6,
-            "identification_status": "STRUCTURALLY_UNDERIDENTIFIED",
+            "jacobian_rank": int(report["rank"]),
+            "parameter_dimension": int(report["n_structural_parameters"]),
+            "identification_status": report["status"],
             "near_fit_tolerance": "documented computational sensitivity rule, NOT a sampling-calibrated cutoff",
             "future_methodology_note": FUTURE_METHODOLOGY_NOTE,
         },
@@ -363,6 +428,7 @@ def search_budget_stability(
     cb = exp["cumulative_best_objective"]
     monotone = all(cb[i + 1] <= cb[i] + 1e-9 for i in range(len(cb) - 1))
     return {
+        "model_semantics_version": STRUCTURAL_MODEL_SEMANTICS_VERSION,
         "diagnostic": "near_fit_search_stability",
         "design": "cumulative incumbent-preserving (nested candidate pools; global incumbent retained; "
                   "common Q_ref/tol_ref across budgets)",
@@ -373,7 +439,7 @@ def search_budget_stability(
                 "near-fit directions, which can make numerical coverage more demanding. The "
                 "search-stability diagnostic measures computational approximation quality separately "
                 "and does NOT establish underidentification. identification_status "
-                "(STRUCTURALLY_UNDERIDENTIFIED, Jacobian rank 4 / dim 6) is a separate "
+                f"(STRUCTURALLY_UNDERIDENTIFIED, Jacobian rank 4 / dim {len(DEFAULT_FREE)}) is a separate "
                 "econometric/local-identification diagnostic.",
         "reference_scenario": {"asking_price": asking, "province": province, "gross_m2": gross_m2,
                                "fair_value": round(float(fv), 0)},
@@ -389,3 +455,14 @@ def search_budget_stability(
         "near_fit_search_stability": status,
         "rule": reason,
     }
+
+
+def stability_snapshot() -> dict:
+    """Return the audited precomputed stability report without running a search."""
+    if not STABILITY_SNAPSHOT.exists():
+        raise RuntimeError("Structural stability snapshot is not available")
+    report = json.loads(STABILITY_SNAPSHOT.read_text(encoding="utf-8"))
+    if report.get("model_semantics_version") != STRUCTURAL_MODEL_SEMANTICS_VERSION:
+        raise RuntimeError("Structural stability snapshot model semantics are stale")
+    _CACHE["stability_status"] = report.get("near_fit_search_stability", "not_computed")
+    return report

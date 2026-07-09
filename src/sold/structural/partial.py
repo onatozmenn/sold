@@ -64,7 +64,11 @@ def objective_value(params: StructuralParams, m_obs: dict, ctx: MomentContext, s
     """SMM hedefi Q(θ) = (m_obs−m_sim)′W(m_obs−m_sim). ORTAK rastgele sayılar (sabit seed)."""
     m_sim = simulated_moments(params, ctx, np.random.default_rng(seed))
     obs, sim, keys = align(m_obs, m_sim)
-    if not keys:
+    expected_keys = {
+        key for key in m_obs
+        if key.startswith(("uyap_win_over_appraisal_", "kap_log_ratio_"))
+    }
+    if not expected_keys or set(keys) != expected_keys:
         return float("inf")
     d = obs - sim
     W = np.diag(1.0 / (np.abs(obs) + 1e-3) ** 2)
@@ -183,8 +187,9 @@ def admissible_near_fit_set(
     rounds = max(int(refine_rounds), 1)
     per_round = max(n_local // rounds, 1)
     cur_anchors = anchor_arr
-    for _ in range(rounds):
-        loc = _local_candidates(free_names, bounds, cur_anchors, per_round, rng, scale_frac=0.12)
+    for round_index in range(rounds):
+        scale_frac = 0.12 * (0.35 ** round_index)
+        loc = _local_candidates(free_names, bounds, cur_anchors, per_round, rng, scale_frac=scale_frac)
         loc_obj = _eval(loc)
         cand_parts.append(loc)
         obj_parts.append(loc_obj)
@@ -199,10 +204,28 @@ def admissible_near_fit_set(
     cand = np.vstack(cand_parts)
     objs = np.concatenate(obj_parts)
     finite = objs[np.isfinite(objs)]
-    q_min = float(finite.min()) if finite.size else float("inf")
+    if not finite.size:
+        raise ValueError(
+            "No finite SMM objective is available; audited evidence and simulated moments are required"
+        )
+    incumbent = cand[int(np.nanargmin(objs))]
+    profile_parts = []
+    for parameter_index in range(len(free_names)):
+        for value in np.linspace(lo_b[parameter_index], hi_b[parameter_index], 9):
+            probe = incumbent.copy()
+            probe[parameter_index] = value
+            profile_parts.append(probe)
+    if profile_parts:
+        profile_candidates = np.asarray(profile_parts, dtype=float)
+        cand = np.vstack([cand, profile_candidates])
+        objs = np.concatenate([objs, _eval(profile_candidates)])
+        finite = objs[np.isfinite(objs)]
+    q_min = float(finite.min())
     tol = identification_tolerance(q_min, rel, absolute)
     mask = np.isfinite(objs) & (objs <= q_min + tol)
     adm = cand[mask]
+    if not adm.size:
+        raise ValueError("No admissible near-fit structural parameter configuration was found")
     admissible_params = [
         replace(base, **{name: float(adm[r, j]) for j, name in enumerate(free_names)})
         for r in range(adm.shape[0])

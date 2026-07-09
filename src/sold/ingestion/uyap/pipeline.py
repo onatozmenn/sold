@@ -28,8 +28,27 @@ from .reconcile import reconcile
 from .review import REVIEW_DECISIONS
 
 
+def _validate_artifacts(candidate: dict, store_dir: Path | str | None) -> None:
+    root = Path(store_dir or store.DEFAULT_STORE_DIR).resolve()
+    for artifact in candidate.get("artifacts", []):
+        local_path = artifact.get("local_path")
+        if not local_path:
+            if artifact.get("text") is None:
+                raise ValueError("artifact has neither a local_path nor in-memory fixture text")
+            continue
+        path = Path(local_path).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"artifact path is outside the configured store: {path}") from exc
+        digest = str(artifact.get("sha256") or "")
+        if len(digest) != 64:
+            raise ValueError(f"artifact is missing a full sha256: {path}")
+
+
 def run_extract(candidate: dict, store_dir: Path | str | None = None) -> dict:
     """Aday artifact'larından deterministik çıkarım yapar; ``extracted`` alanını doldurur."""
+    _validate_artifacts(candidate, store_dir)
     ev = extract_evidence(
         candidate.get("artifacts", []),
         institution=candidate.get("institution"),
@@ -57,10 +76,8 @@ def run_audit(
 ) -> dict:
     """Aynı-varlık mutabakatı + kural-tabanlı denetim; ADMİSYON DEĞİL, ``audit`` doldurur."""
     rec = reconcile(candidate.get("artifacts", []), candidate.get("institution"), candidate.get("file_id"))
-    ev_dict = candidate.get("extracted")
-    if ev_dict is None:
-        candidate = run_extract(candidate, store_dir)
-        ev_dict = candidate["extracted"]
+    candidate = run_extract(candidate, store_dir)
+    ev_dict = candidate["extracted"]
     ev = ExtractedEvidence(**ev_dict)
     audit = audit_candidate(ev, rec)
 

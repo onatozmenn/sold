@@ -63,6 +63,7 @@ def init_db(engine: Engine | None = None) -> None:
         with engine.begin() as conn:
             for statement in _split_sql(sql):
                 conn.execute(text(statement))
+        Base.metadata.create_all(engine)
         logger.info("PostgreSQL şeması uygulandı (PostGIS dahil).")
     else:
         Base.metadata.create_all(engine)
@@ -70,5 +71,6 @@ def init_db(engine: Engine | None = None) -> None:
 
 
 def _split_sql(sql: str) -> list[str]:
-    """Şemayı ';' üzerinden ifadelere böler (şema fonksiyon/trigger içermez)."""
-    return [s.strip() for s in sql.split(";") if s.strip()]
+    """Line comments removed before splitting the simple DDL statements."""
+    uncommented = "\n".join(line.split("--", 1)[0] for line in sql.splitlines())
+    return [statement.strip() for statement in uncommented.split(";") if statement.strip()]

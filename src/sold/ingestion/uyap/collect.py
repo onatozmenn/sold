@@ -1638,6 +1638,9 @@ def import_artifact(
         artifact["text"] = text
     candidate.setdefault("artifacts", []).append(artifact)
     candidate["state"] = STATE_COLLECTED
+    candidate["extracted"] = None
+    candidate["reconciliation"] = None
+    candidate["audit"] = None
     store.log_event(candidate, "artifact_imported", f"{artifact_type} sha256={sha}")
     return candidate
 
@@ -2713,7 +2716,8 @@ class BrowserCollector:
             return False
         # Korrobore edilmiş resmî satır-yerel native kaynak → MEVCUT alan çıkarıcıya (inline text) verilir.
         documents.append({"artifact_type": requested_type, "text": text,
-                          "source_ref": f"native_udf:{ext or '.udf'}", "local_path": str(dest)})
+                  "source_ref": f"native_udf:{ext or '.udf'}", "local_path": str(dest),
+                  "sha256": full_sha})
         attempt["artifact_collected"] = True
         attempt["document_source_artifact_collected"] = True
         attempt["native_udf_source_relation"] = "official_same_row_native_udf"

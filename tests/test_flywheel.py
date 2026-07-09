@@ -28,9 +28,9 @@ def _session() -> Session:
 
 # ---- güven ataması --------------------------------------------------------- #
 def test_broker_closing_not_auto_A():
-    # Broker öz-beyanı OTOMATİK A almaz → B; bağımsız doğrulanırsa A.
+    # Bu giriş yüzeyi öz-beyandır; istemci doğrulama iddiasıyla A alamaz.
     assert assign_confidence("broker_closing", evidence_verified=False) == "B"
-    assert assign_confidence("broker_closing", evidence_verified=True) == "A"
+    assert assign_confidence("broker_closing", evidence_verified=True) == "B"
     assert assign_confidence("manual", evidence_verified=False) == "B"
     assert assign_confidence("deed_declared", evidence_verified=False) == "C"
     assert assign_confidence("deed_declared", evidence_verified=True) == "C"
@@ -71,7 +71,8 @@ def test_sold_default_confidence_B_unless_verified():
             "evidence_verified": True,
         }
     )
-    assert v2["label_confidence"] == "A"
+    assert v2["label_confidence"] == "B"
+    assert v2["evidence_verified"] is False
 
 
 # ---- kayıt + türetme ------------------------------------------------------- #
