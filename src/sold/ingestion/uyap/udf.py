@@ -63,6 +63,42 @@ def _member_names_safe_summary(names: list) -> dict:
     }
 
 
+# UYAP UDF: doldurulmuş ALAN DEĞERLERİ ``<content>`` CDATA'sında DEĞİL, ayrı ``<data>`` bölümünde SEMANTİK
+# tag'lerle tutulabilir (ör. ``<ihaleBedeli>4.654.000,00</ihaleBedeli>``). YALNIZCA bilinen FİNANSAL tag'ler
+# (TAM ad eşleşmesi) kanonik Türkçe etiketle metne eklenir → alan-etiketi→değer çıkarımı bunları görür.
+# Bileşik/kişisel/bilinmeyen tag'ler EKLENMEZ (yanlış eşleşme + kişisel-veri sızıntısı önlenir).
+_UDF_DATA_FINANCIAL_LABELS = {
+    "ihalebedeli": "İhale Bedeli",
+    "muhammenbedel": "Muhammen Bedel",
+    "muhammenbedeli": "Muhammen Bedel",
+    "muhammenkiymet": "Muhammen Kıymet",
+    "muhammenkiymeti": "Muhammen Kıymet",
+    "kiymeti": "Kıymeti",
+    "odenmesigerekenbedel": "Ödenmesi Gereken Bedel",
+}
+
+
+def _data_field_lines(root) -> list:
+    """UYAP UDF ``<data>`` bölümündeki BİLİNEN finansal alanları ``Kanonik Etiket: değer`` satırlarına çevirir.
+
+    Doldurulmuş değerler ``<content>`` CDATA'sında değil ``<data>``'da semantik tag'lerle tutulur. Yalnız
+    bilinen finansal tag'ler (TAM ad eşleşmesi) kanonik etiketle eklenir; değer AÇIK semantik elemandan
+    gelir (UYDURMA YOK, kart 'Satış Tutarı' KULLANILMAZ). Bileşik/kişisel/bilinmeyen alanlar EKLENMEZ.
+    """
+    lines = []
+    for data_el in root.iter():
+        if str(data_el.tag).split("}")[-1].lower() != "data":
+            continue
+        for child in list(data_el):
+            key = str(child.tag).split("}")[-1].lower().replace("_", "")
+            label = _UDF_DATA_FINANCIAL_LABELS.get(key)
+            val = (child.text or "").strip()
+            if label and val:
+                lines.append(f"{label}: {val}")
+        break  # ilk ``<data>`` bölümü yeterli
+    return lines
+
+
 def _extract_content_text(xml_bytes: bytes, diag: dict) -> str | None:
     """``content.xml`` baytlarını GÜVENLİ XML ayrıştırıp ``content`` elemanının CDATA/metnini aynen döndürür."""
     try:
@@ -96,6 +132,13 @@ def _extract_content_text(xml_bytes: bytes, diag: dict) -> str | None:
     if not text or not text.strip():
         diag["blocking_reason"] = "empty_content_text"
         return None
+    # UYAP UDF: doldurulmuş finansal değerler <content> DIŞINDA <data> bölümünde semantik tag'lerde durur
+    # (ör. <ihaleBedeli>). Bilinen finansal alanları kanonik etiketle EKLE ki İhale Bedeli/Muhammen çıkarımı
+    # görebilsin (değer açık semantik elemandan; UYDURMA YOK). content.xml'de yoksa metin AYNEN kalır.
+    data_lines = _data_field_lines(root)
+    if data_lines:
+        text = text + "\n" + "\n".join(data_lines)
+    diag["udf_data_financial_field_count"] = len(data_lines)
     diag["source_text_available"] = True
     diag["text_extraction_supported"] = True
     return text

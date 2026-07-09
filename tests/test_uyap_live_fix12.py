@@ -86,6 +86,49 @@ def test_root_content_xml_found_and_extracted():
     assert native_udf_supported(diag) is True
 
 
+# --- <data> bölümü finansal alanları (gerçek Ankara 2026/23: değer <content> DIŞINDA) ------- #
+_DATA_SECTION_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<template format_id="1.8">\n'
+    '  <content><![CDATA[Artırma Sonuç Tutanağı İhale Bedeli Ödenmesi Gereken Bedel]]></content>\n'
+    '  <data>\n'
+    '    <ihaleBedeli>1.234.567,89 TL</ihaleBedeli>\n'
+    '    <satisBedeliKalani>111.111,11 TL</satisBedeliKalani>\n'
+    '    <borcluAdi>SENTETİK KİŞİ</borcluAdi>\n'
+    '  </data>\n'
+    '</template>\n'
+)
+
+
+def test_data_section_known_financial_field_appended_personal_excluded():
+    # Doldurulmuş İhale Bedeli <content> CDATA'sında DEĞİL, <data><ihaleBedeli>'de; kanonik etiketle EKLENİR.
+    text, diag = extract_udf_source_text(_make_udf(_DATA_SECTION_XML))
+    assert text is not None
+    assert "İhale Bedeli: 1.234.567,89 TL" in text            # bilinen finansal alan kanonik etiketle
+    assert diag.get("udf_data_financial_field_count") == 1    # yalnız ihaleBedeli finansal-haritada
+    assert "SENTETİK KİŞİ" not in text                        # kişisel alan EKLENMEZ (sızıntı yok)
+    assert "111.111,11" not in text                           # harita-dışı finansal-olmayan alan EKLENMEZ
+
+
+def test_data_section_ihale_bedeli_feeds_auction_price_extraction():
+    # Uçtan uca: <data><ihaleBedeli> → metne eklenir → İhale Bedeli(P) çıkarımı bunu görür (uydurma yok).
+    text, _ = extract_udf_source_text(_make_udf(_DATA_SECTION_XML))
+    ev = extract_evidence(
+        [{"artifact_type": "auction_result", "text": text},
+         {"artifact_type": "status_card", "text": "Satıldı Satış İşlemleri Tamamlandı"}],
+        institution="Ankara", file_id="2026/23",
+    )
+    assert ev.ihale_bedeli == 1_234_567.89
+    assert ev.auction_price_field_label_found is True
+
+
+def test_inline_content_amounts_unchanged_when_no_data_section():
+    # <data> yoksa metin AYNEN kalır (2026/263 satır-içi düzen; regresyon yok).
+    text, diag = extract_udf_source_text(_make_udf())
+    assert diag.get("udf_data_financial_field_count") == 0
+    assert "İhale Bedeli : 1.234.567,89" in text
+
+
 def test_no_extractall_used_in_reader():
     src = inspect.getsource(_udf)
     assert "extractall" not in src                          # keyfi üye diske AÇILMAZ
