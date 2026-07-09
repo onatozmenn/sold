@@ -544,6 +544,14 @@ def test_summarize_result_structure_reports_cards_and_skeleton():
     assert "text" not in sk
 
 
+def test_result_card_signature_detects_page_change():
+    # aynı kartlar → aynı imza; farklı kartlar → farklı imza (sayfa 2 = sayfa 1 tuzağını yakalar)
+    sig1 = bulk.result_card_signature(_INCELENEN_HTML)
+    assert sig1 == bulk.result_card_signature(_INCELENEN_HTML) and len(sig1) == 2
+    other = _INCELENEN_HTML.replace("16760761856", "19999999999").replace("2026/263", "2026/777")
+    assert bulk.result_card_signature(other) != sig1
+
+
 
 def test_digits_tolerates_date_mask_format():
     assert bulk._digits("10/06/2026") == bulk._digits("10.06.2026") == "10062026"
