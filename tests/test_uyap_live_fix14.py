@@ -285,7 +285,7 @@ def test_run_pilot_fix14_offline_non_mutating(tmp_path):
     assert mg["uyap_json_unchanged"] and mg["genuine_uyap_count_unchanged"] and mg["smm_moments_unchanged"]
     assert mg["uyap_sale_prob_absent"] is True
     after = genuine_fingerprint(gp)
-    assert after["genuine_uyap_count"] == 7 and after["sha256"] == before["sha256"]
+    assert after["genuine_uyap_count"] == before["genuine_uyap_count"] and after["sha256"] == before["sha256"]
 
 
 def test_structural_freeze_four_moments_no_sale_prob():

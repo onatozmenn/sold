@@ -142,7 +142,7 @@ def test_run_pilot_offline_is_non_mutating_and_not_run(tmp_path):
     gdir = _seed_genuine_dir(tmp_path)
     gp = gdir / "uyap.json"
     before = genuine_fingerprint(gp)
-    assert before["genuine_uyap_count"] == 7
+    assert before["genuine_uyap_count"] == 18
     r = run_pilot(offline_artifacts=_pilot_artifacts(), genuine_path=gp,
                   store_dir=tmp_path, report_path=tmp_path / "report.json")
     assert r["pilot_outcome"] == "NOT_RUN"          # offline → canlı PASS değil
@@ -152,7 +152,7 @@ def test_run_pilot_offline_is_non_mutating_and_not_run(tmp_path):
     assert mg["smm_moments_unchanged"] is True
     assert mg["uyap_sale_prob_absent"] is True
     after = genuine_fingerprint(gp)
-    assert after["genuine_uyap_count"] == 7          # 8. gözlem OLUŞMADI
+    assert after["genuine_uyap_count"] == before["genuine_uyap_count"]   # yeni gözlem OLUŞMADI (pilot admit çağırmaz)
     assert after["sha256"] == before["sha256"]       # byte-for-byte değişmedi
     assert (tmp_path / "report.json").exists()
 
@@ -172,11 +172,12 @@ def test_run_pilot_live_without_browser_is_not_run(tmp_path):
 def test_already_admitted_2026_263_cannot_create_eighth(tmp_path):
     gdir = _seed_genuine_dir(tmp_path)
     gp = gdir / "uyap.json"
-    # pilot ASLA admit çağırmaz → 2026/263 zaten mevcut, sayı 7 kalır
+    before = len(json.loads(gp.read_text(encoding="utf-8")))
+    # pilot ASLA admit çağırmaz → 2026/263 zaten mevcut, sayı DEĞİŞMEZ (yeni gözlem yok)
     run_pilot(offline_artifacts=_pilot_artifacts(), genuine_path=gp,
               store_dir=tmp_path, report_path=tmp_path / "r.json")
     recs = json.loads(gp.read_text(encoding="utf-8"))
-    assert len(recs) == 7
+    assert len(recs) == before
     assert sum(1 for x in recs if str(x.get("public_record_id")) == "2026/263 Esas") == 1
 
 

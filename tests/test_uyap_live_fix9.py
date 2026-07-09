@@ -438,7 +438,7 @@ def test_run_pilot_fix9_shared_asset_non_mutating(tmp_path):
     assert mg["uyap_json_unchanged"] and mg["genuine_uyap_count_unchanged"] and mg["smm_moments_unchanged"]
     assert mg["uyap_sale_prob_absent"] is True
     after = genuine_fingerprint(gp)
-    assert after["genuine_uyap_count"] == 7 and after["sha256"] == before["sha256"]
+    assert after["genuine_uyap_count"] == before["genuine_uyap_count"] and after["sha256"] == before["sha256"]
     recs = json.loads(gp.read_text(encoding="utf-8"))
     assert sum(1 for x in recs if str(x.get("public_record_id")) == TARGET) == 1
 
