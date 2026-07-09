@@ -2061,6 +2061,7 @@ def uyap_bulk_cmd(
     date_to: Optional[str] = typer.Option(None, "--date-to", help="Bitiş (YYYY-MM-DD); --diagnose dışında gerekli"),
     resume: bool = typer.Option(False, "--resume", help="Kontrol noktasından devam (varsayılan; tamamlanmış pencereler atlanır)"),
     force: bool = typer.Option(False, "--force", help="Tamamlanmış (COMPLETE) pencereleri de YENİDEN çalıştır"),
+    kayit_no: Optional[str] = typer.Option(None, "--kayit-no", help="Yalnızca bu KAYIT NO'lu Satıldı kaydı işle (hedefli edinim testi)"),
     max_records: Optional[int] = typer.Option(None, "--max-records", help="En fazla bu kadar Satıldı açık artırma işle"),
     max_windows: Optional[int] = typer.Option(None, "--max-windows", help="En fazla bu kadar tarih penceresi işle"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Yalnızca tarih-pencere planını yazdır (tarayıcı açmaz)"),
@@ -2156,7 +2157,7 @@ def uyap_bulk_cmd(
         ).run(
             province=province, date_from=date_from, date_to=date_to,
             max_records=max_records, max_windows=max_windows,
-            dry_run=dry_run, discovery_only=discovery_only, resume=resume, force=force,
+            dry_run=dry_run, discovery_only=discovery_only, resume=resume, force=force, kayit_no=kayit_no,
         )
     except RuntimeError as exc:
         typer.secho(str(exc), fg=typer.colors.YELLOW)

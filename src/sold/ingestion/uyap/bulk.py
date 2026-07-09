@@ -826,6 +826,7 @@ class UyapBulkCollector:
         discovery_only: bool = False,
         resume: bool = False,
         force: bool = False,
+        kayit_no: str | None = None,
     ) -> dict:  # pragma: no cover - canlı tarayıcı gerektirir
         from .collect import BrowserCollector
 
@@ -890,7 +891,7 @@ class UyapBulkCollector:
                     save_bulk_state(state, self.store_dir)
 
                 stop = self._run_window(page, context, _acquire, province, w, rec, state,
-                                        summary, max_records, discovery_only, acquired_total)
+                                        summary, max_records, discovery_only, acquired_total, kayit_no)
                 acquired_total = summary["acquisitions_completed"] + summary["sold_skipped_known"]
                 summary["windows_processed"] += 1
                 if stop == "SESSION_EXPIRED":
@@ -909,7 +910,7 @@ class UyapBulkCollector:
         return summary
 
     def _run_window(self, page, context, acquire, province, w, rec, state, summary,
-                    max_records, discovery_only, acquired_total) -> str | None:  # pragma: no cover
+                    max_records, discovery_only, acquired_total, target_kayit_no=None) -> str | None:  # pragma: no cover
         start_ui = format_uyap_ui_date(w["start"])
         end_ui = format_uyap_ui_date(w["end"])
         self._print(f"[UYAP BULK] pencere {w['start']}→{w['end']} · {CATEGORY_TASINMAZ} · {province}")
@@ -996,6 +997,8 @@ class UyapBulkCollector:
             self._print(f"  sayfa {pnum}/{valid_pages[-1] if valid_pages else pnum} · kart={len(new_cards)} · Satıldı={len(sold)}")
 
             for card in sold:
+                if target_kayit_no and (card.get("kayit_no") or "") != target_kayit_no:
+                    continue                # hedefli edinim: yalnız istenen KAYIT NO işlenir
                 if max_records and summary["records_processed"] >= max_records:
                     return "MAX_RECORDS"
                 res = process_sold_auction(
