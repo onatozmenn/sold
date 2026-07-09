@@ -587,3 +587,28 @@ def test_document_modal_skeleton_reveals_rows():
 def test_digits_tolerates_date_mask_format():
     assert bulk._digits("10/06/2026") == bulk._digits("10.06.2026") == "10062026"
 
+
+def test_scope_open_document_modal_excludes_stray_labels():
+    from sold.ingestion.uyap.collect import detect_document_list, scope_open_document_modal
+
+    # sayfada modal DIŞINDA başıboş bir belge etiketi (Bilirkişi Raporu) + açık modal (Satış İlanı + Artırma Sonuç)
+    html = (
+        '<div class="card">Bilirkişi Raporu</div>'
+        '<div id="ihale_evraklari_modal" class="modal fade bs-modal-lg in">'
+        '<div class="modal-header"><h4 class="modal-title">İhale Evrak Listesi</h4></div>'
+        '<div class="modal-body"><div id="ihaleEvrakListesiResult">'
+        '<div class="margin-top-15"><button onclick="d()">Satış İlanı<i class="fa fa-arrow-down"></i></button>'
+        '<button onclick="v()"><i class="fa fa-eye"></i></button></div>'
+        '<div class="margin-top-15"><button onclick="d()">1- Artırma Sonuç / Uzatma Tutanağı<i class="fa fa-arrow-down"></i></button>'
+        '<button onclick="v()"><i class="fa fa-eye"></i></button></div>'
+        '</div></div></div>'
+    )
+    # Tüm-sayfa algılama başıboş etiket yüzünden BAŞARISIZ (ortak-ata body'ye genişler)
+    assert detect_document_list(html)["detected"] is False
+    # Modala scope edilince BAŞARILI + belge türleri tanınır
+    scoped = scope_open_document_modal(html)
+    assert scoped is not None
+    det = detect_document_list(scoped)
+    assert det["detected"] is True
+    assert set(det["recognized_types"]) >= {"sale_notice", "auction_result"}
+

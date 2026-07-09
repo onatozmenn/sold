@@ -732,6 +732,37 @@ def detect_document_list(html: str) -> dict:
     }
 
 
+def scope_open_document_modal(html: str) -> str | None:
+    """Return the HTML of the OPEN document modal (the one containing ihaleEvrakListesiResult).
+
+    In the bulk listing flow the page carries stray document-type labels OUTSIDE the modal; those
+    broaden detect_document_container's common ancestor to <body> and break detection. Scoping to
+    the modal evaluates only the real document list. Returns None if no such modal is found.
+    OFFLINE testable.
+    """
+    soup = _bs_soup(html)
+    if soup is None:
+        return None
+    node = soup.find(id="ihaleEvrakListesiResult")
+    if node is not None:
+        cur = node
+        for _ in range(6):
+            if cur is None or not getattr(cur, "name", None):
+                break
+            classes = cur.get("class") or [] if hasattr(cur, "get") else []
+            if "modal" in classes:  # tam class token (modal-body/modal-header DEĞİL) → başlık dahil modal
+                return str(cur)
+            cur = cur.parent
+        return str(node)
+    for m in soup.select("[class*=modal]"):
+        classes = m.get("class") or []
+        if "in" in classes or "show" in classes:
+            t = _ascii_lower(_demojibake(m.get_text(" ", strip=True)))
+            if len(_distinct_doc_types(t)) >= 2:
+                return str(m)
+    return None
+
+
 def document_list_semantic_transition(before_html: str, after_html: str) -> dict:
     """Tıklama öncesi/sonrası GÖRÜNÜR belge-türü kümesindeki materyal geçişi algılar."""
     before = set(visible_document_types(before_html))
@@ -1914,9 +1945,13 @@ class BrowserCollector:
                 cur_html = page.content()
             except Exception:
                 cur_html = ""
-            det = detect_document_list(cur_html)
+            # Açık belge modalına scope et: sayfadaki (modal DIŞI) başıboş belge etiketleri ortak-atayı
+            # body'ye genişletip algılamayı bozar (bulk listing modalında görüldü). Modal bulunamazsa
+            # tüm-sayfa davranışına düşer (pilot yolu korunur).
+            scoped = scope_open_document_modal(cur_html) or cur_html
+            det = detect_document_list(scoped)
             if det["detected"]:
-                rows = extract_document_rows_semantic(cur_html) or extract_panel_document_rows(cur_html)
+                rows = extract_document_rows_semantic(scoped) or extract_panel_document_rows(scoped)
                 if rows:
                     break
             page.wait_for_timeout(500)
