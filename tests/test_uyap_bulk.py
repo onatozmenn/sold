@@ -529,6 +529,8 @@ _RESULTS_HTML = """
     <a class="btn">İncele</a></div>
 </div>
 <div>32 sonuç bulundu.</div>
+<ul class="pagination"><li><a>0</a></li><li><a>1</a></li>
+  <li><a href="#">2</a></li><li><a onclick="go()">Sonraki</a></li></ul>
 """
 
 
@@ -542,6 +544,10 @@ def test_summarize_result_structure_reports_cards_and_skeleton():
     sk = d["first_card_skeleton"]
     assert sk is not None and sk["tag"] == "div"
     assert "text" not in sk
+    # sayfalama kontrolleri + sayım banner (canlı seçicileri eşlemek için)
+    assert any(p["text"] == "2" for p in d["pagination"])
+    assert any(p["text"] == "Sonraki" for p in d["pagination"])
+    assert any("32" in b for b in d["count_banners"])
 
 
 def test_result_card_signature_detects_page_change():
