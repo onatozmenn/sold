@@ -2067,6 +2067,15 @@ def uyap_show_cmd(
             typer.echo(f"    - attempt {att.get('artifact_type') or att.get('stage')}: blocking={att.get('blocking_reason')} · "
                        f"native_attempted={att.get('native_download_attempted')} · native_collected={att.get('native_artifact_collected')} · "
                        f"doc_source={att.get('document_source_artifact_collected')}")
+            if att.get("native_download_attempted"):
+                typer.echo(f"        native-udf: requested={att.get('native_requested_artifact_type')} · "
+                           f"detected={att.get('native_detected_document_type')} · "
+                           f"corroborated={att.get('native_document_type_corroborated')} · "
+                           f"mismatch={att.get('native_document_type_mismatch')}")
+                typer.echo(f"        udf-yapı: text_available={att.get('native_udf_source_text_available')} · "
+                           f"content_xml_size={att.get('native_udf_content_xml_size')} · "
+                           f"artifact_size={att.get('native_artifact_size')} · "
+                           f"members={att.get('native_udf_member_names_safe_summary')}")
 
 
 @uyap_app.command("pilot")
