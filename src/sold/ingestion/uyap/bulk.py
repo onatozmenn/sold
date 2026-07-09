@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
+import sys
+import threading
+import time
 from pathlib import Path
 
 from . import store
@@ -837,12 +841,20 @@ class UyapBulkCollector:
         genuine_path: Path | str | None = None,
         request_delay_ms: int = 900,
         result_timeout_ms: int = 20000,
+        stall_seconds: int = 120,
     ) -> None:
         self.cdp_endpoint = cdp_endpoint
         self.store_dir = store_dir
         self.genuine_path = genuine_path
         self.request_delay_ms = max(0, int(request_delay_ms))
         self.result_timeout_ms = max(1000, int(result_timeout_ms))
+        # Canlı adım gözcüsü (watchdog): hiçbir adım stall_seconds'ı aşarsa net tanı ile GÜVENLE sonlandır
+        # (önceki koşumdan kalan TAKILI görüntüleyici sekmesi page.content()'i sonsuza dek bloklayabilir).
+        self.stall_seconds = max(15, int(stall_seconds))
+        self._hb_step = "başlatılıyor"
+        self._hb_ts = time.monotonic()
+        self._tab_count = -1
+        self._live_active = False
 
     def diagnose_form(self) -> dict:  # pragma: no cover - canlı tarayıcı gerektirir
         """READ-ONLY tanı: oturuma bağlanıp 'Geçmiş İlanlar' formunun GERÇEK kontrol yapısını döndürür.
@@ -1012,12 +1024,24 @@ class UyapBulkCollector:
         collector = BrowserCollector(cdp_endpoint=self.cdp_endpoint)
         acquired_total = 0
         with sync_playwright() as pw:
+            self._live_active = True
+            watchdog_stop = self._start_watchdog()
+            self._beat("CDP oturumuna bağlanılıyor")
             browser = pw.chromium.connect_over_cdp(self.cdp_endpoint)
             if not browser.contexts:
+                self._live_active = False
+                watchdog_stop.set()
                 raise RuntimeError("no_usable_browser_context: CDP oturumunda kullanılabilir bağlam yok.")
             context = browser.contexts[0]
+            try:
+                self._tab_count = len(context.pages)
+            except Exception:
+                self._tab_count = -1
+            self._beat(f"'Geçmiş İlanlar' sekmesi aranıyor ({self._tab_count} açık sekme)")
             page = self._find_gecmis_page(context)
             if page is None:
+                self._live_active = False
+                watchdog_stop.set()
                 raise RuntimeError(
                     "no_gecmis_ilanlar_page: 'Geçmiş İlanlar' sekmesi bulunamadı. "
                     "Önce UYAP e-Satış → İhaleler → Geçmiş İlanlar sayfasını elle açın."
@@ -1048,6 +1072,8 @@ class UyapBulkCollector:
                 if stop == "MAX_RECORDS":
                     summary["stopped_reason"] = "max_records"
                     break
+            self._live_active = False
+            watchdog_stop.set()
 
         for c in store.load_candidates(self.store_dir):
             dec = (c.get("audit") or {}).get("decision")
@@ -1061,6 +1087,7 @@ class UyapBulkCollector:
         start_ui = format_uyap_ui_date(w["start"])
         end_ui = format_uyap_ui_date(w["end"])
         self._print(f"[UYAP BULK] pencere {w['start']}→{w['end']} · {CATEGORY_TASINMAZ} · {province}")
+        self._beat(f"pencere {w['start']}→{w['end']}: form dolduruluyor (kategori/il/tarih)")
 
         self._dismiss_notices(page)
         cat_ok = self._select_category_tasinmaz(page)
@@ -1077,6 +1104,7 @@ class UyapBulkCollector:
             save_bulk_state(state, self.store_dir)
             self._print("  ARA (arama) kontrolü bulunamadı — pencere atlandı. `--diagnose` çıktısındaki aksiyon adaylarını paylaşın.")
             return None
+        self._beat("ARA sonrası sonuç durumu bekleniyor")
         result_html = self._wait_result_state(page)
 
         exp = detect_session_expiration(result_html, page.url)
@@ -1117,6 +1145,7 @@ class UyapBulkCollector:
         processed_ids: set = set()
         pages_failed: list = []
         for pnum in pages_remaining(rec, valid_pages):
+            self._beat(f"sayfa {pnum} yükleniyor")
             if not self._goto_page(page, pnum):
                 pages_failed.append(pnum)
                 self._print(f"  sayfa {pnum} yüklenemedi/kart kümesi değişmedi — atlanıyor (pencere COMPLETE değil, tekrar denenir).")
@@ -1148,6 +1177,7 @@ class UyapBulkCollector:
                     continue                # hedefli edinim: yalnız istenen KAYIT NO işlenir
                 if max_records and summary["records_processed"] >= max_records:
                     return "MAX_RECORDS"
+                self._beat(f"KAYIT NO {card.get('kayit_no')}: belge ediniliyor (native)")
                 res = process_sold_auction(
                     card, acquire_documents=acquire, store_dir=self.store_dir,
                     genuine_path=self.genuine_path, discovery_only=discovery_only,
@@ -1190,8 +1220,21 @@ class UyapBulkCollector:
 
     # -- Canlı DOM yardımcıları (pragma) — gerçek gözlenen UYAP DOM'una uyarlanır ---------- #
     def _find_gecmis_page(self, context):  # pragma: no cover - canlı DOM
-        best = None
+        # ÖNCE URL'e göre ayıkla (ucuz, ASILMAZ): önceki koşumdan kalan TAKILI görüntüleyici/indirme
+        # sekmeleri (blob:/data:/file:/about:blank) ölü renderer'a sahip olabilir; page.content() ZAMAN
+        # AŞIMSIZ bloklar → o sekmelerin content()'ine HİÇ dokunma (bir saatlik asılmanın kök nedeni).
+        _skip_prefix = ("blob:", "data:", "file:", "chrome:", "about:", "devtools:", "view-source:")
+        app_pages = []
         for p in context.pages:
+            try:
+                url = _fold(p.url or "")
+            except Exception:
+                continue
+            if not url or any(url.startswith(s) for s in _skip_prefix):
+                continue
+            app_pages.append(p)
+        best = None
+        for p in app_pages:
             try:
                 fold = _fold(p.content())
             except Exception:
@@ -1200,7 +1243,7 @@ class UyapBulkCollector:
                 return p
             if best is None and ("ilan" in fold or "ihale" in fold):
                 best = p
-        return best or (context.pages[0] if context.pages else None)
+        return best or (app_pages[0] if app_pages else None)
 
     def _dismiss_notices(self, page):  # pragma: no cover - canlı DOM
         """Bilgilendirme/duyuru pop-up'larını + açık kalmış Bootstrap modallarını KAPATIR.
@@ -1534,7 +1577,40 @@ class UyapBulkCollector:
                     + (f" · denetim={dec}" if dec else ""))
 
     def _print(self, msg: str) -> None:  # pragma: no cover - canlı çıktı
-        print(msg)
+        print(msg, flush=True)
+
+    def _beat(self, step: str) -> None:  # pragma: no cover - canlı çıktı/heartbeat
+        """Canlı adım nabzı: gözcü zamanlayıcısını sıfırlar + ilerlemeyi stderr'e (flush) yazar."""
+        self._hb_step = step
+        self._hb_ts = time.monotonic()
+        print(f"[UYAP BULK] · {step}", file=sys.stderr, flush=True)
+
+    def _start_watchdog(self):  # pragma: no cover - zamanlayıcı iş parçacığı
+        """Arka plan gözcüsü: canlı bir adım stall_seconds'ı aşarsa net tanı ile SERT sonlandır.
+
+        Takılı bir Playwright sync çağrısı (ör. ölü renderer'lı sekmede page.content()) ana iş parçacığını
+        kesintisiz bloklar; tek güvenli kurtarma os._exit'tir. Kontrol noktaları zaten sayfa-sayfa kaydedilir.
+        """
+        stop = threading.Event()
+
+        def _mon():
+            while not stop.wait(5.0):
+                if not self._live_active:
+                    continue
+                age = time.monotonic() - self._hb_ts
+                if age > self.stall_seconds:
+                    sys.stderr.write(
+                        f"\n[UYAP BULK] ZAMAN AŞIMI: '{self._hb_step}' adımı {int(age)}sn ilerlemedi "
+                        f"(eşik {self.stall_seconds}sn; --stall-timeout ile ayarlanır). Açık sekme≈{self._tab_count}. "
+                        f"Olası neden: önceki koşumdan kalan TAKILI görüntüleyici/indirme sekmesi 'page.content()'i "
+                        f"blokluyor. ÇÖZÜM: Chrome'da YALNIZ 'Geçmiş İlanlar' sekmesini bırakıp diğer sekmeleri "
+                        f"kapatın, sonra komutu tekrar çalıştırın. Kontrol noktaları kaydedildi; güvenle sonlandırılıyor.\n"
+                    )
+                    sys.stderr.flush()
+                    os._exit(4)
+
+        threading.Thread(target=_mon, name="uyap-bulk-watchdog", daemon=True).start()
+        return stop
 
     def _print_summary(self, s: dict) -> None:  # pragma: no cover - canlı çıktı
         self._print("\n[UYAP BULK] ÖZET")

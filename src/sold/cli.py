@@ -2120,6 +2120,7 @@ def uyap_bulk_cmd(
     diagnose_documents: bool = typer.Option(False, "--diagnose-documents", help="TANI: hedef kartın (--kayit-no) 'İhale Evrak Listesi'ni çalıştırıp belge-listesinin ne açtığını basar (admisyon YOK)"),
     store_dir: Optional[str] = typer.Option(None, help="Çalışma deposu / kontrol noktası dizini"),
     genuine_path: Optional[str] = typer.Option(None, help="genuine uyap.json yolu (DUPLICATE denetimi; admisyon YOK)"),
+    stall_timeout: int = typer.Option(120, "--stall-timeout", help="Canlı bir adım bu kadar saniye ilerlemezse GÜVENLE sonlandır (takılı sekme koruması)"),
 ) -> None:
     """UYAP TOPLU keşif+iterasyon — 'Geçmiş İlanlar'da Taşınmaz+İl+tarih ile SADECE Satıldı açık artırmalar.
 
@@ -2232,6 +2233,7 @@ def uyap_bulk_cmd(
     try:
         s = UyapBulkCollector(
             cdp_endpoint=cdp_endpoint or "", store_dir=store_dir, genuine_path=genuine_path,
+            stall_seconds=stall_timeout,
         ).run(
             province=province, date_from=date_from, date_to=date_to,
             max_records=max_records, max_windows=max_windows,
