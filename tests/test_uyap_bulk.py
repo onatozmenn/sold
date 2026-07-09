@@ -310,6 +310,30 @@ def test_discovery_survives_acquisition_failure(tmp_path):
     assert cand["bulk"]["last_acquisition_error"]
 
 
+def test_same_esas_different_kayit_no_are_distinct_candidates(tmp_path):
+    # Bir Esas'ın (2026/12) birden çok açık artırması (farklı KAYIT NO) AYRI aday olmalı —
+    # yoksa distinkt açık artırmalar kaybolur (canlı Ankara koşusunda 13 → 8 çökmesi).
+    gp = tmp_path / "genuine_uyap.json"
+    r1 = bulk.process_sold_auction(
+        _sold_card(fid="2026/12", kayit="16760703976"), acquire_documents=_fake_acquire_ok,
+        store_dir=tmp_path, genuine_path=gp, discovery_only=True, province_label="ANKARA",
+    )
+    r2 = bulk.process_sold_auction(
+        _sold_card(fid="2026/12", kayit="16760703981"), acquire_documents=_fake_acquire_ok,
+        store_dir=tmp_path, genuine_path=gp, discovery_only=True, province_label="ANKARA",
+    )
+    assert r1["candidate_id"] != r2["candidate_id"]
+    assert len(store.load_candidates(tmp_path)) == 2
+    # aynı KAYIT NO tekrar → idempotent (kopya yok)
+    r1b = bulk.process_sold_auction(
+        _sold_card(fid="2026/12", kayit="16760703976"), acquire_documents=_fake_acquire_ok,
+        store_dir=tmp_path, genuine_path=gp, discovery_only=True, province_label="ANKARA",
+    )
+    assert r1b["candidate_id"] == r1["candidate_id"]
+    assert len(store.load_candidates(tmp_path)) == 2
+
+
+
 # --------------------------------------------------------------------------- #
 # 8) Yeniden başlama — edinilmiş açık artırma tekrar işlenmez; kısmi olan devam eder.
 # --------------------------------------------------------------------------- #
