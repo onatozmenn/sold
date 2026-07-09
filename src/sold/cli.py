@@ -2064,6 +2064,7 @@ def uyap_bulk_cmd(
     max_windows: Optional[int] = typer.Option(None, "--max-windows", help="En fazla bu kadar tarih penceresi işle"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Yalnızca tarih-pencere planını yazdır (tarayıcı açmaz)"),
     discovery_only: bool = typer.Option(False, "--discovery-only", help="Yalnızca Satıldı açık artırmaları keşfet+kalıcılaştır (belge edinimi yok)"),
+    diagnose: bool = typer.Option(False, "--diagnose", help="READ-ONLY: 'Geçmiş İlanlar' form kontrol yapısını basar (arama/indirme YOK); canlı seçicileri eşlemek için"),
     store_dir: Optional[str] = typer.Option(None, help="Çalışma deposu / kontrol noktası dizini"),
     genuine_path: Optional[str] = typer.Option(None, help="genuine uyap.json yolu (DUPLICATE denetimi; admisyon YOK)"),
 ) -> None:
@@ -2082,6 +2083,36 @@ def uyap_bulk_cmd(
         typer.secho("--cdp-endpoint gerekli (canlı oturum). Ör: http://127.0.0.1:9222", fg=typer.colors.RED)
         typer.echo(BROWSER_PREREQUISITES)
         raise typer.Exit(code=1)
+    if diagnose:
+        try:
+            d = UyapBulkCollector(
+                cdp_endpoint=cdp_endpoint or "", store_dir=store_dir, genuine_path=genuine_path,
+            ).diagnose_form()
+        except RuntimeError as exc:
+            typer.secho(str(exc), fg=typer.colors.YELLOW)
+            typer.echo(BROWSER_PREREQUISITES)
+            raise typer.Exit(code=1)
+        typer.secho("[UYAP BULK] FORM TANI (read-only; arama/indirme YOK)", fg=typer.colors.CYAN, bold=True)
+        pg = d.get("page", {})
+        typer.echo(f"  sayfa: {pg.get('url_path')} · {pg.get('title')}")
+        typer.echo(f"  işaretler: {d.get('markers')}")
+        typer.echo(f"  oturum: {d.get('session')}")
+        typer.echo(f"  input ({d.get('input_count')}):")
+        for i in d.get("inputs", []):
+            typer.echo(f"    - type={i.get('type')} id={i.get('id')} name={i.get('name')} "
+                       f"class={i.get('class')} placeholder={i.get('placeholder')} "
+                       f"readonly={i.get('readonly')} aria={i.get('aria_label')} maxlen={i.get('maxlength')}")
+        typer.echo(f"  select ({d.get('select_count')}):")
+        for s in d.get("selects", []):
+            typer.echo(f"    - id={s.get('id')} name={s.get('name')} class={s.get('class')} "
+                       f"aria={s.get('aria_label')} options={s.get('option_count')}")
+        typer.echo("  button:")
+        for b in d.get("buttons", []):
+            if b.get("text"):
+                typer.echo(f"    - '{b.get('text')}' id={b.get('id')} class={b.get('class')}")
+        typer.secho("  Bu çıktıyı paylaşın; canlı seçicileri (tarih/İl/kategori/ARA) gerçek DOM'a göre netleştireceğim.",
+                    fg=typer.colors.GREEN)
+        raise typer.Exit(code=0)
     try:
         s = UyapBulkCollector(
             cdp_endpoint=cdp_endpoint or "", store_dir=store_dir, genuine_path=genuine_path,

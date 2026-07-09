@@ -78,6 +78,11 @@ def _fold(text: object) -> str:
     return _ascii_lower(demojibake(str(text or "")))
 
 
+def _digits(text: object) -> str:
+    """Yalnızca rakamlar (tarih maske/biçim farklarını tolere eden karşılaştırma için)."""
+    return re.sub(r"\D", "", str(text or ""))
+
+
 # --------------------------------------------------------------------------- #
 # 1) Tarih pencereleri (SAF, deterministik) — UYAP en fazla 1 haftalık arama.
 # --------------------------------------------------------------------------- #
@@ -294,6 +299,67 @@ def parse_result_cards(html: object) -> list[dict]:
             })
         return cards                        # kart üreten İLK selector kazanır
     return []
+
+
+def summarize_form_controls(html: object) -> dict:
+    """'Geçmiş İlanlar' arama formunun GERÇEK kontrol yapısını KİŞİSEL-OLMAYAN özetler.
+
+    input/select/button için yapısal öznitelikler (tag/type/id/name/class/placeholder/aria/readonly/
+    maxlength/role) + değer VARLIĞI (içerik DEĞİL) döndürür. Canlı seçicileri gerçek DOM'a eşlemek
+    için tanı amaçlıdır (tahmin yerine gözlem). OFFLINE test edilebilir.
+    """
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html or "", "html.parser")
+    except Exception:
+        return {"input_count": 0, "select_count": 0, "inputs": [], "selects": [], "buttons": [], "markers": {}}
+
+    def _attrs(el) -> dict:
+        return {
+            "tag": el.name,
+            "type": el.get("type"),
+            "id": el.get("id"),
+            "name": el.get("name"),
+            "class": " ".join(el.get("class") or []) or None,
+            "placeholder": el.get("placeholder"),
+            "aria_label": el.get("aria-label"),
+            "role": el.get("role"),
+            "readonly": el.has_attr("readonly") or el.get("aria-readonly") == "true",
+            "maxlength": el.get("maxlength"),
+            "value_present": bool((el.get("value") or "").strip()),
+        }
+
+    inputs = [_attrs(e) for e in soup.find_all("input")]
+    selects = []
+    for e in soup.find_all("select"):
+        d = _attrs(e)
+        d["option_count"] = len(e.find_all("option"))
+        selects.append(d)
+    buttons: list[dict] = []
+    for e in soup.find_all("button"):
+        buttons.append({"tag": "button", "id": e.get("id"),
+                        "class": " ".join(e.get("class") or []) or None,
+                        "text": e.get_text(" ", strip=True)[:40]})
+    for e in soup.find_all("input", {"type": ["submit", "button"]}):
+        buttons.append({"tag": "input", "id": e.get("id"),
+                        "class": " ".join(e.get("class") or []) or None,
+                        "text": (e.get("value") or "")[:40]})
+    fold = _fold(html)
+    return {
+        "input_count": len(inputs),
+        "select_count": len(selects),
+        "inputs": inputs,
+        "selects": selects,
+        "buttons": buttons[:40],
+        "markers": {
+            "has_tasinmaz": "tasinmaz" in fold,
+            "has_tasinir": "tasinir" in fold,
+            "has_date_label": ("ihale bitis tarih" in fold or "tarih aralik" in fold),
+            "has_il_label": bool(re.search(r"\bil\b", fold)),
+            "has_ara_button": any((b.get("text") or "").strip().lower() == "ara" for b in buttons),
+        },
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -544,6 +610,31 @@ class UyapBulkCollector:
         self.request_delay_ms = max(0, int(request_delay_ms))
         self.result_timeout_ms = max(1000, int(result_timeout_ms))
 
+    def diagnose_form(self) -> dict:  # pragma: no cover - canlı tarayıcı gerektirir
+        """READ-ONLY tanı: oturuma bağlanıp 'Geçmiş İlanlar' formunun GERÇEK kontrol yapısını döndürür.
+
+        ARA'ya TIKLAMAZ, ARAMA/İNDİRME yapmaz, kişisel metin/alan değeri okumaz. Canlı seçicileri
+        (kategori/İl/tarih/ARA) gerçek DOM'a eşlemek için kullanılır — tahmin yerine gözlem.
+        """
+        from .collect import BrowserCollector
+
+        sync_playwright = BrowserCollector._sync_playwright()
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(self.cdp_endpoint)
+            if not browser.contexts:
+                raise RuntimeError("no_usable_browser_context: CDP oturumunda kullanılabilir bağlam yok.")
+            page = self._find_gecmis_page(browser.contexts[0])
+            if page is None:
+                raise RuntimeError(
+                    "no_gecmis_ilanlar_page: 'Geçmiş İlanlar' sekmesi bulunamadı. "
+                    "Önce UYAP e-Satış → İhaleler → Geçmiş İlanlar sayfasını elle açın."
+                )
+            html = page.content()
+            summary = summarize_form_controls(html)
+            summary["page"] = {"url_path": self._safe_ref(page.url), "title": (page.title() or "")[:80]}
+            summary["session"] = detect_session_expiration(html, page.url)
+            return summary
+
     # -- Canlı koşu (pragma: canlı tarayıcı/DOM gerektirir; ağ testlerinde çalışmaz) ------- #
     def run(
         self,
@@ -785,19 +876,38 @@ class UyapBulkCollector:
         return False
 
     def _set_and_verify_dates(self, page, start_ui, end_ui):  # pragma: no cover - canlı DOM
+        """Başlangıç/bitiş tarih kutularını çoklu strateji ile doldurur; ARA'dan ÖNCE doğrular.
+
+        Doğrulama maske/biçim farklarına TOLERANSLIDIR (yalnız rakamlar: 10/06/2026 == 10.06.2026).
+        readonly (yalnız-takvim) alan tespit edilirse False döner (uydurma yok) → `--diagnose` ile
+        gerçek DOM görülüp takvim-tıklama uygulanır.
+        """
         import re as _re
 
+        strategies = (
+            lambda: page.get_by_role("textbox", name=_re.compile("tarih|bitis|baslang", _re.I)),
+            lambda: page.locator("input[placeholder*='/'], input[placeholder*='.'], input[placeholder*='g' i]"),
+            lambda: page.locator("input[id*=tarih i], input[name*=tarih i], input[id*=bitis i], input[name*=bitis i]"),
+            lambda: page.locator("input[type=date]"),
+        )
+        for strat in strategies:
+            try:
+                loc = strat()
+                if loc.count() >= 2 and self._fill_verify(loc.nth(0), start_ui) and self._fill_verify(loc.nth(1), end_ui):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _fill_verify(self, box, ui):  # pragma: no cover - canlı DOM
+        """Bir tarih kutusunu doldurur ve maske/biçim toleranslı doğrular; readonly ise False."""
         try:
-            inputs = page.get_by_role("textbox", name=_re.compile("tarih", _re.I))
-            if inputs.count() >= 2:
-                start_box, end_box = inputs.nth(0), inputs.nth(1)
-            else:
-                boxes = page.locator("input[type=text], input:not([type])")
-                start_box, end_box = boxes.nth(0), boxes.nth(1)
-            start_box.fill(start_ui)
-            end_box.fill(end_ui)
-            # ARA'dan ÖNCE görünür değerlerin hedef pencereyle EŞLEŞTİĞİNİ doğrula.
-            return start_box.input_value().strip() == start_ui and end_box.input_value().strip() == end_ui
+            if box.get_attribute("readonly") is not None:
+                return False  # yalnız-takvim alan: fill() geçersiz — diagnose ile ele alınır
+            box.click()
+            box.fill("")
+            box.fill(ui)
+            return _digits(box.input_value()) == _digits(ui)
         except Exception:
             return False
 

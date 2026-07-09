@@ -27,6 +27,7 @@ from .bulk import (
     process_sold_auction,
     save_bulk_state,
     should_acquire,
+    summarize_form_controls,
     valid_result_pages,
     zero_results,
 )
@@ -216,6 +217,7 @@ __all__ = [
     "acquisition_state",
     "should_acquire",
     "process_sold_auction",
+    "summarize_form_controls",
     "load_bulk_state",
     "save_bulk_state",
     # pilot (live browser verification)
