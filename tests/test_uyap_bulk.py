@@ -558,6 +558,17 @@ def test_result_card_signature_detects_page_change():
     assert bulk.result_card_signature(other) != sig1
 
 
+def test_summarize_document_area_detects_evrak_modal():
+    html = ('<div class="modal in" id="evrakModal"><div class="modal-body">'
+            'Satış İlanı · 1- Bilirkişi Raporu · Artırma Sonuç Tutanağı</div></div>')
+    areas = bulk.summarize_document_area(html)
+    m = next((a for a in areas if a["id"] == "evrakModal"), None)
+    assert m is not None
+    assert "satis ilani" in m["doc_tokens"] and "bilirkisi" in m["doc_tokens"]
+    assert "artirma sonuc" in m["doc_tokens"]
+    assert "text" not in m  # kişisel metin dönmez, yalnız token varlığı
+
+
 
 def test_digits_tolerates_date_mask_format():
     assert bulk._digits("10/06/2026") == bulk._digits("10.06.2026") == "10062026"
