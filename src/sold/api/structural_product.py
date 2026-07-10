@@ -14,7 +14,9 @@ duyarlılık kuralıdır.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -62,6 +64,77 @@ STABILITY_SNAPSHOT = Path(__file__).resolve().parents[1] / "evidence" / "stabili
 NEAR_FIT_SNAPSHOT = Path(__file__).resolve().parents[1] / "evidence" / "near_fit.json"
 
 
+def _canonical_value(value):
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except (TypeError, ValueError):
+            pass
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(key): _canonical_value(item) for key, item in sorted(value.items())}
+    if isinstance(value, (list, tuple)):
+        return [_canonical_value(item) for item in value]
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _frame_context_rows(frame, columns: tuple[str, ...]) -> list[dict]:
+    return [
+        {column: _canonical_value(row[column]) for column in columns}
+        for _, row in frame.iterrows()
+    ]
+
+
+def structural_context_fingerprint(genuine: dict, built: dict | None = None, ctx=None) -> str:
+    built = built or build_observed_moments(
+        genuine["uyap"], genuine["kap"], genuine["toki_result"]
+    )
+    ctx = ctx or context_from_datasets(genuine["uyap"], genuine["kap"])
+    payload = {
+        "model_semantics_version": STRUCTURAL_MODEL_SEMANTICS_VERSION,
+        "moments": {
+            key: float(value) for key, value in built["moments"].items()
+            if key.startswith(("uyap_win", "kap_log"))
+        },
+        "uyap": _frame_context_rows(genuine["uyap"], (
+            "public_record_id", "province", "property_type", "appraised_value", "sold",
+            "winning_bid", "offer_count", "bidder_count", "priority_claims",
+            "realization_costs", "legal_floor", "legal_floor_exact",
+        )),
+        "kap": _frame_context_rows(genuine["kap"], (
+            "official_record_id", "appraisal_value", "sale_price", "reference_price_type",
+            "property_type", "negotiated", "related_party",
+        )),
+        "toki_result": genuine["toki_result"],
+        "moment_context": {
+            "auction_appraised": ctx.auction_appraised.tolist(),
+            "auction_floors": ctx.auction_floors.tolist(),
+            "auction_floor_exact": (
+                ctx.auction_floor_exact.tolist() if ctx.auction_floor_exact is not None else None
+            ),
+            "auction_floor_upper": (
+                ctx.auction_floor_upper.tolist() if ctx.auction_floor_upper is not None else None
+            ),
+            "auction_bidders": (
+                ctx.auction_bidders.tolist() if ctx.auction_bidders is not None else None
+            ),
+            "kap_appraisal": ctx.kap_appraisal.tolist(),
+            "tightness": ctx.tightness,
+            "reps": ctx.reps,
+        },
+    }
+    canonical = json.dumps(
+        _canonical_value(payload), ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def reset_near_fit_cache() -> None:
     """Önbelleği temizler (testler küçük aday sayısıyla yeniden kurmak için kullanır)."""
     with _CACHE_LOCK:
@@ -87,6 +160,8 @@ def _near_fit():
             }
             if current_moments != stored_moments:
                 raise RuntimeError("Structural near-fit snapshot is stale for the current evidence")
+            if snapshot.get("context_fingerprint") != structural_context_fingerprint(g, built, ctx):
+                raise RuntimeError("Structural near-fit snapshot context is stale")
             if tuple(snapshot.get("free_names", ())) != tuple(DEFAULT_FREE):
                 raise RuntimeError("Structural near-fit snapshot parameter space is stale")
             if snapshot.get("model_semantics_version") != STRUCTURAL_MODEL_SEMANTICS_VERSION:
@@ -429,6 +504,11 @@ def search_budget_stability(
     monotone = all(cb[i + 1] <= cb[i] + 1e-9 for i in range(len(cb) - 1))
     return {
         "model_semantics_version": STRUCTURAL_MODEL_SEMANTICS_VERSION,
+        "evidence_moments": {
+            key: float(value) for key, value in built["moments"].items()
+            if key.startswith(("uyap_win", "kap_log"))
+        },
+        "context_fingerprint": structural_context_fingerprint(g, built, ctx),
         "diagnostic": "near_fit_search_stability",
         "design": "cumulative incumbent-preserving (nested candidate pools; global incumbent retained; "
                   "common Q_ref/tol_ref across budgets)",
@@ -464,5 +544,21 @@ def stability_snapshot() -> dict:
     report = json.loads(STABILITY_SNAPSHOT.read_text(encoding="utf-8"))
     if report.get("model_semantics_version") != STRUCTURAL_MODEL_SEMANTICS_VERSION:
         raise RuntimeError("Structural stability snapshot model semantics are stale")
+    genuine = load_genuine_datasets()
+    built = build_observed_moments(
+        genuine["uyap"], genuine["kap"], genuine["toki_result"]
+    )
+    ctx = context_from_datasets(genuine["uyap"], genuine["kap"])
+    current_moments = {
+        key: float(value) for key, value in built["moments"].items()
+        if key.startswith(("uyap_win", "kap_log"))
+    }
+    stored_moments = {
+        key: float(value) for key, value in report.get("evidence_moments", {}).items()
+    }
+    if current_moments != stored_moments:
+        raise RuntimeError("Structural stability snapshot is stale for the current evidence")
+    if report.get("context_fingerprint") != structural_context_fingerprint(genuine, built, ctx):
+        raise RuntimeError("Structural stability snapshot context is stale")
     _CACHE["stability_status"] = report.get("near_fit_search_stability", "not_computed")
     return report

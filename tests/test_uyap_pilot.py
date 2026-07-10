@@ -144,7 +144,7 @@ def test_run_pilot_offline_is_non_mutating_and_not_run(tmp_path):
     gdir = _seed_genuine_dir(tmp_path)
     gp = gdir / "uyap.json"
     before = genuine_fingerprint(gp)
-    assert before["genuine_uyap_count"] == 18
+    assert before["genuine_uyap_count"] == 20
     r = run_pilot(offline_artifacts=_pilot_artifacts(), genuine_path=gp,
                   store_dir=tmp_path, report_path=tmp_path / "report.json")
     assert r["pilot_outcome"] == "NOT_RUN"          # offline → canlı PASS değil
@@ -202,7 +202,7 @@ def test_pilot_structural_freeze_four_moments_no_sale_prob():
         "kap_log_ratio_mean", "kap_log_ratio_sd",
     }
     assert "uyap_sale_prob" not in smm
-    assert fp["genuine_uyap_count"] == 18
+    assert fp["genuine_uyap_count"] == 20
 
 
 def test_compare_to_truth_file_id_alias_accepted():

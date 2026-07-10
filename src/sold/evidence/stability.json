@@ -1,5 +1,12 @@
 {
   "model_semantics_version": "2026-07-09.interval-floor-v1",
+  "evidence_moments": {
+    "uyap_win_over_appraisal_mean": 1.0045340442440938,
+    "uyap_win_over_appraisal_sd": 0.3973553580618589,
+    "kap_log_ratio_mean": 0.02408447900576953,
+    "kap_log_ratio_sd": 0.033544638138559166
+  },
+  "context_fingerprint": "d97f72b71bb33a234988ec58d9f003fb8d5ab85997d8e2da212426895d554941",
   "diagnostic": "near_fit_search_stability",
   "design": "cumulative incumbent-preserving (nested candidate pools; global incumbent retained; common Q_ref/tol_ref across budgets)",
   "note": "numerical approximation diagnostic of the reproducible CUMULATIVE search over the bounded theta space — NOT an econometric identification classification. Tolerance rule, SMM moments and bounds are unchanged.",
@@ -15,35 +22,35 @@
     400,
     800
   ],
-  "Q_ref": 0.256921,
-  "tol_ref": 0.06423,
+  "Q_ref": 0.073938,
+  "tol_ref": 0.018485,
   "cumulative_best_objective": [
-    0.634675,
-    0.459062,
-    0.256921
+    0.659968,
+    0.306245,
+    0.073938
   ],
   "cumulative_best_objective_monotone_nonincreasing": true,
   "deterministic_objective_reproducible": true,
   "incumbent_reeval_delta": 0.0,
   "best_theta": {
-    "mu_b": -0.16194435587691663,
-    "sigma_b": 0.23277494108923166,
+    "mu_b": 0.21600585519523346,
+    "sigma_b": 0.3916172281389112,
     "mu_s": 0.4,
     "sigma_s": 0.03,
-    "eta": 0.7075847886176492,
-    "arrival_rate": 4.78001441835257,
-    "tightness_beta": 0.2739637422780489,
+    "eta": 0.06578195092885594,
+    "arrival_rate": 6.243954875518642,
+    "tightness_beta": -0.03601015995288127,
     "kap_shift": -0.4,
-    "auction_shift": 0.13811373108922778,
-    "asking_signal": 1.0
+    "auction_shift": -0.6,
+    "asking_signal": 0.22292981915381926
   },
   "table": [
     {
       "budget": 200,
       "new_candidates_added": 206,
       "cumulative_unique_candidate_count": 206,
-      "cumulative_best_objective": 0.634675,
-      "production_near_fit_count": 2,
+      "cumulative_best_objective": 0.659968,
+      "production_near_fit_count": 1,
       "common_threshold_stability_near_fit_count": 0,
       "common_threshold_param_ranges": {
         "mu_b": [
@@ -107,8 +114,8 @@
       "budget": 400,
       "new_candidates_added": 206,
       "cumulative_unique_candidate_count": 412,
-      "cumulative_best_objective": 0.459062,
-      "production_near_fit_count": 2,
+      "cumulative_best_objective": 0.306245,
+      "production_near_fit_count": 1,
       "common_threshold_stability_near_fit_count": 0,
       "common_threshold_param_ranges": {
         "mu_b": [
@@ -171,18 +178,18 @@
     {
       "budget": 800,
       "new_candidates_added": 406,
-      "cumulative_unique_candidate_count": 817,
-      "cumulative_best_objective": 0.256921,
+      "cumulative_unique_candidate_count": 818,
+      "cumulative_best_objective": 0.073938,
       "production_near_fit_count": 1,
       "common_threshold_stability_near_fit_count": 1,
       "common_threshold_param_ranges": {
         "mu_b": [
-          -0.162,
-          -0.162
+          0.216,
+          0.216
         ],
         "sigma_b": [
-          0.233,
-          0.233
+          0.392,
+          0.392
         ],
         "mu_s": [
           0.4,
@@ -193,47 +200,47 @@
           0.03
         ],
         "eta": [
-          0.708,
-          0.708
+          0.066,
+          0.066
         ],
         "arrival_rate": [
-          4.78,
-          4.78
+          6.244,
+          6.244
         ],
         "tightness_beta": [
-          0.274,
-          0.274
+          -0.036,
+          -0.036
         ],
         "kap_shift": [
           -0.4,
           -0.4
         ],
         "auction_shift": [
-          0.138,
-          0.138
+          -0.6,
+          -0.6
         ],
         "asking_signal": [
-          1.0,
-          1.0
+          0.223,
+          0.223
         ]
       },
       "eta_range": [
-        0.708,
-        0.708
+        0.066,
+        0.066
       ],
       "trading_theta_count": 1,
       "nontrading_theta_count": 0,
-      "central_structural_estimate": 8158404.0,
+      "central_structural_estimate": 10895292.0,
       "between_theta_near_fit_band": [
-        8158404.0,
-        8158404.0
+        10895292.0,
+        10895292.0
       ],
       "structural_sensitivity_range": [
-        7508911.0,
-        9468813.0
+        10431985.0,
+        11432296.0
       ]
     }
   ],
   "near_fit_search_stability": "INSUFFICIENT_COVERAGE",
-  "rule": "cumulative best-objective still improving (44.0% > 10%) — stability judgment premature"
+  "rule": "cumulative best-objective still improving (75.9% > 10%) — stability judgment premature"
 }

@@ -205,6 +205,39 @@ def test_duplicate_candidate_no_duplicate_genuine(tmp_path):
     assert len(json.loads(gp.read_text(encoding="utf-8"))) == 1
 
 
+def test_public_record_alias_blocks_duplicate_admission(tmp_path):
+    gp = tmp_path / "uyap.json"
+    gp.write_text(json.dumps([{
+        "public_record_id": "2026/45 Satış",
+        "public_record_aliases": ["2026/45", "16926063468"],
+    }]), encoding="utf-8")
+    candidate = discover(
+        "Ankara İcra",
+        "2026/45",
+        record_ref="16926063468",
+        store_dir=tmp_path,
+    )
+    for artifact in CASES["CASE3"][0]:
+        import_artifact(
+            candidate,
+            artifact["artifact_type"],
+            text=artifact["text"],
+            store_dir=tmp_path,
+            persist=False,
+        )
+
+    audited = run_audit(candidate, tmp_path, gp)
+    result = admit_candidate(audited, genuine_path=gp, store_dir=tmp_path)
+    stored = store.get_candidate(candidate["candidate_id"], tmp_path)
+
+    assert audited["audit"]["decision"] == DUPLICATE
+    assert result["status"] == "already_admitted"
+    assert result["public_record_id"] == "2026/45 Satış"
+    assert stored["state"] == "admitted"
+    assert stored["admitted_public_record_id"] == "2026/45 Satış"
+    assert len(json.loads(gp.read_text(encoding="utf-8"))) == 1
+
+
 # --------------------------------------------------------------------------- #
 # eksik-kanıt yönlendirmesi
 # --------------------------------------------------------------------------- #

@@ -25,6 +25,28 @@ from .models import (
 INGESTION_BATCH = "UYAP Evidence Ingestion Pipeline V1"
 
 
+def public_record_identity_map(records: list[dict]) -> dict[str, str]:
+    identities: dict[str, str] = {}
+    for record in records:
+        public_id = record.get("public_record_id")
+        if public_id in (None, ""):
+            continue
+        canonical = str(public_id)
+        for identity in [canonical, *(record.get("public_record_aliases") or [])]:
+            if identity in (None, ""):
+                continue
+            key = str(identity)
+            existing = identities.get(key)
+            if existing is not None and existing != canonical:
+                raise ValueError(f"public record identity {key!r} maps to multiple primary records")
+            identities[key] = canonical
+    return identities
+
+
+def known_public_record_ids(records: list[dict]) -> set[str]:
+    return set(public_record_identity_map(records))
+
+
 def _genuine_dir() -> Path:
     from ...structural.datasets import GENUINE_DIR
 
@@ -111,13 +133,14 @@ def admit(candidate: dict, genuine_path: Path | str | None = None, store_dir: Pa
     from .io import atomic_write_json, locked
 
     records = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
-    existing_ids = {str(r.get("public_record_id")) for r in records}
-    if str(public_record_id) in existing_ids:
+    identity_map = public_record_identity_map(records)
+    canonical_id = identity_map.get(str(public_record_id))
+    if canonical_id is not None:
         candidate["state"] = STATE_ADMITTED
-        candidate["admitted_public_record_id"] = public_record_id
-        store.log_event(candidate, "admit_idempotent", f"already present: {public_record_id}")
+        candidate["admitted_public_record_id"] = canonical_id
+        store.log_event(candidate, "admit_idempotent", f"already present: {canonical_id}")
         store.upsert(candidate, store_dir)
-        return {"status": "already_admitted", "public_record_id": public_record_id,
+        return {"status": "already_admitted", "public_record_id": canonical_id,
                 "genuine_uyap_total": len(records)}
 
     if not candidate.get("artifacts"):
@@ -147,9 +170,14 @@ def admit(candidate: dict, genuine_path: Path | str | None = None, store_dir: Pa
 
     with locked(path):
         records = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
-        existing_ids = {str(row.get("public_record_id")) for row in records}
-        if str(rec["public_record_id"]) in existing_ids:
-            return {"status": "already_admitted", "public_record_id": rec["public_record_id"],
+        identity_map = public_record_identity_map(records)
+        canonical_id = identity_map.get(str(rec["public_record_id"]))
+        if canonical_id is not None:
+            candidate["state"] = STATE_ADMITTED
+            candidate["admitted_public_record_id"] = canonical_id
+            store.log_event(candidate, "admit_idempotent", f"already present: {canonical_id}")
+            store.upsert(candidate, store_dir)
+            return {"status": "already_admitted", "public_record_id": canonical_id,
                     "genuine_uyap_total": len(records)}
         records.append(rec)
         atomic_write_json(path, records)

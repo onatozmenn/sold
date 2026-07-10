@@ -4,7 +4,7 @@
 [![Data refresh](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml/badge.svg)](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-743%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-749%20passing-brightgreen.svg)](tests/)
 [![Data](https://img.shields.io/badge/evidence-UYAP%20%C2%B7%20KAP%20%C2%B7%20TCMB%20%C2%B7%20TOK%C4%B0-informational.svg)](#provenance-audited-public-structural-evidence)
 
 > A **mechanism-aware structural econometric prototype** that infers a **structural transaction-price distribution** for a Turkish home from an **asking-price signal** and public economic evidence.
@@ -211,7 +211,7 @@ The **SMM moment vector uses exactly four moments** (two UYAP, two KAP). TOKİ a
 
 1. **Parser / adapter validation** — unit tests confirm each parser maps fields to the schema on **illustrative fixtures**. ✅ done.
 2. **Real-record validation** — the operator downloads one real official record per source, feeds its non-personal fields through the parser, and commits the **manually-audited expected output** (never the raw artifact) under [`validation/`](validation/). Tests then enforce `parser output == audited expectation`. The genuine audited structural seed lives under [`validation/structural/`](validation/structural/) (`source_audited = true`), strictly separate from fixtures.
-3. **Browser-assisted UYAP acquisition** — inside a user-controlled authenticated session, the UYAP pipeline can discover the target record and collect its official native `.udf` artifacts (see below). ✅ **live-proven on the one known pilot record** (`2026/263 Esas`). Broad, unattended, multi-record ingestion across every source remains a **separate evidence-expansion milestone** and is not built.
+3. **Browser-assisted UYAP acquisition** — inside a user-controlled authenticated session, the UYAP pipeline can discover the target record and collect its official native `.udf` artifacts (see below). ✅ Live-proven on the pilot record and a bounded five-record Ankara validation batch. Broad, unattended or continuous ingestion remains out of scope and is not built.
 
 > Level-1 **illustrative fixtures** (e.g. [samples/labels/illustrative_kap.json](samples/labels/illustrative_kap.json)) use invented placeholder values to exercise the parser. Level-2 **genuine audited** records live separately and drive the structural moments. The two tiers are kept strictly separate and never conflated.
 
@@ -244,7 +244,7 @@ sold uyap admit    --candidate-id <id>      # EXPLICIT, idempotent admission to 
 sold uyap status                            # discovered / audited / admissible / admitted
 ```
 
-> **Live status: live-proven on one known verification record.** UYAP Live Browser Pilot 1 reached **`PASS`** on the real **2026/263 Esas** record through a user-controlled Chrome/CDP session. The collector obtained the official auction-result and sale-notice **native `.udf`** artifacts from their exact DocumentRows, validated each ZIP container, parsed `content.xml` deterministically, extracted the required fields, reconciled the asset, and reproduced the manually audited completed-sale decision, all while leaving `uyap.json` byte-unchanged. This proves **interoperability for the known pilot record only**. It is **not** an official API, does **not** automate authentication, is **not** unattended continuous ingestion, and does **not** prove universal coverage of every UYAP document or layout; broad multi-record expansion remains a separate milestone. The **automated test suite still requires no network**; the live pilot is an operator-run verification, not a CI test.
+> **Live status.** UYAP Live Browser Pilot 1 reached **`PASS`** on the real **2026/263 Esas** record. A later bounded Ankara batch (`2026-06-18..2026-06-24`) collected five terminal-sale cards through native UDF artifacts: two new records were explicitly admitted, two were identified as existing observations (one primary ID and one alias), and one remains blocked for human review. This is **not** an official API, does **not** automate authentication, is **not** unattended continuous ingestion, and does **not** prove universal layout coverage. The automated test suite remains fully offline.
 
 ### UYAP Live Browser Pilot 1 (live verification)
 
@@ -260,7 +260,7 @@ A **non-mutating verification** workflow that checks, end to end, whether the pi
 | `alacaga_mahsuben` / `kdv_rate` | `true` / `20.0` |
 | same-asset reconciliation | `reconciled` (ada, parsel, floor, section_no) |
 | audit | `ADMISSIBLE_COMPLETED_SALE` |
-| mutation guard | `uyap.json` SHA256 unchanged during the live pilot; the subsequently expanded genuine set now contains 18 records |
+| mutation guard | `uyap.json` SHA256 unchanged during the live pilot; the subsequently expanded genuine set now contains 20 records |
 
 No OCR, ML, weak supervision, or known-truth injection is used at any stage; no e-Devlet login, MFA, or CAPTCHA is automated; no credentials, cookies, tokens, or browser profiles are committed; and the pilot never calls `admit`. This is **one** live PASS on **one** known record: it demonstrates interoperability for that record, not production readiness or universal UYAP compatibility.
 
@@ -458,7 +458,7 @@ tests/               # offline unit / end-to-end tests
 ## Testing
 
 ```bash
-pytest -q             # 743 tests, fully offline (no network or API key required)
+pytest -q             # 749 tests, fully offline (no network or API key required)
 ```
 
 The automated suite is fully offline. The **UYAP live browser pilot is a separate, operator-run verification** (a real user-controlled session against the live site) and is **not** part of the offline CI suite.
@@ -480,11 +480,11 @@ The methodology is a **structural econometric** one; the following foundations d
 
 ## Roadmap
 
-The structural and prediction-semantics core is frozen. After the first single-record live UYAP verification (`PASS` on `2026/263 Esas`), the next work is a **bounded, reviewed evidence-expansion sequence** and its structural re-audit, not unattended ingestion.
+The structural and prediction-semantics core is frozen. One bounded, reviewed evidence-expansion batch and its structural re-audit are complete; future work remains bounded and explicitly reviewed, never unattended ingestion.
 
-- [ ] Run a **bounded, non-mutating multi-record UYAP validation batch** through the live-proven browser / native-UDF path, and measure target-card and document-discovery coverage, supported native-UDF layout coverage, document-type corroboration outcomes, deterministic extraction success, same-asset reconciliation outcomes, completed-sale audit decisions, and the exact blocking reasons (not continuous ingestion, not bulk scraping, not a production-readiness claim)
-- [ ] Human-review the resulting UYAP candidates and **explicitly admit** only fully provenance-complete `ADMISSIBLE_COMPLETED_SALE` records through the existing admission workflow (audit is not admission; the browser pilot never writes `uyap.json` itself)
-- [ ] Expand the genuine, provenance-audited **UYAP completed-sale auction** evidence set
+- [x] Run a bounded five-record UYAP validation batch through the live browser/native-UDF path and preserve exact blocking reasons
+- [x] Review the batch and explicitly admit only the two fully reconciled new records; keep unresolved records blocked and one alias as `DUPLICATE`
+- [x] Expand genuine UYAP completed-sale evidence from 18 to 20 records and regenerate moments/snapshots
 - [ ] Expand the genuine **KAP negotiated-disposal** evidence set (manual audit; KAP does not use the UYAP browser / native-UDF path)
 - [ ] Recompute the observed four-moment SMM vector, Jacobian diagnostics (rank, singular values, condition, weak directions), and `Theta_A` after each **explicit evidence-admission batch** (more records do not automatically raise `rank(J)`; the fit stays `STRUCTURALLY_UNDERIDENTIFIED` unless the diagnostics actually change)
 - [ ] Increase the bounded search budget until `near_fit_search_stability` no longer reports `INSUFFICIENT_COVERAGE`, and re-audit it after every admission batch

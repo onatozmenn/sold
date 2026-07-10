@@ -62,7 +62,13 @@ def _require_audited(records: list[dict], source: str, path: Path) -> list[dict]
         )
 
     if source == "uyap":
-        identities = [str(r.get("public_record_id") or "").strip() for r in audited]
+        primary_identities = [str(r.get("public_record_id") or "").strip() for r in audited]
+        identities = []
+        for record, primary_identity in zip(audited, primary_identities):
+            identities.append(primary_identity)
+            identities.extend(
+                str(alias).strip() for alias in (record.get("public_record_aliases") or [])
+            )
     elif source == "kap":
         identities = [str(r.get("official_record_id") or "").strip() for r in audited]
     else:

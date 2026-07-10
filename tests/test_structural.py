@@ -9,6 +9,7 @@ tahminci (asking = sinyal, tavan değil).
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -458,8 +459,8 @@ def test_predictor_identified_mode_labeling():
 # --- GERÇEK denetlenmiş yapısal veri kümesi (Level-2 türevi) ---------------- #
 def test_genuine_datasets_load_and_reconcile_with_level2():
     g = load_genuine_datasets()
-    # UYAP: 18 denetlenmiş tamamlanmış-satış (2 Level-2 + Batch-1'in 5'i + Ankara 2026-06 toplu 11); hepsi satılan
-    assert len(g["uyap"]) == 18
+    # UYAP: 20 denetlenmiş tamamlanmış-satış; hepsi satılan
+    assert len(g["uyap"]) == 20
     a = g["uyap"].set_index("public_record_id")
     a0 = a.loc["16766356960"]
     assert a0["appraised_value"] == 4_500_000  # doğrulanmış reference_price (Q)
@@ -492,12 +493,46 @@ def test_genuine_datasets_load_and_reconcile_with_level2():
     assert g["toki_result"]["revision_detected"] is False
 
 
+def test_genuine_uyap_primary_ids_and_aliases_are_globally_unique(tmp_path):
+    import json
+    from sold.structural.datasets import StructuralEvidenceError
+
+    source = Path("validation/structural")
+    for filename in ("kap.json", "toki.json"):
+        (tmp_path / filename).write_bytes((source / filename).read_bytes())
+    duplicate_alias = [
+        {
+            "public_record_id": "A",
+            "public_record_aliases": ["B"],
+            "appraised_value": 100,
+            "sold": True,
+            "outcome_status": "Satıldı",
+            "winning_bid": 90,
+            "source_audited": True,
+        },
+        {
+            "public_record_id": "B",
+            "appraised_value": 100,
+            "sold": True,
+            "outcome_status": "Satıldı",
+            "winning_bid": 90,
+            "source_audited": True,
+        },
+    ]
+    (tmp_path / "uyap.json").write_text(
+        json.dumps(duplicate_alias, ensure_ascii=False), encoding="utf-8"
+    )
+
+    with pytest.raises(StructuralEvidenceError, match="duplicate identities"):
+        load_genuine_datasets(tmp_path)
+
+
 def test_uyap_evidence_expansion_batch1_admitted():
     """UYAP Evidence Expansion Batch 1: 5 denetlenmiş tamamlanmış-satış açık artırma admitte;
     win/Q = resmî İhale Bedeli / denetlenmiş ekspertiz (Ödenmesi Gereken Bedel DEĞİL)."""
     g = load_genuine_datasets()
     a = g["uyap"].set_index("public_record_id")
-    assert len(g["uyap"]) == 18 and bool(g["uyap"]["sold"].all())  # 2 Level-2 + 5 Batch-1 + 11 Ankara toplu; hepsi satılan
+    assert len(g["uyap"]) == 20 and bool(g["uyap"]["sold"].all())
     expected = {
         "2026/43 Satış": (4_238_000, 4_400_000),
         "2026/89 Satış": (3_025_000, 3_000_000),   # >1 (asking üstü); P/Q yönü FİLTRELENMEZ
@@ -534,14 +569,14 @@ def test_uyap_batch1_excluded_non_terminal_not_admitted():
     assert len(exc) == 1 and exc[0]["audit_status"] == "EXCLUDED_NON_TERMINAL"
     assert exc[0]["enters_genuine_uyap"] is False and exc[0]["enters_smm"] is False
     st = dataset_status()
-    assert st["genuine"]["uyap"]["sold"] == 18  # dışlanan kayıt genuine sayımı ETKİLEMEZ
+    assert st["genuine"]["uyap"]["sold"] == 20  # dışlanan kayıt genuine sayımı ETKİLEMEZ
     assert any(x["file"] == "2026/316 Talimat" for x in st["uyap_excluded_candidates"])
 
 
 def test_dataset_status_genuine_counts():
     st = dataset_status()
     g = st["genuine"]
-    assert g["uyap"]["total_audited_auctions"] == 18 and g["uyap"]["sold"] == 18 and g["uyap"]["unsold"] == 0
+    assert g["uyap"]["total_audited_auctions"] == 20 and g["uyap"]["sold"] == 20 and g["uyap"]["unsold"] == 0
     assert g["uyap"]["exact_legal_floors_observed"] == 0  # tüm tabanlar kısmî (claims/costs yok)
     assert g["kap"]["audited_eligible_disposals"] == 2
     assert g["kap"]["negotiated_calibration_observations"] == 2
@@ -958,7 +993,7 @@ def test_genuine_uyap_records_completed_sale_class():
         assert bool(a.loc[pid]["sold"]) is True
     # dataset_status: tüm genuine tamamlanmış satış, 0 censored, 0 gerçek no-trade
     st = dataset_status()["genuine"]["uyap"]
-    assert st["sold"] == 18 and st["censored_outcomes"] == 0 and st["genuine_no_trade"] == 0
+    assert st["sold"] == 20 and st["censored_outcomes"] == 0 and st["genuine_no_trade"] == 0
 
 
 def test_partial_legal_floors_are_interval_censored_in_context():

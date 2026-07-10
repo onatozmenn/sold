@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,6 +11,20 @@ from fastapi.testclient import TestClient
 from sold.api.app import app
 
 client = TestClient(app)
+
+
+def test_structural_context_fingerprint_matches_packaged_evidence():
+    import sold.api.structural_product as sp
+    from sold.structural import build_observed_moments, context_from_datasets, load_genuine_datasets
+
+    fingerprints = []
+    for directory in (Path("validation/structural"), Path("src/sold/evidence")):
+        genuine = load_genuine_datasets(directory)
+        built = build_observed_moments(genuine["uyap"], genuine["kap"], genuine["toki_result"])
+        context = context_from_datasets(genuine["uyap"], genuine["kap"])
+        fingerprints.append(sp.structural_context_fingerprint(genuine, built, context))
+
+    assert fingerprints[0] == fingerprints[1]
 
 
 def test_health():
@@ -236,7 +251,7 @@ def structural_ready():
 
 def test_structural_evidence_reports_genuine_counts(structural_ready):
     d = client.get("/structural/evidence").json()
-    assert d["genuine_uyap_observations"] == 18
+    assert d["genuine_uyap_observations"] == 20
     assert d["genuine_kap_observations"] == 2
     assert d["toki_external_moments"] == 5
     assert set(d["smm_moments_used"]) == {
@@ -326,6 +341,21 @@ def test_structural_valuate_does_not_run_request_time_near_fit_search(structural
     )
 
 
+def test_structural_near_fit_snapshot_rejects_stale_context(tmp_path, monkeypatch):
+    import sold.api.structural_product as sp
+
+    snapshot = json.loads(sp.NEAR_FIT_SNAPSHOT.read_text(encoding="utf-8"))
+    snapshot["context_fingerprint"] = "0" * 64
+    stale_path = tmp_path / "near_fit.json"
+    stale_path.write_text(json.dumps(snapshot), encoding="utf-8")
+    monkeypatch.setattr(sp, "NEAR_FIT_SNAPSHOT", stale_path)
+    sp.reset_near_fit_cache()
+
+    with pytest.raises(RuntimeError, match="context is stale"):
+        sp._near_fit()
+    sp.reset_near_fit_cache()
+
+
 def test_structural_valuate_supports_all_official_provinces_and_rejects_unsupported_fields(structural_ready):
     supported = client.post("/structural/valuate", json={
         "asking_price": 5_000_000,
@@ -375,6 +405,32 @@ def test_structural_stability_endpoint_uses_precomputed_snapshot(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["near_fit_search_stability"] == "INSUFFICIENT_COVERAGE"
+
+
+def test_structural_stability_snapshot_rejects_stale_evidence(tmp_path, monkeypatch):
+    import sold.api.structural_product as sp
+
+    snapshot = json.loads(sp.STABILITY_SNAPSHOT.read_text(encoding="utf-8"))
+    snapshot["evidence_moments"]["uyap_win_over_appraisal_mean"] += 0.1
+    stale_path = tmp_path / "stability.json"
+    stale_path.write_text(json.dumps(snapshot), encoding="utf-8")
+    monkeypatch.setattr(sp, "STABILITY_SNAPSHOT", stale_path)
+
+    with pytest.raises(RuntimeError, match="stale for the current evidence"):
+        sp.stability_snapshot()
+
+
+def test_structural_stability_snapshot_rejects_stale_context(tmp_path, monkeypatch):
+    import sold.api.structural_product as sp
+
+    snapshot = json.loads(sp.STABILITY_SNAPSHOT.read_text(encoding="utf-8"))
+    snapshot["context_fingerprint"] = "0" * 64
+    stale_path = tmp_path / "stability.json"
+    stale_path.write_text(json.dumps(snapshot), encoding="utf-8")
+    monkeypatch.setattr(sp, "STABILITY_SNAPSHOT", stale_path)
+
+    with pytest.raises(RuntimeError, match="context is stale"):
+        sp.stability_snapshot()
 
 
 def test_structural_index_page_action_wording(structural_ready):

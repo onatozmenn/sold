@@ -894,3 +894,19 @@ Validation after the remediation: **743 passed** in one complete offline run. Th
 contains 18 UYAP completed sales, 2 KAP negotiated disposals and 3 TOKI disclosures. The remaining
 `INSUFFICIENT_COVERAGE` status is an explicit numerical-search limitation, not an unresolved software
 failure or an identification claim.
+
+## 2026-07-10 — Bounded authenticated UYAP evidence expansion
+
+Using a user-controlled, manually authenticated Chrome/CDP session, the bounded Ankara history window
+`2026-06-18..2026-06-24` was diagnosed and processed without automated login or admission-by-parser. Five
+terminal `Satıldı` cards were collected through native UDF artifacts with full SHA-256 provenance. Two new,
+fully reconciled records were explicitly admitted: KAYIT NO `16865371932` (`P=4,130,000`, `Q=6,000,000`) and
+`16862189735` (`P=2,548,340`, `Q=2,964,000`). KAYIT NO `16766356960` was recognized as an existing primary
+record and `16926063468` as an alias of existing `2026/45 Satış`; both were persisted as `DUPLICATE`, with no
+second observation created. KAYIT NO `16766356966` remains `PENDING_REVIEW` because the available documents
+did not establish the strengthened same-asset identity rule.
+The genuine UYAP set increased from 18 to 20 only after explicit admission.
+The packaged evidence, four-moment fingerprint, interval-floor-v1 near-fit snapshot and identification/
+stability diagnostics were then regenerated. The refreshed production snapshot contains 27 admissible
+configurations; identification remains `rank(J)=4 < dim(theta)=10`, and bounded search coverage remains
+`INSUFFICIENT_COVERAGE`. Post-expansion offline validation: **749 passed**.

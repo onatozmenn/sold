@@ -61,12 +61,13 @@ def run_extract(candidate: dict, store_dir: Path | str | None = None) -> dict:
 
 
 def _genuine_ids(genuine_path: Path | str | None) -> set[str]:
+    from .admit import known_public_record_ids
     from ...structural.datasets import GENUINE_DIR
 
     path = Path(genuine_path) if genuine_path else GENUINE_DIR / "uyap.json"
     if not path.exists():
         return set()
-    return {str(r.get("public_record_id")) for r in json.loads(path.read_text(encoding="utf-8"))}
+    return known_public_record_ids(json.loads(path.read_text(encoding="utf-8")))
 
 
 def run_audit(
@@ -82,7 +83,14 @@ def run_audit(
     audit = audit_candidate(ev, rec)
 
     # DUPLICATE: dosya zaten genuine uyap.json'da admitte edilmişse (idempotent, hata değil).
-    if str(candidate.get("file_id")) in _genuine_ids(genuine_path):
+    candidate_ids = {
+        str(value) for value in (
+            candidate.get("file_id"),
+            candidate.get("kayit_no"),
+            (candidate.get("bulk") or {}).get("kayit_no"),
+        ) if value not in (None, "")
+    }
+    if candidate_ids & _genuine_ids(genuine_path):
         audit.decision = DUPLICATE
         audit.blocking_reasons.append("public_record_id already admitted as a genuine UYAP observation")
 
