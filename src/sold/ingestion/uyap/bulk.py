@@ -1,14 +1,15 @@
 """UYAP TOPLU (bulk) keşif + iterasyon katmanı — ÇALIŞAN tek-açık-artırma yolunun ETRAFINDA.
 
-Bu katman YENİ bir kazıyıcı/parser DEĞİLdir. Canlı-kanıtlanmış tek-kayıt edinim yolunu
-(``find_target_record_card`` → "İhale Evrak Listesi" modalı → satır → native UDF) ve mevcut
-``extract → reconcile → audit`` boru hattını YENİDEN KULLANIR. Yeni bir izin-gevşek toplu
-admisyon yolu KURMAZ (admisyon, açık insan adımı ``sold uyap admit`` OLARAK KALIR). Yapısal
-ekonometrik çekirdeği DEĞİŞTİRMEZ.
+Bu katman gözlenen geçmiş-ilan JSON yanıtını yalnız keşif metaverisine uyarlar. Canlı-kanıtlanmış
+tek-kayıt edinim yolunu (``find_target_record_card`` → "İhale Evrak Listesi" modalı → satır →
+native UDF) ve mevcut ``extract → reconcile → audit`` boru hattını YENİDEN KULLANIR. Yeni bir
+izin-gevşek toplu admisyon yolu KURMAZ (admisyon, açık insan adımı ``sold uyap admit`` OLARAK
+KALIR). Yapısal ekonometrik çekirdeği DEĞİŞTİRMEZ.
 
 Güvenlik duruşu: kullanıcı Chrome'a ELLE oturum açar; toplayıcı yalnızca CDP ile BAĞLANIR.
-Hiçbir parola/MFA/CAPTCHA otomatikleştirilmez, hiçbir erişim kontrolü aşılmaz. Kaynağa karşı
-davranış SERİ ve TUTUCUdur (paralel sel YOK). Tüm durum gitignored ``data/ingestion`` altındadır.
+Hiçbir parola/MFA/CAPTCHA otomatikleştirilmez, hiçbir erişim kontrolü aşılmaz. Keşif, gözlenen
+same-origin JSON uç noktasını sınırlı eşzamanlılıkla kullanır; belge edinimi SERİ kalır. Tüm durum
+gitignored ``data/ingestion`` altındadır.
 
 Kapsam: yalnızca ``Taşınmaz`` kategorisi; görünür UYAP durumu POZİTİF olarak ``Satıldı`` olan
 açık artırmalar edinim hedefidir. Fiyat/İncele/eksik-metin ASLA "satıldı" çıkarımı için kullanılmaz.
@@ -44,12 +45,14 @@ from .models import (
 from .pipeline import run_audit, run_extract
 
 CATEGORY_TASINMAZ = "Taşınmaz"
+CATEGORY_TASINMAZ_ID = "1"
 MAX_WINDOW_DAYS = 7          # UYAP: "Tarih aralığı en fazla 1 hafta olabilir."
 DEFAULT_PER_PAGE = 20
 RESULT_SPLIT_THRESHOLD = 200
 BULK_STATE_FILE = "bulk_state.json"
 PHASE_DISCOVERY = "discovery"
 PHASE_ACQUISITION = "acquisition"
+HISTORY_ENDPOINT_PATH = "/pp/gecmisIhaleler_brd.ajx"
 
 UYAP_PROVINCES = (
     "ADANA", "ADIYAMAN", "AFYONKARAHİSAR", "AĞRI", "AMASYA", "ANKARA", "ANTALYA",
@@ -84,6 +87,14 @@ _STATUS_PHRASES = (
     "Malın Satışının Düşmesi",
     "Satışın Düşmesi",
 )
+
+_HISTORY_STATUS_LABELS = {
+    "0": "Satıldı",
+    "1": "Birinci Alıcıya Süre Verildi",
+    "2": "İkinci Alıcıya Süre Verildi",
+    "3": "Satış Düştü",
+    "4": "Alacağa Mahsuben",
+}
 
 # Oturum-kaybı / yeniden-yönlendirme kanıtı (giriş sayfası ≠ sıfır sonuç).
 _LOGIN_TOKENS = (
@@ -642,6 +653,132 @@ def result_payload_evidence(payload: object) -> dict | None:
         "result_count": result_count,
         "zero": bool(zero or result_count == 0),
     }
+
+
+def history_request_payload(
+    province_code: object,
+    window: dict,
+    page_number: int = 1,
+) -> dict[str, str]:
+    """Build the observed UYAP history POST body for one Taşınmaz result page."""
+    code = str(province_code or "").strip()
+    if not code:
+        raise ValueError("province_code is required")
+    if page_number < 1:
+        raise ValueError("page_number must be >= 1")
+    return {
+        "kategori": CATEGORY_TASINMAZ_ID,
+        "ihaleBaslangicZamani": format_uyap_ui_date(window["start"]),
+        "ihaleBitisZamani": format_uyap_ui_date(window["end"]),
+        "isPilotMu": "false",
+        "pageNumber": str(page_number),
+        "birimId": "",
+        "ilKodu": code,
+        "dosyaYil": "",
+        "dosyaSiraNo": "",
+    }
+
+
+def parse_history_response(payload: object, expected_page: int | None = None) -> dict:
+    """Validate the observed ``[rows, page-size, total, current-page]`` response."""
+    if isinstance(payload, str):
+        try:
+            decoded = json.loads(payload)
+        except Exception as exc:
+            raise ValueError("history response is not valid JSON") from exc
+    else:
+        decoded = payload
+    if not isinstance(decoded, list) or len(decoded) < 4 or not isinstance(decoded[0], list):
+        raise ValueError("history response shape is invalid")
+
+    def integer(value: object, field: str) -> int:
+        if isinstance(value, bool):
+            raise ValueError(f"history response {field} is invalid")
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"history response {field} is invalid") from exc
+
+    rows = decoded[0]
+    returned_page_size = integer(decoded[1], "page_size")
+    raw_result_count = integer(decoded[2], "result_count")
+    current_page = integer(decoded[3], "current_page")
+    if returned_page_size < 0 or raw_result_count < -1:
+        raise ValueError("history response count metadata is invalid")
+    if raw_result_count == -1 and current_page == 1:
+        raise ValueError("history response first page lacks a result count")
+    result_count = None if raw_result_count == -1 else raw_result_count
+    if current_page < 1 or (expected_page is not None and current_page != expected_page):
+        raise ValueError("history response current_page does not match the request")
+    if any(not isinstance(row, dict) for row in rows):
+        raise ValueError("history response contains a non-object row")
+
+    per_page = max(DEFAULT_PER_PAGE, returned_page_size)
+    total_pages = (
+        (result_count + per_page - 1) // per_page
+        if result_count is not None and result_count > 0 else 0
+    )
+    if len(rows) > per_page or (result_count is not None and len(rows) > result_count):
+        raise ValueError("history response row count is inconsistent")
+    if result_count and current_page > total_pages:
+        raise ValueError("history response current_page exceeds total pages")
+    return {
+        "rows": rows,
+        "returned_page_size": returned_page_size,
+        "result_count": result_count,
+        "current_page": current_page,
+        "per_page": per_page,
+        "total_pages": total_pages,
+    }
+
+
+def history_rows_to_cards(rows: list[dict]) -> list[dict]:
+    """Convert structured history rows using the portal renderer's status mapping."""
+    cards = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("history row must be an object")
+        kayit_no = str(row.get("kayitID") or "").strip()
+        file_id = _card_file_id(str(row.get("dosyaNoTurKod") or ""))
+        institution = str(row.get("birimAdi") or "").strip()
+        if not kayit_no or not file_id or not institution:
+            raise ValueError("history row lacks stable candidate identity")
+        raw_status = row.get("satisDurumu")
+        status_code = str(raw_status).strip() if raw_status is not None else None
+        status_raw = _HISTORY_STATUS_LABELS.get(status_code)
+        classified = classify_card_status(status_raw or "")
+        cards.append({
+            "kayit_no": kayit_no,
+            "file_id": file_id,
+            "institution_text": institution,
+            "source_status_raw": status_raw,
+            "category": classified["category"],
+            "sold": status_code == "0",
+            "card_html": None,
+            "card_text": " ".join(
+                value for value in (institution, file_id, kayit_no, status_raw) if value
+            ),
+        })
+    return cards
+
+
+def history_province_codes(options: object) -> dict[str, str]:
+    """Map native ``#historySearchIller`` option labels to canonical provinces."""
+    if not isinstance(options, list):
+        raise ValueError("province options must be a list")
+    canonical = {_fold(province): province for province in UYAP_PROVINCES}
+    result: dict[str, str] = {}
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        province = canonical.get(_fold(option.get("label")).strip())
+        code = str(option.get("value") or "").strip()
+        if not province or not code:
+            continue
+        if province in result and result[province] != code:
+            raise ValueError(f"conflicting province code for {province}")
+        result[province] = code
+    return result
 
 
 def dom_matches_result_evidence(html: object, evidence: dict) -> bool:
@@ -1719,13 +1856,14 @@ def summarize_candidates(store_dir: Path | str | None = None) -> dict:
 # 10) Canlı orkestratör (KULLANICI-KONTROLLÜ oturuma CDP ile bağlanır).
 # --------------------------------------------------------------------------- #
 class UyapBulkCollector:
-    """UYAP "Geçmiş İlanlar" için SERİ, kontrol-noktalı toplu orkestratör.
+    """UYAP "Geçmiş İlanlar" için kontrol-noktalı toplu orkestratör.
 
     Kimlik doğrulama OTOMATİKLEŞTİRİLMEZ: kullanıcı Chrome'u ``--remote-debugging-port`` ile
     başlatıp ELLE oturum açar ve ``e-Satış → İhaleler → Geçmiş İlanlar`` sayfasına gelir; bu sınıf
-    yalnızca CDP ile BAĞLANIR. Kaynağa karşı davranış seri/tutucudur. Her satılan açık artırma,
-    çalışan tek-kayıt edinim yoluna (``BrowserCollector._collect_documents``) ve mevcut
-    ``extract/audit`` boru hattına beslenir; ADMİSYON YAPILMAZ.
+    yalnızca CDP ile BAĞLANIR. Keşif istekleri sınırlı bir same-origin havuzunda yürütülebilir;
+    her satılan açık artırmanın belge edinimi çalışan seri tek-kayıt yoluna
+    (``BrowserCollector._collect_documents``) ve mevcut ``extract/audit`` boru hattına beslenir;
+    ADMİSYON YAPILMAZ.
     """
 
     def __init__(
@@ -1884,6 +2022,467 @@ class UyapBulkCollector:
                 "post_click_area": summarize_document_area(page.content()),
                 "document_modal_skeleton": document_modal_skeleton(page.content()),
             }
+
+    def _history_province_codes(self, page) -> dict[str, str]:  # pragma: no cover - canlı DOM
+        options = page.evaluate(
+            """() => [...document.querySelectorAll('#historySearchIller option')]
+                .map(option => ({label: (option.textContent || '').trim(), value: option.value || ''}))"""
+        )
+        return history_province_codes(options)
+
+    def _fetch_history_windows(
+        self,
+        page,
+        jobs: list[dict],
+        concurrency: int,
+    ) -> list[dict]:  # pragma: no cover - canlı ağ
+        if not jobs:
+            return []
+        return page.evaluate(
+            """async ({jobs, concurrency, endpoint, timeoutMs, threshold, defaultPerPage}) => {
+                const output = new Array(jobs.length);
+                let cursor = 0;
+
+                async function fetchPage(job, pageNumber) {
+                    let last = null;
+                    for (let attempt = 1; attempt <= 2; attempt += 1) {
+                        const controller = new AbortController();
+                        const timer = setTimeout(() => controller.abort(), timeoutMs);
+                        try {
+                            const payload = {...job.payload, pageNumber: String(pageNumber)};
+                            const response = await fetch(endpoint, {
+                                method: 'POST',
+                                credentials: 'same-origin',
+                                headers: {
+                                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                                    'X-Requested-With': 'XMLHttpRequest'
+                                },
+                                body: new URLSearchParams(payload),
+                                signal: controller.signal
+                            });
+                            const body = await response.text();
+                            last = {
+                                page: pageNumber,
+                                ok: response.ok,
+                                status: response.status,
+                                url: response.url,
+                                body,
+                                attempts: attempt,
+                                error: null
+                            };
+                            if (response.ok || response.status === 401 || response.status === 403) {
+                                return last;
+                            }
+                        } catch (error) {
+                            last = {
+                                page: pageNumber,
+                                ok: false,
+                                status: 0,
+                                url: endpoint,
+                                body: '',
+                                attempts: attempt,
+                                error: String(error && error.message || error)
+                            };
+                        } finally {
+                            clearTimeout(timer);
+                        }
+                    }
+                    return last;
+                }
+
+                async function worker() {
+                    while (true) {
+                        const index = cursor++;
+                        if (index >= jobs.length) return;
+                        const job = jobs[index];
+                        const item = {id: job.id, responses: []};
+                        const first = await fetchPage(job, 1);
+                        item.responses.push(first);
+                        if (first && first.ok) {
+                            try {
+                                const decoded = JSON.parse(first.body);
+                                const returned = Number(decoded && decoded[1]);
+                                const total = Number(decoded && decoded[2]);
+                                const perPage = Math.max(defaultPerPage, Number.isFinite(returned) ? returned : 0);
+                                let totalPages = total > 0 ? Math.ceil(total / perPage) : 0;
+                                if (Number.isFinite(total) && !(job.canSplit && total >= threshold)) {
+                                    if (total >= threshold) {
+                                        totalPages = Math.min(totalPages, Math.ceil(threshold / perPage));
+                                    }
+                                    for (let pageNumber = 2; pageNumber <= totalPages; pageNumber += 1) {
+                                        const response = await fetchPage(job, pageNumber);
+                                        item.responses.push(response);
+                                        if (!response || !response.ok) break;
+                                    }
+                                }
+                            } catch (_) {
+                                // Python validates the full response and records a fail-closed checkpoint.
+                            }
+                        }
+                        output[index] = item;
+                    }
+                }
+
+                const workerCount = Math.min(Math.max(1, concurrency), jobs.length);
+                await Promise.all(Array.from({length: workerCount}, () => worker()));
+                return output;
+            }""",
+            {
+                "jobs": jobs,
+                "concurrency": concurrency,
+                "endpoint": HISTORY_ENDPOINT_PATH,
+                "timeoutMs": self.result_timeout_ms,
+                "threshold": RESULT_SPLIT_THRESHOLD,
+                "defaultPerPage": DEFAULT_PER_PAGE,
+            },
+        )
+
+    @staticmethod
+    def _fast_summary(tasks: list[dict], concurrency: int) -> dict:
+        provinces = list(dict.fromkeys(task["province"] for task in tasks))
+        starts = [task["start"] for task in tasks]
+        ends = [task["end"] for task in tasks]
+        return {
+            "category": CATEGORY_TASINMAZ,
+            "province": f"{len(provinces)} il",
+            "date_from": min(starts) if starts else None,
+            "date_to": max(ends) if ends else None,
+            "windows_total": len(tasks),
+            "windows_processed": 0,
+            "result_cards_inspected": 0,
+            "sold_discovered": 0,
+            "sold_skipped_known": 0,
+            "acquisitions_completed": 0,
+            "acquisition_failures": 0,
+            "records_processed": 0,
+            "audit_decisions": {},
+            "session_interruptions": 0,
+            "stopped_reason": None,
+            "dry_run": False,
+            "discovery_only": True,
+            "phase": PHASE_DISCOVERY,
+            "newest_first": True,
+            "dense_windows_split": 0,
+            "saturated_windows_unresolved": 0,
+            "result_refresh_failures": 0,
+            "acquisition_windows_incomplete": 0,
+            "discovery_windows_incomplete": 0,
+            "request_count": 0,
+            "concurrency": concurrency,
+        }
+
+    def _run_fast_discovery_tasks(
+        self,
+        page,
+        tasks: list[dict],
+        province_codes: dict[str, str],
+        concurrency: int,
+        force: bool = False,
+    ) -> dict:
+        summary = self._fast_summary(tasks, concurrency)
+        state = load_bulk_state(self.store_dir)
+        pending = [dict(task) for task in tasks]
+        source_page_ref = self._safe_ref(page.url)
+
+        def mark_failure(rec: dict, status: str, detail: str) -> None:
+            rec["status"] = status
+            rec["last_fast_error"] = detail
+            rec["pages_completed"] = []
+            upsert_window_record(state, rec)
+            save_bulk_state(state, self.store_dir)
+            summary["discovery_windows_incomplete"] += 1
+            summary["result_refresh_failures"] += 1
+
+        while pending and summary["stopped_reason"] != "SESSION_EXPIRED":
+            current, pending = pending, []
+            jobs = []
+            records: dict[str, tuple[dict, dict]] = {}
+            for task in current:
+                province = canonicalize_province_label(task.get("province"))
+                if not province or province not in province_codes:
+                    rec = new_window_record(
+                        str(task.get("province") or ""), task["start"], task["end"],
+                        PHASE_DISCOVERY,
+                    )
+                    mark_failure(rec, "PROVINCE_CODE_UNAVAILABLE", "province code unavailable")
+                    continue
+                task["province"] = province
+                rec = get_window_record(
+                    state, province, task["start"], task["end"], PHASE_DISCOVERY
+                )
+                if rec and rec.get("status") == "COMPLETE" and not force:
+                    continue
+                if rec and rec.get("status") == "SPLIT" and not force:
+                    children = prioritize_pending_windows(
+                        state, province, split_date_window(task), PHASE_DISCOVERY
+                    )
+                    pending.extend({**task, **child} for child in reversed(children))
+                    summary["windows_total"] += len(children)
+                    continue
+                rec = new_window_record(
+                    province, task["start"], task["end"], PHASE_DISCOVERY
+                )
+                rec["transport"] = "authenticated_same_origin_fetch"
+                rec["endpoint_path"] = HISTORY_ENDPOINT_PATH
+                upsert_window_record(state, rec)
+                request_id = rec["key"]
+                records[request_id] = (task, rec)
+                jobs.append({
+                    "id": request_id,
+                    "payload": history_request_payload(province_codes[province], task),
+                    "canSplit": bool(split_date_window(task)),
+                })
+            if not jobs:
+                continue
+            save_bulk_state(state, self.store_dir)
+            try:
+                fetched = self._fetch_history_windows(page, jobs, concurrency)
+            except Exception as exc:
+                for _, rec in records.values():
+                    mark_failure(rec, "FAST_REQUEST_FAILED", type(exc).__name__)
+                continue
+            fetched_by_id = {
+                str(item.get("id")): item
+                for item in (fetched or [])
+                if isinstance(item, dict) and item.get("id") is not None
+            }
+
+            for request_id, (task, rec) in records.items():
+                summary["windows_processed"] += 1
+                item = fetched_by_id.get(request_id)
+                responses = item.get("responses") if isinstance(item, dict) else None
+                if not isinstance(responses, list) or not responses:
+                    mark_failure(rec, "FAST_REQUEST_FAILED", "missing endpoint response")
+                    continue
+                summary["request_count"] += sum(
+                    int(response.get("attempts") or 1)
+                    for response in responses if isinstance(response, dict)
+                )
+                first = responses[0] if isinstance(responses[0], dict) else {}
+                if not first.get("ok"):
+                    expired = int(first.get("status") or 0) in (401, 403)
+                    if not expired and first.get("body"):
+                        expired = detect_session_expiration(
+                            first["body"], first.get("url")
+                        )["expired"]
+                    status = "SESSION_EXPIRED" if expired else "FAST_REQUEST_FAILED"
+                    mark_failure(
+                        rec, status,
+                        f"HTTP {first.get('status') or 0}: {first.get('error') or 'request failed'}",
+                    )
+                    if expired:
+                        summary["stopped_reason"] = "SESSION_EXPIRED"
+                        summary["session_interruptions"] += 1
+                    continue
+                try:
+                    first_meta = parse_history_response(first.get("body"), expected_page=1)
+                except ValueError as exc:
+                    expired = detect_session_expiration(
+                        first.get("body"), first.get("url")
+                    )["expired"]
+                    status = "SESSION_EXPIRED" if expired else "FAST_RESPONSE_INVALID"
+                    mark_failure(rec, status, str(exc))
+                    if expired:
+                        summary["stopped_reason"] = "SESSION_EXPIRED"
+                        summary["session_interruptions"] += 1
+                    continue
+
+                rec["result_count"] = first_meta["result_count"]
+                rec["total_pages"] = first_meta["total_pages"]
+                rec["per_page"] = first_meta["per_page"]
+                meta = {
+                    "result_count": first_meta["result_count"],
+                    "total_pages": first_meta["total_pages"],
+                    "per_page": first_meta["per_page"],
+                }
+                valid_pages = list(range(1, first_meta["total_pages"] + 1))
+                if should_split_result_window(
+                    task, meta, valid_pages, len(first_meta["rows"])
+                ) and split_date_window(task):
+                    rec["status"] = "SPLIT"
+                    rec["pages_completed"] = []
+                    upsert_window_record(state, rec)
+                    save_bulk_state(state, self.store_dir)
+                    children = split_date_window(task)
+                    pending.extend({**task, **child} for child in reversed(children))
+                    summary["windows_total"] += len(children)
+                    summary["dense_windows_split"] += 1
+                    continue
+
+                all_rows = []
+                successful_pages = []
+                page_failure = None
+                expected_pages = max(1, first_meta["total_pages"])
+                if first_meta["result_count"] >= RESULT_SPLIT_THRESHOLD:
+                    expected_pages = min(
+                        expected_pages,
+                        (RESULT_SPLIT_THRESHOLD + first_meta["per_page"] - 1)
+                        // first_meta["per_page"],
+                    )
+                for expected_page, response in enumerate(responses, start=1):
+                    if not isinstance(response, dict) or not response.get("ok"):
+                        page_failure = "PAGINATION_INCOMPLETE"
+                        break
+                    try:
+                        page_meta = parse_history_response(
+                            response.get("body"), expected_page=expected_page
+                        )
+                    except ValueError:
+                        page_failure = "FAST_RESPONSE_INVALID"
+                        break
+                    if (
+                        page_meta["result_count"] not in (None, first_meta["result_count"])
+                        or page_meta["per_page"] != first_meta["per_page"]
+                    ):
+                        page_failure = "RESULT_COUNT_MISMATCH"
+                        break
+                    all_rows.extend(page_meta["rows"])
+                    successful_pages.append(expected_page)
+                if len(successful_pages) != expected_pages:
+                    page_failure = page_failure or "PAGINATION_INCOMPLETE"
+                try:
+                    cards = history_rows_to_cards(all_rows)
+                except ValueError as exc:
+                    mark_failure(rec, "FAST_RESPONSE_INVALID", str(exc))
+                    continue
+
+                unique_cards = []
+                identities = set()
+                for card in cards:
+                    identity = (
+                        card["kayit_no"], card["file_id"],
+                        _fold(card["institution_text"]),
+                    )
+                    if identity in identities:
+                        continue
+                    identities.add(identity)
+                    unique_cards.append(card)
+                rec["result_cards_inspected"] = len(unique_cards)
+                summary["result_cards_inspected"] += len(unique_cards)
+                sold_cards = [card for card in unique_cards if card["sold"]]
+                outcomes = persist_discovered_cards(
+                    sold_cards,
+                    store_dir=self.store_dir,
+                    source_page_ref=source_page_ref,
+                    province_label=task["province"],
+                    window=task,
+                )
+                rec["sold_discovered"] = len(outcomes)
+                summary["sold_discovered"] += len(outcomes)
+                summary["records_processed"] += sum(
+                    outcome.get("outcome") == "discovered" for outcome in outcomes
+                )
+                rec["pages_completed"] = (
+                    successful_pages if first_meta["result_count"] else []
+                )
+
+                if page_failure:
+                    rec["status"] = page_failure
+                    rec["last_fast_error"] = "endpoint pagination could not be fully reconciled"
+                    summary["discovery_windows_incomplete"] += 1
+                    summary["result_refresh_failures"] += 1
+                elif first_meta["result_count"] >= RESULT_SPLIT_THRESHOLD:
+                    rec["status"] = "SATURATED_UNRESOLVED"
+                    rec["pages_completed"] = []
+                    summary["saturated_windows_unresolved"] += 1
+                elif len(identities) != first_meta["result_count"]:
+                    rec["status"] = "RESULT_COUNT_MISMATCH"
+                    rec["parsed_unique_count"] = len(identities)
+                    rec["pages_completed"] = []
+                    summary["discovery_windows_incomplete"] += 1
+                    summary["result_refresh_failures"] += 1
+                else:
+                    rec["status"] = "COMPLETE"
+                    rec.pop("last_fast_error", None)
+                upsert_window_record(state, rec)
+                save_bulk_state(state, self.store_dir)
+        return summary
+
+    @_exclusive_bulk_run
+    def run_fast_discovery(
+        self,
+        tasks: list[dict],
+        concurrency: int = 8,
+        force: bool = False,
+        dry_run: bool = False,
+    ) -> dict:  # pragma: no cover - canlı tarayıcı gerektirir
+        from .collect import BrowserCollector
+
+        if concurrency < 1 or concurrency > 16:
+            raise ValueError("concurrency must be between 1 and 16")
+        normalized_tasks = []
+        seen = set()
+        for raw_task in tasks:
+            province = canonicalize_province_label(raw_task.get("province"))
+            if not province:
+                raise ValueError(f"unknown UYAP province: {raw_task.get('province')!r}")
+            task = {
+                "phase": PHASE_DISCOVERY,
+                "province": province,
+                "start": _parse_iso(raw_task["start"]).isoformat(),
+                "end": _parse_iso(raw_task["end"]).isoformat(),
+            }
+            task_windows = generate_date_windows(task["start"], task["end"])
+            if len(task_windows) != 1 or task_windows[0] != {
+                "start": task["start"], "end": task["end"]
+            }:
+                raise ValueError("fast discovery task must fit one UYAP date window")
+            key = window_key(province, task["start"], task["end"], PHASE_DISCOVERY)
+            if key not in seen:
+                seen.add(key)
+                normalized_tasks.append(task)
+        summary = self._fast_summary(normalized_tasks, concurrency)
+        if dry_run or not normalized_tasks:
+            summary["dry_run"] = bool(dry_run)
+            summary["planned_windows"] = normalized_tasks
+            summary["stopped_reason"] = "dry_run" if dry_run else None
+            return summary
+
+        started_at = time.monotonic()
+        sync_playwright = BrowserCollector._sync_playwright()
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(self.cdp_endpoint)
+            if not browser.contexts:
+                raise RuntimeError("no_usable_browser_context: CDP oturumunda kullanılabilir bağlam yok.")
+            page = self._find_gecmis_page(browser.contexts[0])
+            if page is None:
+                raise RuntimeError(
+                    "no_gecmis_ilanlar_page: 'Geçmiş İlanlar' sekmesi bulunamadı. "
+                    "Önce UYAP e-Satış → İhaleler → Geçmiş İlanlar sayfasını elle açın."
+                )
+            page_html = page.content()
+            expiration = detect_session_expiration(page_html, page.url)
+            if expiration["expired"]:
+                summary["stopped_reason"] = "SESSION_EXPIRED"
+                summary["session_interruptions"] = 1
+                summary["discovery_windows_incomplete"] = len(normalized_tasks)
+            else:
+                province_codes = self._history_province_codes(page)
+                missing = sorted({task["province"] for task in normalized_tasks} - province_codes.keys())
+                if missing:
+                    self._select_category_tasinmaz(page)
+                    page.wait_for_timeout(200)
+                    province_codes = self._history_province_codes(page)
+                    missing = sorted({task["province"] for task in normalized_tasks} - province_codes.keys())
+                if missing:
+                    summary["stopped_reason"] = "SELECTION_UNVERIFIED"
+                    summary["discovery_windows_incomplete"] = len(normalized_tasks)
+                else:
+                    summary = self._run_fast_discovery_tasks(
+                        page, normalized_tasks, province_codes, concurrency, force=force
+                    )
+
+        elapsed = max(time.monotonic() - started_at, 1e-9)
+        summary["elapsed_seconds"] = round(elapsed, 2)
+        summary["windows_per_minute"] = round(
+            summary["windows_processed"] * 60.0 / elapsed, 2
+        )
+        summary["requests_per_minute"] = round(
+            summary["request_count"] * 60.0 / elapsed, 2
+        )
+        summary["acquisitions_per_minute"] = 0.0
+        self._print_summary(summary)
+        return summary
 
     # -- Canlı koşu (pragma: canlı tarayıcı/DOM gerektirir; ağ testlerinde çalışmaz) ------- #
     @_exclusive_bulk_run
@@ -3175,9 +3774,14 @@ class UyapBulkCollector:
         self._print(f"  denetim kararları: {s['audit_decisions']}")
         self._print(f"  oturum kesintisi: {s['session_interruptions']} · durma nedeni: {s['stopped_reason']}")
         if s.get("elapsed_seconds") is not None:
+            request_speed = (
+                f" · {s['request_count']} istek · {s['requests_per_minute']} istek/dk"
+                if s.get("request_count") is not None else ""
+            )
             self._print(
                 f"  hız: {s['elapsed_seconds']}sn · {s['windows_per_minute']} pencere/dk · "
-                f"{s['acquisitions_per_minute']} edinim/dk · bölünen yoğun pencere={s['dense_windows_split']} · "
+                f"{s['acquisitions_per_minute']} edinim/dk{request_speed} · "
+                f"bölünen yoğun pencere={s['dense_windows_split']} · "
                 f"çözülemeyen doygun pencere={s['saturated_windows_unresolved']}"
             )
         self._print("  NOT: admisyon YAPILMADI — ADMISSIBLE adaylar `sold uyap review`/`admit` ile AÇIKÇA alınır.")

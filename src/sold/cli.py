@@ -2390,6 +2390,8 @@ def uyap_campaign_cmd(
     max_provinces: Optional[int] = typer.Option(None, "--max-provinces", min=1, help="Bu koşuda en fazla işi olan il"),
     max_windows_per_province: Optional[int] = typer.Option(1, "--max-windows-per-province", min=1, help="İl başına bu koşuda en fazla gerçek arama penceresi"),
     max_records: Optional[int] = typer.Option(None, "--max-records", min=1, help="Acquire fazında toplam işlenecek en fazla kart"),
+    fast_discovery: bool = typer.Option(True, "--fast/--ui", help="Keşifte same-origin endpoint havuzu veya seri UI"),
+    concurrency: int = typer.Option(8, "--concurrency", min=1, max=16, help="Hızlı keşifte eşzamanlı istek sınırı"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Planı göster; tarayıcıya bağlanma"),
     store_dir: Optional[str] = typer.Option(None, help="Çalışma deposu / checkpoint dizini"),
     genuine_path: Optional[str] = typer.Option(None, help="Genuine uyap.json yolu (yalnız duplicate denetimi)"),
@@ -2398,9 +2400,9 @@ def uyap_campaign_cmd(
 ) -> None:
     """81-il UYAP kampanyası: önce hızlı keşif, sonra yalnız yeni adaylarda native-UDF edinimi.
 
-    Kimlik doğrulama daima kullanıcı tarafından yapılır. Kampanya admission yapmaz ve aynı sayfa üzerinde
-    paralel modal tıklaması kullanmaz; hız, boş pencereleri acquisition'da tekrar taramamak, newest-first
-    öncelik, ayrı checkpoint'ler ve yoğun pencereyi otomatik bölmekten gelir.
+    Kimlik doğrulama daima kullanıcı tarafından yapılır. Kampanya admission yapmaz. Keşif varsayılan
+    olarak oturumun same-origin JSON uç noktasını sınırlı bir havuzla kullanır; modal/native-UDF edinimi
+    seri kalır. ``--ui`` keşfi de eski seri form yoluna döndürür.
     """
     from .ingestion.uyap import BROWSER_PREREQUISITES
     from .ingestion.uyap.bulk import (
@@ -2496,8 +2498,10 @@ def uyap_campaign_cmd(
         if campaign_phase == PHASE_ACQUISITION else []
     )
 
+    discovery_mode = "fast" if fast_discovery else "ui"
     typer.secho(
-        f"UYAP campaign · faz={campaign_phase} · aktif il={len(active_provinces)} · görev={len(plan)}",
+        f"UYAP campaign · faz={campaign_phase} · aktif il={len(active_provinces)} · "
+        f"görev={len(plan)} · keşif={discovery_mode}",
         fg=typer.colors.CYAN, bold=True,
     )
     by_province: dict[str, int] = {}
@@ -2542,6 +2546,9 @@ def uyap_campaign_cmd(
         "discovery_incomplete": deferred_discovery_tasks,
         "queue_blockers": len(blockers),
         "saturated_unresolved": 0,
+        "requests": 0,
+        "elapsed_seconds": 0.0,
+        "requests_per_minute": 0.0,
     }
     blocking_reason = None
     blocking_reasons = {
@@ -2556,19 +2563,32 @@ def uyap_campaign_cmd(
     }
     remaining = max_records
     if campaign_phase == PHASE_DISCOVERY:
-        for province in active_provinces:
-            result = collector.run(
-                province, resolved_from, resolved_to, discovery_only=True, newest_first=True,
-                max_windows=max_windows_per_province,
-            )
+        if fast_discovery:
+            result = collector.run_fast_discovery(plan, concurrency=concurrency)
             totals["windows"] += result["windows_processed"]
             totals["cards"] += result["result_cards_inspected"]
             totals["saturated_unresolved"] += result["saturated_windows_unresolved"]
             totals["incomplete"] += int(result.get("acquisition_windows_incomplete") or 0)
             totals["discovery_incomplete"] += int(result.get("discovery_windows_incomplete") or 0)
+            totals["requests"] += int(result.get("request_count") or 0)
+            totals["elapsed_seconds"] += float(result.get("elapsed_seconds") or 0.0)
+            totals["requests_per_minute"] = float(result.get("requests_per_minute") or 0.0)
             if result.get("stopped_reason") in blocking_reasons:
                 blocking_reason = result["stopped_reason"]
-                break
+        else:
+            for province in active_provinces:
+                result = collector.run(
+                    province, resolved_from, resolved_to, discovery_only=True, newest_first=True,
+                    max_windows=max_windows_per_province,
+                )
+                totals["windows"] += result["windows_processed"]
+                totals["cards"] += result["result_cards_inspected"]
+                totals["saturated_unresolved"] += result["saturated_windows_unresolved"]
+                totals["incomplete"] += int(result.get("acquisition_windows_incomplete") or 0)
+                totals["discovery_incomplete"] += int(result.get("discovery_windows_incomplete") or 0)
+                if result.get("stopped_reason") in blocking_reasons:
+                    blocking_reason = result["stopped_reason"]
+                    break
     else:
         for task_index, task in enumerate(plan):
             if remaining is not None and remaining <= 0:

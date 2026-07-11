@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -468,6 +469,180 @@ def test_result_payload_evidence_parses_live_history_json_shape():
     assert evidence["result_count"] == 28
     assert evidence["zero"] is False
     assert bulk.result_payload_evidence("[[], 20, 0, 1]")["zero"] is True
+
+
+def test_fast_history_contract_uses_structured_sold_status():
+    window = {"start": "2026-07-05", "end": "2026-07-11"}
+    request = bulk.history_request_payload("24", window, page_number=2)
+    assert request == {
+        "kategori": "1",
+        "ihaleBaslangicZamani": "05/07/2026",
+        "ihaleBitisZamani": "11/07/2026",
+        "isPilotMu": "false",
+        "pageNumber": "2",
+        "birimId": "",
+        "ilKodu": "24",
+        "dosyaYil": "",
+        "dosyaSiraNo": "",
+    }
+
+    response = bulk.parse_history_response(json.dumps([[{
+        "kayitID": 16975383463,
+        "dosyaNoTurKod": "2026/123 Talimat",
+        "birimAdi": "Erzincan İcra Dairesi",
+        "satisDurumu": "0",
+    }], 1, 21, 2], ensure_ascii=False), expected_page=2)
+    assert response["per_page"] == 20
+    assert response["total_pages"] == 2
+    continuation = bulk.parse_history_response(
+        [[{"kayitID": 1}], 1, -1, 2], expected_page=2
+    )
+    assert continuation["result_count"] is None
+    assert continuation["total_pages"] == 0
+    assert bulk.history_rows_to_cards(response["rows"]) == [{
+        "kayit_no": "16975383463",
+        "file_id": "2026/123",
+        "institution_text": "Erzincan İcra Dairesi",
+        "source_status_raw": "Satıldı",
+        "category": "SOLD",
+        "sold": True,
+        "card_html": None,
+        "card_text": "Erzincan İcra Dairesi 2026/123 16975383463 Satıldı",
+    }]
+    assert bulk.history_province_codes([
+        {"label": "--Seçiniz--", "value": ""},
+        {"label": "ERZİNCAN", "value": "24"},
+    ]) == {"ERZİNCAN": "24"}
+
+
+def test_fast_discovery_pool_persists_only_structured_sold_rows(tmp_path, monkeypatch):
+    collector = bulk.UyapBulkCollector(
+        "http://127.0.0.1:9222", store_dir=tmp_path
+    )
+    calls = []
+
+    def fetch_windows(page, jobs, concurrency):
+        calls.append((len(jobs), concurrency))
+        result = []
+        for job in jobs:
+            if job["payload"]["ilKodu"] == "6":
+                payload = [[
+                    {
+                        "kayitID": 17000000001,
+                        "dosyaNoTurKod": "2026/501 Talimat",
+                        "birimAdi": "Ankara İcra Dairesi",
+                        "satisDurumu": "0",
+                    },
+                    {
+                        "kayitID": 17000000002,
+                        "dosyaNoTurKod": "2026/502 Talimat",
+                        "birimAdi": "Ankara İcra Dairesi",
+                        "satisDurumu": "1",
+                    },
+                ], 2, 2, 1]
+            else:
+                payload = [[], 20, 0, 1]
+            result.append({
+                "id": job["id"],
+                "responses": [{
+                    "page": 1,
+                    "ok": True,
+                    "status": 200,
+                    "url": "https://esatis.uyap.gov.tr/pp/gecmisIhaleler_brd.ajx",
+                    "body": json.dumps(payload, ensure_ascii=False),
+                    "attempts": 1,
+                    "error": None,
+                }],
+            })
+        return result
+
+    monkeypatch.setattr(collector, "_fetch_history_windows", fetch_windows)
+    tasks = [
+        {"phase": "discovery", "province": "ANKARA", "start": "2026-07-05", "end": "2026-07-11"},
+        {"phase": "discovery", "province": "SİVAS", "start": "2026-07-05", "end": "2026-07-11"},
+    ]
+    summary = collector._run_fast_discovery_tasks(
+        SimpleNamespace(url="https://esatis.uyap.gov.tr/pp/index.jsp"),
+        tasks,
+        {"ANKARA": "6", "SİVAS": "58"},
+        concurrency=8,
+    )
+
+    assert calls == [(2, 8)]
+    assert summary["windows_processed"] == 2
+    assert summary["request_count"] == 2
+    assert summary["result_cards_inspected"] == 2
+    assert summary["sold_discovered"] == 1
+    assert summary["records_processed"] == 1
+    assert summary["discovery_windows_incomplete"] == 0
+    candidates = store.load_candidates(tmp_path)
+    assert len(candidates) == 1
+    assert candidates[0]["listing_ref"] == "17000000001"
+    state = bulk.load_bulk_state(tmp_path)
+    assert {
+        record["province"]: record["status"] for record in state["windows"]
+    } == {"ANKARA": "COMPLETE", "SİVAS": "COMPLETE"}
+
+
+def test_fast_discovery_adaptively_splits_saturated_window(tmp_path, monkeypatch):
+    collector = bulk.UyapBulkCollector(
+        "http://127.0.0.1:9222", store_dir=tmp_path
+    )
+    batch_sizes = []
+
+    def fetch_windows(page, jobs, concurrency):
+        batch_sizes.append(len(jobs))
+        result = []
+        for job in jobs:
+            if job["canSplit"]:
+                rows = [{
+                    "kayitID": 18000000000 + index,
+                    "dosyaNoTurKod": f"2026/{600 + index} Talimat",
+                    "birimAdi": "Ankara İcra Dairesi",
+                    "satisDurumu": "1",
+                } for index in range(20)]
+                payload = [rows, 20, 200, 1]
+            else:
+                payload = [[], 20, 0, 1]
+            result.append({
+                "id": job["id"],
+                "responses": [{
+                    "page": 1,
+                    "ok": True,
+                    "status": 200,
+                    "url": "https://esatis.uyap.gov.tr/pp/gecmisIhaleler_brd.ajx",
+                    "body": json.dumps(payload, ensure_ascii=False),
+                    "attempts": 1,
+                    "error": None,
+                }],
+            })
+        return result
+
+    monkeypatch.setattr(collector, "_fetch_history_windows", fetch_windows)
+    task = {
+        "phase": "discovery", "province": "ANKARA",
+        "start": "2026-07-10", "end": "2026-07-11",
+    }
+    summary = collector._run_fast_discovery_tasks(
+        SimpleNamespace(url="https://esatis.uyap.gov.tr/pp/index.jsp"),
+        [task],
+        {"ANKARA": "6"},
+        concurrency=4,
+    )
+
+    assert batch_sizes == [1, 2]
+    assert summary["windows_processed"] == 3
+    assert summary["dense_windows_split"] == 1
+    assert summary["discovery_windows_incomplete"] == 0
+    records = {
+        (record["window_start"], record["window_end"]): record["status"]
+        for record in bulk.load_bulk_state(tmp_path)["windows"]
+    }
+    assert records == {
+        ("2026-07-10", "2026-07-11"): "SPLIT",
+        ("2026-07-10", "2026-07-10"): "COMPLETE",
+        ("2026-07-11", "2026-07-11"): "COMPLETE",
+    }
 
 
 def test_result_metadata_ignores_hidden_zero_banner():
@@ -1141,12 +1316,51 @@ def test_campaign_cli_reports_unverified_refresh_as_blocker(tmp_path, monkeypatc
     result = CliRunner().invoke(app, [
         "uyap", "campaign", "--phase", "discover", "--provinces", "ANKARA",
         "--date-from", "2026-06-01", "--date-to", "2026-06-07",
+        "--ui",
         "--cdp-endpoint", "http://127.0.0.1:9222", "--store-dir", str(tmp_path),
     ])
 
     assert result.exit_code == 1
     assert "Campaign durduruldu: RESULT_REFRESH_UNVERIFIED" in result.output
     assert "Campaign tamamlandı" not in result.output
+
+
+def test_campaign_discovery_uses_fast_pool_by_default(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from sold.cli import app
+
+    calls = []
+
+    def run_fast(self, tasks, concurrency=8, **kwargs):
+        calls.append((tasks, concurrency))
+        return {
+            "windows_processed": 1,
+            "result_cards_inspected": 3,
+            "saturated_windows_unresolved": 0,
+            "acquisition_windows_incomplete": 0,
+            "discovery_windows_incomplete": 0,
+            "request_count": 1,
+            "elapsed_seconds": 0.5,
+            "requests_per_minute": 120.0,
+            "stopped_reason": None,
+        }
+
+    monkeypatch.setattr(bulk.UyapBulkCollector, "run_fast_discovery", run_fast)
+    result = CliRunner().invoke(app, [
+        "uyap", "campaign", "--phase", "discover", "--provinces", "ANKARA",
+        "--date-from", "2026-06-01", "--date-to", "2026-06-07",
+        "--concurrency", "6",
+        "--cdp-endpoint", "http://127.0.0.1:9222", "--store-dir", str(tmp_path),
+    ])
+
+    assert result.exit_code == 0
+    assert len(calls) == 1 and calls[0][1] == 6
+    assert calls[0][0] == [{
+        "phase": "discovery", "province": "ANKARA",
+        "start": "2026-06-01", "end": "2026-06-07",
+    }]
+    assert "keşif=fast" in result.output
+    assert "'requests': 1" in result.output
 
 
 def test_campaign_cli_reports_bounded_split_as_incomplete(tmp_path, monkeypatch):
@@ -1171,6 +1385,7 @@ def test_campaign_cli_reports_bounded_split_as_incomplete(tmp_path, monkeypatch)
     result = CliRunner().invoke(app, [
         "uyap", "campaign", "--phase", "discover", "--provinces", "ANKARA",
         "--date-from", "2026-06-01", "--date-to", "2026-06-07",
+        "--ui",
         "--cdp-endpoint", "http://127.0.0.1:9222", "--store-dir", str(tmp_path),
     ])
     assert result.exit_code == 2
@@ -1203,6 +1418,7 @@ def test_discovery_max_provinces_reports_deferred_scope(tmp_path, monkeypatch):
         "uyap", "campaign", "--phase", "discover",
         "--provinces", "ANKARA,SİVAS,İZMİR", "--max-provinces", "1",
         "--date-from", "2026-06-01", "--date-to", "2026-06-07",
+        "--ui",
         "--cdp-endpoint", "http://127.0.0.1:9222", "--store-dir", str(tmp_path),
     ])
 

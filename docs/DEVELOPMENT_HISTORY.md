@@ -952,3 +952,27 @@ live-verified under this ownership chain. Final validation: **116 bulk/campaign 
 **827 tests in the complete suite**. Independent review findings were incorporated into the final ownership
 guards before release; the post-fix audit found no P0/P1 correctness blocker. Persisted telemetry reconciles to
 81/81 complete provinces, 535 source cards, 3/3 acquired candidates, and an empty acquisition queue.
+
+## 2026-07-11 — Same-origin nationwide discovery acceleration
+
+Metadata discovery was moved from 81 serial UI form submissions to the history page's observed authenticated
+same-origin endpoint (`POST /pp/gecmisIhaleler_brd.ajx`). Authentication remains entirely manual. Province
+codes are read from the page's native `#historySearchIller` options; request concurrency is bounded to 8 by
+default (configurable from 1 through 16); page 1 determines source cardinality; and only required continuation
+pages are fetched. Dense windows still enter the existing adaptive date-split tree. Candidate persistence and
+phase-specific atomic checkpoints are unchanged, and native UDF acquisition remains serial and exact-KAYIT
+bound. The UI path remains available through `--ui`.
+
+The structured sale rule was taken from the live portal renderer rather than inferred from price or description:
+`satisDurumu == "0"` maps to visible `Satıldı`. Continuation responses use the portal's observed `-1` sentinel
+for an unchanged total count; the adapter retains page 1's total and reconciles every later page against it.
+Malformed responses, missing identities, incomplete pagination, count mismatches, session loss and unsplittable
+200-result saturation all remain non-complete checkpoints.
+
+An isolated live benchmark for `2026-07-05..2026-07-11` completed **81/81 provinces in 6.34 seconds** with
+concurrency 8 and 155 requests. It reconciled **2,190 fetched rows to 2,190 declared source rows**, with 2,190
+unique KAYIT IDs, zero cross-province duplicates and zero incomplete checkpoints, while finding the same three
+terminal `Satıldı` candidates as the prior run. This demonstrates that the earlier serial-UI telemetry of 535
+cards under-counted source coverage; it does not alter the already completed 3/3 candidate-bound acquisitions
+or admit any evidence. Focused validation after the change: **120 bulk/campaign tests passed**; the live
+two-province benchmark completed in 0.86 seconds and the nationwide benchmark completed in 6.34 seconds.

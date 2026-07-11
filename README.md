@@ -253,6 +253,7 @@ one outstanding window per province:
 ```powershell
 # Phase 1: metadata-only scan across all 81 provinces (no document download)
 sold uyap campaign --all-provinces --phase discover `
+  --concurrency 8 `
   --cdp-endpoint http://127.0.0.1:9222
 
 # Phase 2: revisit only windows containing new/incomplete candidates and download only queued KAYIT NOs
@@ -272,31 +273,37 @@ sold uyap campaign --all-provinces --phase discover `
 
 The campaign is faster without weakening provenance:
 
+- discovery uses the authenticated page's observed same-origin history endpoint with at most 8 concurrent
+  requests by default (`--concurrency 1..16`); `--ui` retains the serial form-driven fallback;
 - provinces with measured sold-card yield run first; cold start prioritizes İstanbul, Ankara, İzmir, etc.;
 - newest windows run first and completed phase-specific checkpoints are skipped;
+- each endpoint response remains bound to its province/date/page payload, while the UI fallback keeps its
+  click-scoped stale-response guards;
 - a discovery page performs one locked candidate-store write instead of one full rewrite per card;
-- click-scoped, date-bound response evidence prevents stale AJAX cards or zero banners from being attributed
-  to the next province/window;
 - windows at the 200-result boundary split automatically; unsplittable saturated days remain explicit blockers;
 - page coverage and parsed-card cardinality must match source metadata before a window can become complete;
 - acquisition scans only queued windows and binds each KAYIT NO to its discovered candidate identity;
 - elapsed time, throughput, split counts, deferred work and unresolved blockers are reported.
 
 Document modals remain serial inside one authenticated page. Parallel clicks/downloads on that shared DOM
-would risk cross-row artifact binding; the campaign gains throughput by eliminating redundant work instead.
+would risk cross-row artifact binding; only metadata discovery is concurrent.
 Bounded runs are intentionally resumable: deferred, saturated, truncated, stale, failed or cardinality-mismatched
 work is never reported as complete and returns a nonzero status for automation. Neither phase admits evidence:
 `sold uyap review` and explicit `sold uyap admit` remain separate.
 
-> **Nationwide live run (2026-07-11).** A manually authenticated, user-controlled Chrome session completed
-> metadata discovery for **81/81 provinces** over `2026-07-05..2026-07-11`: **535 source result cards** and
-> **3 terminal `Satıldı` candidates**. Candidate-bound native acquisition completed **3/3** (Erzincan 2,
+> **Nationwide live run and fast-path reconciliation (2026-07-11).** A manually authenticated,
+> user-controlled Chrome session completed metadata discovery for **81/81 provinces** over
+> `2026-07-05..2026-07-11`. The bounded same-origin path completed in **6.34 seconds** using **155 requests**
+> at concurrency 8 and reconciled **2,190/2,190 source result cards**: all KAYIT IDs were unique, no identity
+> appeared in two provinces, and every province matched its declared source count. This corrects the earlier
+> serial-UI telemetry of 535 cards; both paths found the same **3 terminal `Satıldı` candidates**.
+> Candidate-bound native acquisition completed **3/3** (Erzincan 2,
 > Sakarya 1), leaving **0 queued candidates and 0 blockers**. Audit outcomes were one new
 > `ADMISSIBLE_COMPLETED_SALE` and two `PENDING_REVIEW`; **no record was admitted automatically**. The live
 > adapters bind search results to exact AJAX response/cardinality and document actions to exact KAYIT,
 > response URI, modal row and action fingerprint.
 
-> **Live status.** UYAP Live Browser Pilot 1 reached **`PASS`** on the real **2026/263 Esas** record. A later bounded Ankara batch (`2026-06-18..2026-06-24`) collected five terminal-sale cards through native UDF artifacts: two new records were explicitly admitted, two were identified as existing observations (one primary ID and one alias), and one remains blocked for human review. This is **not** an official API, does **not** automate authentication, is **not** unattended continuous ingestion, and does **not** prove universal layout coverage. The automated test suite remains fully offline.
+> **Live status.** UYAP Live Browser Pilot 1 reached **`PASS`** on the real **2026/263 Esas** record. A later bounded Ankara batch (`2026-06-18..2026-06-24`) collected five terminal-sale cards through native UDF artifacts: two new records were explicitly admitted, two were identified as existing observations (one primary ID and one alias), and one remains blocked for human review. The history endpoint is an observed internal same-origin interface, **not** an official public API. The workflow does **not** automate authentication, is **not** unattended continuous ingestion, and does **not** prove universal layout coverage. The automated test suite remains fully offline.
 
 ### UYAP Live Browser Pilot 1 (live verification)
 
