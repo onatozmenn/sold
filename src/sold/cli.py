@@ -2211,6 +2211,7 @@ def uyap_bulk_cmd(
     genuine_path: Optional[str] = typer.Option(None, help="genuine uyap.json yolu (DUPLICATE denetimi; admisyon YOK)"),
     stall_timeout: int = typer.Option(120, "--stall-timeout", help="Canlı bir adım bu kadar saniye ilerlemezse GÜVENLE sonlandır (takılı sekme koruması)"),
     delay_ms: int = typer.Option(400, "--delay-ms", help="Kartlar arası bekleme (ms). Düşür = daha hızlı; 0 = beklemesiz (daha az tutucu/agresif)"),
+    newest_first: bool = typer.Option(False, "--newest-first", help="En yeni tarih pencerelerini önce işle"),
 ) -> None:
     """UYAP TOPLU keşif+iterasyon — 'Geçmiş İlanlar'da Taşınmaz+İl+tarih ile SADECE Satıldı açık artırmalar.
 
@@ -2327,7 +2328,8 @@ def uyap_bulk_cmd(
         ).run(
             province=province, date_from=date_from, date_to=date_to,
             max_records=max_records, max_windows=max_windows,
-            dry_run=dry_run, discovery_only=discovery_only, resume=resume, force=force, kayit_no=kayit_no,
+            dry_run=dry_run, discovery_only=discovery_only, resume=resume, force=force,
+            kayit_no=kayit_no, newest_first=newest_first,
         )
     except RuntimeError as exc:
         typer.secho(str(exc), fg=typer.colors.YELLOW)
@@ -2338,9 +2340,280 @@ def uyap_bulk_cmd(
     typer.echo(f"  pencere: {s['windows_processed']}/{s['windows_total']} · incelenen kart: {s['result_cards_inspected']}")
     typer.echo(f"  Satıldı keşfedilen: {s['sold_discovered']} · edinilen: {s['acquisitions_completed']} · atlanan(bilinen): {s['sold_skipped_known']} · edinim hatası: {s['acquisition_failures']}")
     typer.echo(f"  denetim kararları: {s['audit_decisions']}")
+    if s.get("elapsed_seconds") is not None:
+        typer.echo(
+            f"  hız: {s['elapsed_seconds']}sn · {s['windows_per_minute']} pencere/dk · "
+            f"{s['acquisitions_per_minute']} edinim/dk · yoğun bölme={s['dense_windows_split']} · "
+            f"çözülemeyen doygun={s['saturated_windows_unresolved']}"
+        )
     if s.get("stopped_reason") == "SESSION_EXPIRED":
         typer.secho("  OTURUM SONA ERDİ: Chrome'da yeniden giriş yapıp aynı komutu `--resume` ile çalıştırın.", fg=typer.colors.YELLOW)
+    if s.get("stopped_reason") in {
+        "SESSION_EXPIRED",
+        "RESULT_REFRESH_UNVERIFIED",
+        "RESULT_STATE_UNCONFIRMED",
+        "DATE_INPUT_UNVERIFIED",
+        "ARA_BUTTON_NOT_LOCATED",
+        "PAGINATION_INCOMPLETE",
+        "RESULT_COUNT_MISMATCH",
+        "SELECTION_UNVERIFIED",
+    }:
+        typer.secho(
+            f"  TOPLU KOŞU BLOKE: {s['stopped_reason']} · checkpoint COMPLETE yapılmadı.",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit(code=1)
+    if (
+        s.get("stopped_reason") == "ACQUISITION_INCOMPLETE"
+        or s.get("acquisition_windows_incomplete")
+        or s.get("discovery_windows_incomplete")
+        or s.get("saturated_windows_unresolved")
+        or s.get("acquisition_failures")
+    ):
+        typer.secho(
+            "  TOPLU KOŞU TAMAMLANMADI: çözülmemiş edinim veya doygun pencere var.",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit(code=2)
     typer.secho("  admisyon YAPILMADI — ADMISSIBLE adayları `sold uyap review` ile inceleyip `sold uyap admit` ile AÇIKÇA alın.", fg=typer.colors.GREEN)
+
+
+@uyap_app.command("campaign")
+def uyap_campaign_cmd(
+    phase: str = typer.Option("discover", "--phase", help="discover veya acquire"),
+    date_from: Optional[str] = typer.Option(None, "--date-from", help="Başlangıç (YYYY-MM-DD); boşsa lookback"),
+    date_to: Optional[str] = typer.Option(None, "--date-to", help="Bitiş (YYYY-MM-DD); boşsa bugün"),
+    lookback_days: int = typer.Option(7, "--lookback-days", min=1, help="Tarih verilmezse son kaç gün"),
+    cdp_endpoint: Optional[str] = typer.Option(None, "--cdp-endpoint", help="Kullanıcı-kontrollü Chrome CDP uç noktası"),
+    provinces: str = typer.Option("", "--provinces", help="Virgülle ayrılmış iller (örn. İSTANBUL,ANKARA)"),
+    all_provinces: bool = typer.Option(False, "--all-provinces", help="81 ilin tamamı"),
+    max_provinces: Optional[int] = typer.Option(None, "--max-provinces", min=1, help="Bu koşuda en fazla işi olan il"),
+    max_windows_per_province: Optional[int] = typer.Option(1, "--max-windows-per-province", min=1, help="İl başına bu koşuda en fazla gerçek arama penceresi"),
+    max_records: Optional[int] = typer.Option(None, "--max-records", min=1, help="Acquire fazında toplam işlenecek en fazla kart"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Planı göster; tarayıcıya bağlanma"),
+    store_dir: Optional[str] = typer.Option(None, help="Çalışma deposu / checkpoint dizini"),
+    genuine_path: Optional[str] = typer.Option(None, help="Genuine uyap.json yolu (yalnız duplicate denetimi)"),
+    delay_ms: int = typer.Option(100, "--delay-ms", help="Başarılı edinimler arası tutucu bekleme (ms)"),
+    stall_timeout: int = typer.Option(120, "--stall-timeout", help="Canlı adım stall sınırı (sn)"),
+) -> None:
+    """81-il UYAP kampanyası: önce hızlı keşif, sonra yalnız yeni adaylarda native-UDF edinimi.
+
+    Kimlik doğrulama daima kullanıcı tarafından yapılır. Kampanya admission yapmaz ve aynı sayfa üzerinde
+    paralel modal tıklaması kullanmaz; hız, boş pencereleri acquisition'da tekrar taramamak, newest-first
+    öncelik, ayrı checkpoint'ler ve yoğun pencereyi otomatik bölmekten gelir.
+    """
+    from .ingestion.uyap import BROWSER_PREREQUISITES
+    from .ingestion.uyap.bulk import (
+        PHASE_ACQUISITION,
+        PHASE_DISCOVERY,
+        UYAP_PROVINCES,
+        UyapBulkCollector,
+        acquisition_queue_blockers,
+        build_acquisition_queue,
+        build_discovery_campaign_plan,
+        limit_campaign_tasks,
+        limit_campaign_windows_per_province,
+        load_bulk_state,
+        normalize_campaign_provinces,
+        prioritize_campaign_provinces,
+    )
+
+    normalized_phase = phase.strip().lower()
+    aliases = {"discover": PHASE_DISCOVERY, "discovery": PHASE_DISCOVERY,
+               "acquire": PHASE_ACQUISITION, "acquisition": PHASE_ACQUISITION}
+    if normalized_phase not in aliases:
+        typer.secho("--phase discover veya acquire olmalı", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    campaign_phase = aliases[normalized_phase]
+    resolved_to = date_to or dt.date.today().isoformat()
+    resolved_from = date_from
+    if campaign_phase == PHASE_DISCOVERY and not resolved_from:
+        end_date = dt.date.fromisoformat(resolved_to)
+        resolved_from = (end_date - dt.timedelta(days=lookback_days - 1)).isoformat()
+    campaign_state = load_bulk_state(store_dir)
+    if all_provinces:
+        selected = prioritize_campaign_provinces(list(UYAP_PROVINCES), campaign_state)
+    else:
+        requested = [value.strip() for value in provinces.split(",") if value.strip()]
+        if not requested:
+            typer.secho("--all-provinces veya --provinces gerekli", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        try:
+            selected = normalize_campaign_provinces(requested)
+        except ValueError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+    deferred_acquisition_tasks = 0
+    deferred_discovery_tasks = 0
+    acquisition_scope = selected
+    if campaign_phase == PHASE_DISCOVERY:
+        full_plan = build_discovery_campaign_plan(
+            selected, resolved_from, resolved_to, state=campaign_state,
+            newest_first=True, max_windows_per_province=max_windows_per_province,
+        )
+        plan = limit_campaign_tasks(full_plan, max_provinces)
+        deferred_discovery_tasks = len(full_plan) - len(plan)
+    else:
+        full_plan = build_acquisition_queue(
+            store_dir, selected, date_from=resolved_from, date_to=date_to
+        )
+        preliminary_blockers = acquisition_queue_blockers(
+            store_dir, selected, date_from=resolved_from, date_to=date_to
+        )
+        if max_provinces is not None:
+            work_provinces = {task["province"] for task in full_plan}
+            work_provinces.update(
+                blocker["province"]
+                for blocker in preliminary_blockers
+                if blocker.get("province")
+            )
+            acquisition_scope = [
+                province for province in selected if province in work_provinces
+            ][:max_provinces]
+        plan = limit_campaign_windows_per_province(
+            full_plan, max_windows_per_province
+        )
+        if max_provinces is not None:
+            allowed_scope = set(acquisition_scope)
+            plan = [task for task in plan if task["province"] in allowed_scope]
+        deferred_acquisition_tasks = len(full_plan) - len(plan)
+    if campaign_phase == PHASE_ACQUISITION:
+        deferred_acquisition_tasks = len(full_plan) - len(plan)
+    active_provinces = list(dict.fromkeys(task["province"] for task in plan))
+    if max_provinces is not None:
+        blocker_provinces = acquisition_scope
+    elif all_provinces:
+        blocker_provinces = None
+    else:
+        blocker_provinces = selected
+    blockers = (
+        acquisition_queue_blockers(
+            store_dir,
+            blocker_provinces,
+            date_from=resolved_from,
+            date_to=date_to,
+        )
+        if campaign_phase == PHASE_ACQUISITION else []
+    )
+
+    typer.secho(
+        f"UYAP campaign · faz={campaign_phase} · aktif il={len(active_provinces)} · görev={len(plan)}",
+        fg=typer.colors.CYAN, bold=True,
+    )
+    by_province: dict[str, int] = {}
+    for task in plan:
+        by_province[task["province"]] = by_province.get(task["province"], 0) + 1
+    typer.echo(f"  il/görev: {by_province}")
+    if deferred_acquisition_tasks:
+        typer.echo(f"  bu koşuma ertelenen edinim görevi: {deferred_acquisition_tasks}")
+    if deferred_discovery_tasks:
+        typer.echo(f"  bu koşuma ertelenen keşif görevi: {deferred_discovery_tasks}")
+    for task in plan[:20]:
+        suffix = f" · aday={task.get('candidate_count')}" if task.get("candidate_count") else ""
+        typer.echo(f"  {task['province']} · {task['start']}→{task['end']}{suffix}")
+    if len(plan) > 20:
+        typer.echo(f"  ... +{len(plan) - 20} görev")
+    if blockers:
+        typer.secho(f"  kuyruğa alınamayan aday={len(blockers)} (eksik KAYIT NO/il/pencere)", fg=typer.colors.YELLOW)
+        for blocker in blockers[:10]:
+            typer.echo(f"    {blocker['candidate_id']}: {blocker['reasons']}")
+    if dry_run:
+        return
+    if not plan:
+        if blockers:
+            typer.secho(
+                "Campaign bloke: edinim kuyruğuna alınamayan adaylar var.",
+                fg=typer.colors.YELLOW, bold=True,
+            )
+            raise typer.Exit(code=2)
+        return
+    if not cdp_endpoint:
+        typer.secho("Canlı campaign için --cdp-endpoint gerekli", fg=typer.colors.RED)
+        typer.echo(BROWSER_PREREQUISITES)
+        raise typer.Exit(code=1)
+
+    collector = UyapBulkCollector(
+        cdp_endpoint, store_dir=store_dir, genuine_path=genuine_path,
+        request_delay_ms=delay_ms, stall_seconds=stall_timeout,
+    )
+    totals = {
+        "windows": 0, "cards": 0, "acquired": 0, "failed": 0,
+        "incomplete": deferred_acquisition_tasks,
+        "discovery_incomplete": deferred_discovery_tasks,
+        "queue_blockers": len(blockers),
+        "saturated_unresolved": 0,
+    }
+    blocking_reason = None
+    blocking_reasons = {
+        "SESSION_EXPIRED",
+        "SELECTION_UNVERIFIED",
+        "RESULT_REFRESH_UNVERIFIED",
+        "RESULT_STATE_UNCONFIRMED",
+        "DATE_INPUT_UNVERIFIED",
+        "ARA_BUTTON_NOT_LOCATED",
+        "PAGINATION_INCOMPLETE",
+        "RESULT_COUNT_MISMATCH",
+    }
+    remaining = max_records
+    if campaign_phase == PHASE_DISCOVERY:
+        for province in active_provinces:
+            result = collector.run(
+                province, resolved_from, resolved_to, discovery_only=True, newest_first=True,
+                max_windows=max_windows_per_province,
+            )
+            totals["windows"] += result["windows_processed"]
+            totals["cards"] += result["result_cards_inspected"]
+            totals["saturated_unresolved"] += result["saturated_windows_unresolved"]
+            totals["incomplete"] += int(result.get("acquisition_windows_incomplete") or 0)
+            totals["discovery_incomplete"] += int(result.get("discovery_windows_incomplete") or 0)
+            if result.get("stopped_reason") in blocking_reasons:
+                blocking_reason = result["stopped_reason"]
+                break
+    else:
+        for task_index, task in enumerate(plan):
+            if remaining is not None and remaining <= 0:
+                totals["incomplete"] += len(plan) - task_index
+                break
+            result = collector.run(
+                task["province"], task["start"], task["end"], newest_first=True,
+                max_windows=1, max_records=remaining,
+                kayit_nos=set(task.get("record_refs") or []),
+                target_candidate_ids_by_ref={
+                    ref: set(candidate_ids)
+                    for ref, candidate_ids in (task.get("candidate_ids_by_ref") or {}).items()
+                },
+            )
+            totals["windows"] += result["windows_processed"]
+            totals["cards"] += result["result_cards_inspected"]
+            totals["saturated_unresolved"] += result["saturated_windows_unresolved"]
+            totals["acquired"] += result["acquisitions_completed"]
+            totals["failed"] += result["acquisition_failures"]
+            totals["incomplete"] += int(result.get("acquisition_windows_incomplete") or 0)
+            if remaining is not None:
+                remaining -= result["records_processed"]
+            if result.get("stopped_reason") in blocking_reasons:
+                blocking_reason = result["stopped_reason"]
+                break
+    if blocking_reason:
+        typer.secho(
+            f"Campaign durduruldu: {blocking_reason} · {totals}",
+            fg=typer.colors.YELLOW, bold=True,
+        )
+        raise typer.Exit(code=1)
+    if (
+        totals["saturated_unresolved"]
+        or totals["failed"]
+        or totals["incomplete"]
+        or totals["discovery_incomplete"]
+        or totals["queue_blockers"]
+    ):
+        typer.secho(
+            f"Campaign ilerledi; çözülmemiş işler var: {totals}",
+            fg=typer.colors.YELLOW, bold=True,
+        )
+        raise typer.Exit(code=2)
+    typer.secho(f"Campaign tamamlandı: {totals}", fg=typer.colors.GREEN, bold=True)
+    typer.echo("Admission yapılmadı; `sold uyap review` ve `sold uyap admit` ayrı kalır.")
 
 
 def main() -> None:

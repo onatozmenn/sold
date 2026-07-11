@@ -910,3 +910,26 @@ The packaged evidence, four-moment fingerprint, interval-floor-v1 near-fit snaps
 stability diagnostics were then regenerated. The refreshed production snapshot contains 27 admissible
 configurations; identification remains `rank(J)=4 < dim(theta)=10`, and bounded search coverage remains
 `INSUFFICIENT_COVERAGE`. Post-expansion offline validation: **749 passed**.
+
+## 2026-07-10 — Two-phase high-throughput UYAP campaign
+
+The serial per-card bulk loop was split into a metadata-first discovery phase and a targeted native-UDF
+acquisition phase. Discovery/acquisition checkpoints now use distinct identities; completing a fast scan no
+longer causes later document acquisition to skip the window. All 81 provinces are available through one
+resumable campaign command, ordered by observed sold-card yield with a high-volume cold-start priority and
+newest windows first. Discovery writes all cards on a page in one locked atomic store update rather than
+rewriting the candidate JSON for every card. Acquisition plans are generated only from incomplete discovered
+candidates and carry exact KAYIT NO target sets. Hidden zero-result banners are ignored when a positive result
+count exists, and windows at the 200-result boundary split into two smaller ranges. The runner reports elapsed
+time and per-minute throughput. Shared-page modal/document collection deliberately remains serial to preserve
+same-row native artifact ownership; authentication and admission remain manual/explicit boundaries.
+
+Release hardening made every completion decision fail closed. A search result must be tied to the click-scoped,
+date-bound AJAX response and its card identities/count; page enumeration is reconciled with source metadata;
+fresh searches invalidate mutable numeric page checkpoints; dense windows split recursively; and saturated,
+truncated, deferred, count-mismatched or failed work remains explicitly incomplete. Targeted acquisition binds
+KAYIT NO values to discovered candidate IDs, while durable failure and retry cursors prevent both starvation and
+false completion. Province/window bounds apply to both phases and return nonzero status while backlog remains.
+Empty native-document collections are acquisition failures, never successful status-card-only acquisitions.
+Final offline validation: **108 bulk/campaign tests**, **580 UYAP tests**, and **816 tests in the complete suite**.
+The final independent P0/P1/P2 release audit reported **NO BLOCKING FINDINGS**.

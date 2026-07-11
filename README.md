@@ -4,7 +4,7 @@
 [![Data refresh](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml/badge.svg)](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-749%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-816%20passing-brightgreen.svg)](tests/)
 [![Data](https://img.shields.io/badge/evidence-UYAP%20%C2%B7%20KAP%20%C2%B7%20TCMB%20%C2%B7%20TOK%C4%B0-informational.svg)](#provenance-audited-public-structural-evidence)
 
 > A **mechanism-aware structural econometric prototype** that infers a **structural transaction-price distribution** for a Turkish home from an **asking-price signal** and public economic evidence.
@@ -244,6 +244,50 @@ sold uyap admit    --candidate-id <id>      # EXPLICIT, idempotent admission to 
 sold uyap status                            # discovered / audited / admissible / admitted
 ```
 
+### Fast 81-province campaign
+
+Authenticate once in the dedicated user-controlled Chrome window, leave **İhaleler → Geçmiş İlanlar**
+open, then run two resumable phases. Dates are optional; discovery defaults to the latest seven days and
+one outstanding window per province:
+
+```powershell
+# Phase 1: metadata-only scan across all 81 provinces (no document download)
+sold uyap campaign --all-provinces --phase discover `
+  --cdp-endpoint http://127.0.0.1:9222
+
+# Phase 2: revisit only windows containing new/incomplete candidates and download only queued KAYIT NOs
+sold uyap campaign --all-provinces --phase acquire `
+  --cdp-endpoint http://127.0.0.1:9222
+```
+
+For bounded historical backfill, increase the per-province budget gradually; completed discovery and
+acquisition checkpoints are independent, so rerunning the command advances rather than starting over:
+
+```powershell
+sold uyap campaign --all-provinces --phase discover `
+  --date-from 2025-01-01 --date-to 2026-07-10 `
+  --max-windows-per-province 4 `
+  --cdp-endpoint http://127.0.0.1:9222
+```
+
+The campaign is faster without weakening provenance:
+
+- provinces with measured sold-card yield run first; cold start prioritizes İstanbul, Ankara, İzmir, etc.;
+- newest windows run first and completed phase-specific checkpoints are skipped;
+- a discovery page performs one locked candidate-store write instead of one full rewrite per card;
+- click-scoped, date-bound response evidence prevents stale AJAX cards or zero banners from being attributed
+  to the next province/window;
+- windows at the 200-result boundary split automatically; unsplittable saturated days remain explicit blockers;
+- page coverage and parsed-card cardinality must match source metadata before a window can become complete;
+- acquisition scans only queued windows and binds each KAYIT NO to its discovered candidate identity;
+- elapsed time, throughput, split counts, deferred work and unresolved blockers are reported.
+
+Document modals remain serial inside one authenticated page. Parallel clicks/downloads on that shared DOM
+would risk cross-row artifact binding; the campaign gains throughput by eliminating redundant work instead.
+Bounded runs are intentionally resumable: deferred, saturated, truncated, stale, failed or cardinality-mismatched
+work is never reported as complete and returns a nonzero status for automation. Neither phase admits evidence:
+`sold uyap review` and explicit `sold uyap admit` remain separate.
+
 > **Live status.** UYAP Live Browser Pilot 1 reached **`PASS`** on the real **2026/263 Esas** record. A later bounded Ankara batch (`2026-06-18..2026-06-24`) collected five terminal-sale cards through native UDF artifacts: two new records were explicitly admitted, two were identified as existing observations (one primary ID and one alias), and one remains blocked for human review. This is **not** an official API, does **not** automate authentication, is **not** unattended continuous ingestion, and does **not** prove universal layout coverage. The automated test suite remains fully offline.
 
 ### UYAP Live Browser Pilot 1 (live verification)
@@ -458,7 +502,7 @@ tests/               # offline unit / end-to-end tests
 ## Testing
 
 ```bash
-pytest -q             # 749 tests, fully offline (no network or API key required)
+pytest -q             # 816 tests, fully offline (no network or API key required)
 ```
 
 The automated suite is fully offline. The **UYAP live browser pilot is a separate, operator-run verification** (a real user-controlled session against the live site) and is **not** part of the offline CI suite.

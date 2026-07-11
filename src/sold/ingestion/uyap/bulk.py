@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import unquote_plus
 
 from . import store
 from .discovery import discover
@@ -32,18 +33,42 @@ from .models import (
     STATE_ADMITTED,
     STATE_AUDITED,
     STATE_COLLECTED,
+    STATE_DISCOVERED,
     STATE_EXCLUDED,
     STATE_EXTRACTED,
     STATE_PENDING_REVIEW,
     _ascii_lower,
     demojibake,
+    deterministic_candidate_id,
 )
 from .pipeline import run_audit, run_extract
 
 CATEGORY_TASINMAZ = "Taşınmaz"
 MAX_WINDOW_DAYS = 7          # UYAP: "Tarih aralığı en fazla 1 hafta olabilir."
 DEFAULT_PER_PAGE = 20
+RESULT_SPLIT_THRESHOLD = 200
 BULK_STATE_FILE = "bulk_state.json"
+PHASE_DISCOVERY = "discovery"
+PHASE_ACQUISITION = "acquisition"
+
+UYAP_PROVINCES = (
+    "ADANA", "ADIYAMAN", "AFYONKARAHİSAR", "AĞRI", "AMASYA", "ANKARA", "ANTALYA",
+    "ARTVİN", "AYDIN", "BALIKESİR", "BİLECİK", "BİNGÖL", "BİTLİS", "BOLU", "BURDUR",
+    "BURSA", "ÇANAKKALE", "ÇANKIRI", "ÇORUM", "DENİZLİ", "DİYARBAKIR", "EDİRNE",
+    "ELAZIĞ", "ERZİNCAN", "ERZURUM", "ESKİŞEHİR", "GAZİANTEP", "GİRESUN",
+    "GÜMÜŞHANE", "HAKKARİ", "HATAY", "ISPARTA", "MERSİN", "İSTANBUL", "İZMİR",
+    "KARS", "KASTAMONU", "KAYSERİ", "KIRKLARELİ", "KIRŞEHİR", "KOCAELİ", "KONYA",
+    "KÜTAHYA", "MALATYA", "MANİSA", "KAHRAMANMARAŞ", "MARDİN", "MUĞLA", "MUŞ",
+    "NEVŞEHİR", "NİĞDE", "ORDU", "RİZE", "SAKARYA", "SAMSUN", "SİİRT", "SİNOP",
+    "SİVAS", "TEKİRDAĞ", "TOKAT", "TRABZON", "TUNCELİ", "ŞANLIURFA", "UŞAK", "VAN",
+    "YOZGAT", "ZONGULDAK", "AKSARAY", "BAYBURT", "KARAMAN", "KIRIKKALE", "BATMAN",
+    "ŞIRNAK", "BARTIN", "ARDAHAN", "IĞDIR", "YALOVA", "KARABÜK", "KİLİS",
+    "OSMANİYE", "DÜZCE",
+)
+_COLD_START_PRIORITY = (
+    "İSTANBUL", "ANKARA", "İZMİR", "ANTALYA", "BURSA", "KOCAELİ", "MERSİN",
+    "ADANA", "KONYA", "GAZİANTEP", "TEKİRDAĞ", "BALIKESİR", "AYDIN", "MUĞLA",
+)
 
 # Görünür UYAP kaynak-durum jetonları (POZİTİF eşleşme; ASCII-fold + demojibake sonrası).
 SOLD_TOKEN = "satildi"
@@ -120,6 +145,53 @@ def generate_date_windows(date_from: object, date_to: object, max_days: int = MA
     return windows
 
 
+def split_date_window(window: dict) -> list[dict]:
+    """Yoğun bir pencereyi boşluksuz iki kapsayıcı alt pencereye böler."""
+    start = _parse_iso(window["start"])
+    end = _parse_iso(window["end"])
+    if start >= end:
+        return []
+    midpoint = start + dt.timedelta(days=(end - start).days // 2)
+    return [
+        {"start": start.isoformat(), "end": midpoint.isoformat()},
+        {"start": (midpoint + dt.timedelta(days=1)).isoformat(), "end": end.isoformat()},
+    ]
+
+
+def should_split_result_window(
+    window: dict,
+    metadata: dict,
+    valid_pages: list[int] | None = None,
+    inspected_count: int = 0,
+    threshold: int = RESULT_SPLIT_THRESHOLD,
+) -> bool:
+    result_count = metadata.get("result_count")
+    page_capacity = None
+    if metadata.get("total_pages") and metadata.get("per_page"):
+        page_capacity = int(metadata["total_pages"]) * int(metadata["per_page"])
+    pagination_capacity = (
+        max(valid_pages or [], default=0) * int(metadata.get("per_page") or DEFAULT_PER_PAGE)
+    )
+    observed = max(
+        value for value in (result_count, page_capacity, pagination_capacity, inspected_count, 0)
+        if value is not None
+    )
+    return observed >= threshold and bool(split_date_window(window))
+
+
+def result_window_saturated(
+    metadata: dict,
+    valid_pages: list[int] | None = None,
+    inspected_count: int = 0,
+    threshold: int = RESULT_SPLIT_THRESHOLD,
+) -> bool:
+    result_count = int(metadata.get("result_count") or 0)
+    total_pages = int(metadata.get("total_pages") or 0)
+    per_page = int(metadata.get("per_page") or DEFAULT_PER_PAGE)
+    pagination_capacity = max(valid_pages or [], default=total_pages) * per_page
+    return max(result_count, total_pages * per_page, pagination_capacity, inspected_count) >= threshold
+
+
 def format_uyap_ui_date(iso_date: object) -> str:
     """Gözlenen UYAP arayüz tarih biçimi (``DD/MM/YYYY``, ör. ``10/06/2026``).
 
@@ -186,28 +258,28 @@ def extract_result_metadata(text: object) -> dict:
     """
     fold = _fold(text)
     out = {"result_count": None, "total_pages": None, "current_page": None, "per_page": None}
-    m = re.search(r"(\d+)\s*sonuc\s+bulundu", fold)
-    if m:
-        out["result_count"] = int(m.group(1))
-    m = re.search(r"toplam\s+(\d+)\s+sayfa", fold)
-    if m:
-        out["total_pages"] = int(m.group(1))
-    m = re.search(r"(\d+)\s*\.?\s*sayfayi\s+gormektesiniz", fold)
-    if m:
-        out["current_page"] = int(m.group(1))
-    m = re.search(r"her\s+sayfada\s+(\d+)\s+kayit", fold)
-    if m:
-        out["per_page"] = int(m.group(1))
+    result_counts = [int(value) for value in re.findall(r"(\d+)\s*sonuc\s+bulundu", fold)]
+    total_pages = [int(value) for value in re.findall(r"toplam\s+(\d+)\s+sayfa", fold)]
+    current_pages = [int(value) for value in re.findall(r"(\d+)\s*\.?\s*sayfayi\s+gormektesiniz", fold)]
+    per_pages = [int(value) for value in re.findall(r"her\s+sayfada\s+(\d+)\s+kayit", fold)]
+    if result_counts:
+        out["result_count"] = max(result_counts)
+    if total_pages:
+        out["total_pages"] = max(total_pages)
+    if current_pages:
+        out["current_page"] = max(current_pages)
+    if per_pages:
+        out["per_page"] = max(per_pages)
     return out
 
 
 def zero_results(text: object) -> bool:
     """Pozitif sıfır-sonuç tespiti (giriş sayfası / oturum kaybı ile KARIŞTIRILMAZ)."""
     fold = _fold(text)
-    if "sonuc bulunamadi" in fold or "kayit bulunamadi" in fold:
-        return True
-    m = re.search(r"(\d+)\s*sonuc\s+bulundu", fold)
-    return bool(m and int(m.group(1)) == 0)
+    counts = [int(value) for value in re.findall(r"(\d+)\s*sonuc\s+bulundu", fold)]
+    if counts:
+        return max(counts) == 0
+    return "sonuc bulunamadi" in fold or "kayit bulunamadi" in fold
 
 
 # --------------------------------------------------------------------------- #
@@ -301,7 +373,7 @@ def parse_result_cards(html: object) -> list[dict]:
             if not fid:
                 continue
             kayit = _card_kayit_no(text) or _kayit_no_from_el(el)
-            dedup_key = kayit or fid        # KAYIT NO auction-özel; yoksa Esas No (dış kart önce)
+            dedup_key = (kayit or "", fid, _fold(_card_institution(text) or ""))
             if dedup_key in seen:
                 continue
             seen.add(dedup_key)
@@ -327,7 +399,128 @@ def result_card_signature(html: object) -> tuple:
     Sayfalama tıklaması sonrası kart kümesi GERÇEKTEN değişti mi anlamak için kullanılır (yalnızca
     'içerik değişti' yeterli değil: spinner/DOM oynaması yanıltabilir). OFFLINE test edilebilir.
     """
-    return tuple(sorted((c.get("kayit_no") or c.get("file_id") or "") for c in parse_result_cards(html)))
+    return tuple(sorted(
+        (
+            str(c.get("kayit_no") or ""),
+            str(c.get("file_id") or ""),
+            _fold(c.get("institution_text") or ""),
+        )
+        for c in parse_result_cards(html)
+    ))
+
+
+def result_state_signature(html: object) -> tuple:
+    metadata = extract_result_metadata(html)
+    return (
+        result_card_signature(html),
+        metadata.get("result_count"),
+        metadata.get("total_pages"),
+        metadata.get("current_page"),
+        zero_results(html),
+    )
+
+
+def result_payload_evidence(payload: object) -> dict | None:
+    text = str(payload or "")
+    if not text:
+        return None
+    direct_signature = result_card_signature(text)
+    embedded_signatures: list[tuple] = []
+    structured_identities: set[str] = set()
+    metadata = extract_result_metadata(text)
+    counts = []
+    if metadata.get("result_count") is not None:
+        counts.append(int(metadata["result_count"]))
+    zero = zero_results(text)
+
+    try:
+        decoded = json.loads(text)
+    except Exception:
+        decoded = None
+    identity_keys = {"kayitno", "recordref", "listingref", "dosyano", "esasno"}
+    count_keys = {"resultcount", "totalcount", "totalelements", "toplamkayit", "toplamkayitsayisi"}
+
+    def walk(value, key=""):
+        nonlocal zero
+        normalized_key = re.sub(r"[^a-z0-9]", "", _fold(key))
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                walk(child_value, str(child_key))
+        elif isinstance(value, list):
+            for child_value in value:
+                walk(child_value, key)
+        elif normalized_key in identity_keys and value not in (None, ""):
+            structured_identities.add(str(value).strip())
+        elif normalized_key in count_keys:
+            try:
+                counts.append(int(value))
+            except (TypeError, ValueError):
+                pass
+        elif isinstance(value, str):
+            signature = result_card_signature(value)
+            if signature:
+                embedded_signatures.append(signature)
+            child_metadata = extract_result_metadata(value)
+            if child_metadata.get("result_count") is not None:
+                counts.append(int(child_metadata["result_count"]))
+            zero = zero or zero_results(value)
+
+    if decoded is not None:
+        walk(decoded)
+    result_count = max(counts) if counts else None
+    if result_count is not None and result_count > 0:
+        zero = False
+    cards = direct_signature
+    if not cards and embedded_signatures:
+        cards = max(embedded_signatures, key=len)
+    if not cards:
+        cards = tuple(sorted(structured_identities))
+    if not cards and result_count is None and not zero:
+        return None
+    return {
+        "cards": cards,
+        "result_count": result_count,
+        "zero": bool(zero or result_count == 0),
+    }
+
+
+def dom_matches_result_evidence(html: object, evidence: dict) -> bool:
+    dom_cards = result_card_signature(html)
+    response_cards = tuple(evidence.get("cards") or ())
+    if response_cards:
+        response_count = evidence.get("result_count")
+        dom_count = extract_result_metadata(html).get("result_count")
+        return (
+            bool(dom_cards)
+            and dom_cards == response_cards
+            and response_count is not None
+            and dom_count is not None
+            and int(dom_count) == int(response_count)
+        )
+    if evidence.get("zero") or evidence.get("result_count") == 0:
+        return zero_results(html) and not dom_cards
+    return False
+
+
+def request_has_filter_groups(request, filter_groups: tuple[tuple[str, ...], ...]) -> bool:
+    if not filter_groups:
+        return False
+    try:
+        raw = f"{request.url or ''} {request.post_data or ''}"
+    except Exception:
+        return False
+    decoded = unquote_plus(raw)
+    date_tokens = {
+        _digits(token)
+        for token in re.findall(
+            r"(?<!\d)(?:\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}|\d{8})(?!\d)",
+            decoded,
+        )
+    }
+    return all(
+        any(_digits(variant) in date_tokens for variant in group)
+        for group in filter_groups
+    )
 
 
 def summarize_form_controls(html: object) -> dict:
@@ -658,7 +851,69 @@ def load_bulk_state(store_dir: Path | str | None = None) -> dict:
         data = json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return {"windows": []}
-    return data if isinstance(data, dict) else {"windows": []}
+    if not isinstance(data, dict):
+        return {"schema_version": 2, "windows": []}
+    windows = []
+    seen = set()
+    migrated = 0
+    for record in data.get("windows", []):
+        rec = dict(record)
+        legacy = not rec.get("phase")
+        if legacy:
+            # Legacy state cannot prove whether COMPLETE meant discovery or acquisition.
+            # Treat it as discovery; incomplete candidates independently drive acquisition.
+            rec["phase"] = PHASE_DISCOVERY
+            rec["key"] = window_key(
+                rec.get("province"), rec.get("window_start"), rec.get("window_end"),
+                PHASE_DISCOVERY,
+            )
+            migrated += 1
+        else:
+            rec["phase"] = _phase(rec["phase"])
+            rec["key"] = window_key(
+                rec.get("province"), rec.get("window_start"), rec.get("window_end"),
+                rec["phase"],
+            )
+        if (
+            legacy
+            and rec.get("status") == "COMPLETE"
+            and result_window_saturated(rec, rec.get("pages_completed") or [])
+        ):
+            rec["legacy_status"] = "COMPLETE"
+            rec["legacy_pages_completed"] = list(rec.get("pages_completed") or [])
+            rec["pages_completed"] = []
+            rec["status"] = "LEGACY_SATURATION_RECHECK"
+        elif (
+            legacy
+            and rec.get("status") == "COMPLETE"
+            and (
+                rec.get("result_count") is None
+                or not rec.get("pages_completed")
+                or set(rec.get("pages_completed") or []) != set(range(
+                    1,
+                    (
+                        int(rec.get("result_count") or 0)
+                        + int(rec.get("per_page") or DEFAULT_PER_PAGE)
+                        - 1
+                    ) // int(rec.get("per_page") or DEFAULT_PER_PAGE) + 1,
+                ))
+            )
+        ):
+            rec["legacy_status"] = "COMPLETE"
+            rec["legacy_pages_completed"] = list(rec.get("pages_completed") or [])
+            rec["pages_completed"] = []
+            rec["status"] = "LEGACY_CARDINALITY_RECHECK"
+        if rec["key"] in seen:
+            continue
+        seen.add(rec["key"])
+        windows.append(rec)
+    data["schema_version"] = 2
+    data["windows"] = windows
+    if migrated:
+        data["legacy_windows_migrated_to_discovery"] = int(
+            data.get("legacy_windows_migrated_to_discovery") or 0
+        ) + migrated
+    return data
 
 
 def save_bulk_state(state: dict, store_dir: Path | str | None = None) -> Path:
@@ -669,13 +924,34 @@ def save_bulk_state(state: dict, store_dir: Path | str | None = None) -> Path:
         return atomic_write_json(p, state)
 
 
-def window_key(province: object, start: object, end: object) -> str:
-    return f"{_ascii_lower(province).strip()}|{start}|{end}"
+def _phase(phase: str | None) -> str:
+    value = str(phase or PHASE_ACQUISITION).strip().lower()
+    if value not in (PHASE_DISCOVERY, PHASE_ACQUISITION):
+        raise ValueError(f"unknown bulk phase: {phase!r}")
+    return value
 
 
-def new_window_record(province: str, start: str, end: str) -> dict:
+def window_key(
+    province: object,
+    start: object,
+    end: object,
+    phase: str = PHASE_ACQUISITION,
+) -> str:
+    base = f"{_ascii_lower(province).strip()}|{start}|{end}"
+    normalized = _phase(phase)
+    return base if normalized == PHASE_ACQUISITION else f"{normalized}|{base}"
+
+
+def new_window_record(
+    province: str,
+    start: str,
+    end: str,
+    phase: str = PHASE_ACQUISITION,
+) -> dict:
+    normalized = _phase(phase)
     return {
-        "key": window_key(province, start, end),
+        "key": window_key(province, start, end, normalized),
+        "phase": normalized,
         "province": province,
         "window_start": start,
         "window_end": end,
@@ -691,8 +967,14 @@ def new_window_record(province: str, start: str, end: str) -> dict:
     }
 
 
-def get_window_record(state: dict, province: object, start: object, end: object) -> dict | None:
-    key = window_key(province, start, end)
+def get_window_record(
+    state: dict,
+    province: object,
+    start: object,
+    end: object,
+    phase: str = PHASE_ACQUISITION,
+) -> dict | None:
+    key = window_key(province, start, end, phase)
     for w in state.get("windows", []):
         if w.get("key") == key:
             return w
@@ -722,9 +1004,410 @@ def pages_remaining(rec: dict, valid_pages: list[int]) -> list[int]:
     return [p for p in valid_pages if p not in done]
 
 
+def mark_acquisition_incomplete(rec: dict, pending_refs: set[str]) -> dict:
+    rec["status"] = "ACQUISITION_INCOMPLETE"
+    rec["pending_record_refs"] = sorted(str(value) for value in pending_refs)
+    rec["pages_completed"] = []
+    return rec
+
+
+def window_tree_complete(
+    state: dict,
+    province: str,
+    window: dict,
+    phase: str = PHASE_DISCOVERY,
+) -> bool:
+    rec = get_window_record(state, province, window["start"], window["end"], phase)
+    if rec is None:
+        return False
+    if rec.get("status") == "COMPLETE":
+        return True
+    if rec.get("status") != "SPLIT":
+        return False
+    children = split_date_window(window)
+    return bool(children) and all(
+        window_tree_complete(state, province, child, phase) for child in children
+    )
+
+
+def window_tree_saturated_only(
+    state: dict,
+    province: str,
+    window: dict,
+    phase: str = PHASE_DISCOVERY,
+) -> bool:
+    """True when every unresolved leaf is saturated and all other leaves are complete."""
+    rec = get_window_record(state, province, window["start"], window["end"], phase)
+    if rec is None:
+        return False
+    if rec.get("status") == "SATURATED_UNRESOLVED":
+        return True
+    if rec.get("status") != "SPLIT":
+        return False
+    children = split_date_window(window)
+    if not children:
+        return False
+    has_saturated = False
+    for child in children:
+        if window_tree_complete(state, province, child, phase):
+            continue
+        if window_tree_saturated_only(state, province, child, phase):
+            has_saturated = True
+            continue
+        return False
+    return has_saturated
+
+
+def prioritize_pending_windows(
+    state: dict,
+    province: str,
+    windows: list[dict],
+    phase: str = PHASE_DISCOVERY,
+) -> list[dict]:
+    """Çözülemeyen tek-gün kaplarını normal backlog'un arkasına erteler."""
+    ready: list[dict] = []
+    saturated: list[dict] = []
+    for window in windows:
+        if phase == PHASE_DISCOVERY and window_tree_complete(
+            state, province, window, phase
+        ):
+            continue
+        target = (
+            saturated
+            if window_tree_saturated_only(state, province, window, phase)
+            else ready
+        )
+        target.append(window)
+    return ready + saturated
+
+
+def normalize_campaign_provinces(provinces: list[str] | tuple[str, ...] | None) -> list[str]:
+    if not provinces:
+        return list(UYAP_PROVINCES)
+    requested = []
+    allowed = {_fold(province): province for province in UYAP_PROVINCES}
+    for province in provinces:
+        canonical = allowed.get(_fold(province).strip())
+        if canonical is None:
+            raise ValueError(f"unknown UYAP province: {province!r}")
+        if canonical not in requested:
+            requested.append(canonical)
+    return requested
+
+
+def canonicalize_province_label(value: object) -> str | None:
+    folded = _fold(value).strip()
+    if not folded:
+        return None
+    return {_fold(province): province for province in UYAP_PROVINCES}.get(folded)
+
+
+def prioritize_campaign_provinces(provinces: list[str], state: dict | None = None) -> list[str]:
+    """Önce gözlenen Satıldı/kart verimi; veri yoksa yüksek-hacimli cold-start sırası."""
+    state = state or {"windows": []}
+    stats: dict[str, dict[str, int]] = {}
+    for record in state.get("windows", []):
+        province = canonicalize_province_label(record.get("province"))
+        if not province:
+            continue
+        row = stats.setdefault(province, {"sold": 0, "cards": 0, "saturated": 0})
+        row["sold"] += int(record.get("sold_discovered") or 0)
+        row["cards"] += int(record.get("result_cards_inspected") or 0)
+        row["saturated"] += int(record.get("status") == "SATURATED_UNRESOLVED")
+    cold_rank = {province: index for index, province in enumerate(_COLD_START_PRIORITY)}
+
+    def key(province: str):
+        row = stats.get(province, {})
+        cards = int(row.get("cards") or 0)
+        sold = int(row.get("sold") or 0)
+        measured = 1 if cards else 0
+        saturated = 1 if row.get("saturated") else 0
+        yield_rate = sold / cards if cards else 0.0
+        return (
+            saturated,
+            -measured,
+            -yield_rate,
+            cold_rank.get(province, len(cold_rank)),
+            province,
+        )
+
+    return sorted(normalize_campaign_provinces(provinces), key=key)
+
+
+def build_discovery_campaign_plan(
+    provinces: list[str] | tuple[str, ...] | None,
+    date_from: object,
+    date_to: object,
+    state: dict | None = None,
+    newest_first: bool = True,
+    max_windows_per_province: int | None = None,
+) -> list[dict]:
+    if max_windows_per_province is not None and max_windows_per_province < 1:
+        raise ValueError("max_windows_per_province must be >= 1")
+    state = state or {"windows": []}
+    windows = generate_date_windows(date_from, date_to)
+    if newest_first:
+        windows.reverse()
+    tasks = []
+    for province in normalize_campaign_provinces(provinces):
+        pending = [
+            window for window in windows
+            if not window_tree_complete(state, province, window, PHASE_DISCOVERY)
+        ]
+        pending = prioritize_pending_windows(
+            state, province, pending, PHASE_DISCOVERY
+        )
+        if max_windows_per_province:
+            pending = pending[:max_windows_per_province]
+        for window in pending:
+            tasks.append({"phase": PHASE_DISCOVERY, "province": province, **window})
+    return tasks
+
+
+def build_acquisition_queue(
+    store_dir: Path | str | None = None,
+    provinces: list[str] | tuple[str, ...] | None = None,
+    date_from: object | None = None,
+    date_to: object | None = None,
+) -> list[dict]:
+    ordered_provinces = normalize_campaign_provinces(provinces) if provinces else list(UYAP_PROVINCES)
+    allowed = set(ordered_provinces) if provinces else None
+    province_rank = {province: index for index, province in enumerate(ordered_provinces)}
+    start = _parse_iso(date_from) if date_from else None
+    end = _parse_iso(date_to) if date_to else None
+    if start and end and end < start:
+        raise ValueError("date_to must be >= date_from")
+    bulk_state = load_bulk_state(store_dir)
+    grouped: dict[tuple[str, str, str], dict] = {}
+    for candidate in store.load_candidates(store_dir):
+        if not should_acquire(candidate) or candidate.get("admitted_public_record_id"):
+            continue
+        metadata = candidate.get("bulk") or {}
+        province = canonicalize_province_label(metadata.get("province_label"))
+        window_start = metadata.get("window_start")
+        window_end = metadata.get("window_end")
+        if not province or not window_start or not window_end:
+            continue
+        if allowed and province not in allowed:
+            continue
+        window_start_day = _parse_iso(window_start)
+        window_end_day = _parse_iso(window_end)
+        if start and window_end_day < start:
+            continue
+        if end and window_start_day > end:
+            continue
+        record_ref = candidate.get("kayit_no") or metadata.get("kayit_no")
+        if not record_ref:
+            continue
+        record_ref = str(record_ref)
+        candidate_id = str(candidate["candidate_id"])
+        group = grouped.setdefault(
+            (province, window_start, window_end),
+            {"candidate_ids": [], "record_refs": [], "candidate_ids_by_ref": {}},
+        )
+        group["candidate_ids"].append(candidate_id)
+        group["record_refs"].append(record_ref)
+        group["candidate_ids_by_ref"].setdefault(record_ref, []).append(candidate_id)
+    tasks = []
+    for (province, window_start, window_end), group in grouped.items():
+        record_refs = sorted(set(group["record_refs"]))
+        if not group["candidate_ids"] or not record_refs:
+            continue
+        rec = get_window_record(
+            bulk_state, province, window_start, window_end, PHASE_ACQUISITION
+        )
+        attempted = set((rec or {}).get("attempted_record_refs") or [])
+        tasks.append({
+            "phase": PHASE_ACQUISITION,
+            "province": province,
+            "start": window_start,
+            "end": window_end,
+            "candidate_ids": sorted(group["candidate_ids"]),
+            "candidate_ids_by_ref": {
+                ref: sorted(set(candidate_ids))
+                for ref, candidate_ids in group["candidate_ids_by_ref"].items()
+            },
+            "record_refs": record_refs,
+            "candidate_count": len(group["candidate_ids"]),
+            "all_targets_attempted": set(record_refs).issubset(attempted),
+            "retry_round": int((rec or {}).get("retry_round") or 0),
+        })
+    return sorted(
+        tasks,
+        key=lambda task: (
+            bool(task["all_targets_attempted"]),
+            task["retry_round"],
+            province_rank.get(task["province"], len(province_rank)),
+            -_parse_iso(task["start"]).toordinal(),
+        ),
+    )
+
+
+def acquisition_queue_blockers(
+    store_dir: Path | str | None = None,
+    provinces: list[str] | tuple[str, ...] | None = None,
+    date_from: object | None = None,
+    date_to: object | None = None,
+) -> list[dict]:
+    allowed = set(normalize_campaign_provinces(provinces)) if provinces else None
+    start = _parse_iso(date_from) if date_from else None
+    end = _parse_iso(date_to) if date_to else None
+    if start and end and end < start:
+        raise ValueError("date_to must be >= date_from")
+    blockers = []
+    for candidate in store.load_candidates(store_dir):
+        if not should_acquire(candidate) or candidate.get("admitted_public_record_id"):
+            continue
+        metadata = candidate.get("bulk") or {}
+        raw_province = metadata.get("province_label")
+        province = canonicalize_province_label(raw_province)
+        if allowed:
+            if province and province not in allowed:
+                continue
+            if not province:
+                continue
+        window_start = metadata.get("window_start")
+        window_end = metadata.get("window_end")
+        if window_start and window_end:
+            window_start_day = _parse_iso(window_start)
+            window_end_day = _parse_iso(window_end)
+            if start and window_end_day < start:
+                continue
+            if end and window_start_day > end:
+                continue
+        missing = []
+        if not (candidate.get("kayit_no") or metadata.get("kayit_no")):
+            missing.append("missing_kayit_no")
+        if not province:
+            missing.append("missing_province" if not str(raw_province or "").strip() else "invalid_province")
+        if not window_start or not window_end:
+            missing.append("missing_window")
+        if missing:
+            blockers.append({
+                "candidate_id": candidate.get("candidate_id"),
+                "province": province,
+                "reasons": missing,
+            })
+            continue
+    return blockers
+
+
+def limit_campaign_tasks(tasks: list[dict], max_provinces: int | None) -> list[dict]:
+    if max_provinces is None:
+        return tasks
+    if max_provinces < 1:
+        raise ValueError("max_provinces must be >= 1")
+    selected = []
+    allowed = set()
+    for task in tasks:
+        province = task["province"]
+        if province not in allowed and len(allowed) >= max_provinces:
+            continue
+        allowed.add(province)
+        selected.append(task)
+    return selected
+
+
+def limit_campaign_windows_per_province(
+    tasks: list[dict], max_windows_per_province: int | None
+) -> list[dict]:
+    if max_windows_per_province is None:
+        return tasks
+    if max_windows_per_province < 1:
+        raise ValueError("max_windows_per_province must be >= 1")
+    counts: dict[str, int] = {}
+    selected = []
+    for task in tasks:
+        province = task["province"]
+        if counts.get(province, 0) >= max_windows_per_province:
+            continue
+        counts[province] = counts.get(province, 0) + 1
+        selected.append(task)
+    return selected
+
+
 # --------------------------------------------------------------------------- #
 # 9) Tek satılan-açık-artırma işleme (ORKESTRASYON) — çalışan yolu YENİDEN KULLANIR.
 # --------------------------------------------------------------------------- #
+def persist_discovered_cards(
+    cards: list[dict],
+    *,
+    store_dir: Path | str | None = None,
+    source_page_ref: str | None = None,
+    province_label: str | None = None,
+    window: dict | None = None,
+) -> list[dict]:
+    """Bir sonuç sayfasındaki keşifleri tek atomik candidate-store yazımıyla kalıcılaştırır."""
+    from .io import locked
+
+    outcomes = []
+    path = store.store_path(store_dir)
+    with locked(path):
+        candidates = store.load_candidates(store_dir)
+        by_id = {candidate.get("candidate_id"): candidate for candidate in candidates}
+        changed = False
+        for card in cards:
+            file_id = card.get("file_id")
+            kayit_no = card.get("kayit_no")
+            institution = card.get("institution_text") or province_label or "UYAP e-Satış"
+            outcome = {
+                "candidate_id": None,
+                "file_id": file_id,
+                "kayit_no": kayit_no,
+                "discovered": False,
+                "acquired": False,
+                "skipped": False,
+                "audit_decision": None,
+                "outcome": "not_processed",
+            }
+            if not file_id:
+                outcome["outcome"] = "no_stable_file_identity"
+                outcomes.append(outcome)
+                continue
+            candidate_id = deterministic_candidate_id(institution, file_id, kayit_no)
+            candidate = by_id.get(candidate_id)
+            created = candidate is None
+            if candidate is None:
+                candidate = store.new_candidate(
+                    institution=institution,
+                    file_id=file_id,
+                    listing_ref=kayit_no,
+                    status_text=card.get("source_status_raw"),
+                    source_page_ref=source_page_ref,
+                    record_ref=kayit_no,
+                )
+                candidate["state"] = STATE_DISCOVERED
+                candidates.append(candidate)
+                by_id[candidate_id] = candidate
+                store.log_event(candidate, "discovered_batch", card.get("source_status_raw") or "")
+            else:
+                candidate["listing_ref"] = kayit_no or candidate.get("listing_ref")
+                candidate["status_text"] = (
+                    card.get("source_status_raw")
+                    if card.get("source_status_raw") is not None
+                    else candidate.get("status_text")
+                )
+                candidate["source_page_ref"] = source_page_ref or candidate.get("source_page_ref")
+                store.log_event(candidate, "rediscovered_batch", card.get("source_status_raw") or "")
+            candidate.setdefault("bulk", {}).update({
+                "kayit_no": kayit_no,
+                "province_label": province_label,
+                "window_start": (window or {}).get("start"),
+                "window_end": (window or {}).get("end"),
+                "source_status_raw": card.get("source_status_raw"),
+            })
+            changed = True
+            outcome.update({
+                "candidate_id": candidate_id,
+                "discovered": True,
+                "outcome": "discovered" if created else "rediscovered",
+            })
+            outcomes.append(outcome)
+        if changed:
+            store.save_candidates(candidates, store_dir)
+    return outcomes
+
+
 def process_sold_auction(
     card: dict,
     *,
@@ -804,6 +1487,14 @@ def process_sold_auction(
         store.log_event(existing, "bulk_acquisition_failed", str(exc)[:160])
         store.upsert(existing, store_dir)
         outcome.update({"outcome": "acquisition_failed", "error": str(exc)[:160]})
+        return outcome
+    if not artifacts:
+        error = "native_document_collection_empty"
+        existing.setdefault("bulk", {})["last_acquisition_error"] = error
+        existing["bulk"]["collection_diagnostics"] = diag or {}
+        store.log_event(existing, "bulk_acquisition_failed", error)
+        store.upsert(existing, store_dir)
+        outcome.update({"outcome": "acquisition_failed", "error": error})
         return outcome
 
     # status_card (terminal-durum kanıtı) + toplanan belgeler.
@@ -927,12 +1618,20 @@ class UyapBulkCollector:
             cat = self._select_category_tasinmaz(page)
             prov = self._select_province(page, province)
             dates = self._set_and_verify_dates(page, start_ui, end_ui)
-            ara = self._click_ara(page) if dates else False
-            result_html = self._wait_result_state(page) if ara else page.content()
+            before_html = page.content()
+            ara, result_html, transitioned = (
+                self._click_and_wait_result(
+                    page,
+                    result_state_signature(before_html),
+                    ((start_ui, w["start"]), (end_ui, w["end"])),
+                )
+                if dates else (False, page.content(), False)
+            )
             summary = summarize_result_structure(result_html)
             summary["steps"] = {
                 "window": w, "category_selected": cat, "province_selected": prov,
                 "dates_verified": dates, "ara_clicked": ara,
+                "result_transition_verified": transitioned,
                 "session": detect_session_expiration(result_html, page.url),
             }
             return summary
@@ -964,9 +1663,16 @@ class UyapBulkCollector:
             self._select_category_tasinmaz(page)
             self._select_province(page, province)
             dates = self._set_and_verify_dates(page, start_ui, end_ui)
-            ara = self._click_ara(page) if dates else False
-            self._wait_result_state(page)
-            cards = parse_result_cards(page.content())
+            before_html = page.content()
+            ara, result_html, refresh_verified = (
+                self._click_and_wait_result(
+                    page,
+                    result_state_signature(before_html),
+                    ((start_ui, w["start"]), (end_ui, w["end"])),
+                )
+                if dates else (False, page.content(), False)
+            )
+            cards = parse_result_cards(result_html) if ara and refresh_verified else []
             target = None
             for c in cards:
                 if target_kayit_no and c.get("kayit_no") == target_kayit_no:
@@ -1012,12 +1718,31 @@ class UyapBulkCollector:
         resume: bool = False,
         force: bool = False,
         kayit_no: str | None = None,
+        kayit_nos: set[str] | None = None,
+        target_candidate_ids_by_ref: dict[str, set[str]] | None = None,
+        newest_first: bool = False,
     ) -> dict:  # pragma: no cover - canlı tarayıcı gerektirir
         from .collect import BrowserCollector
 
+        if max_records is not None and max_records < 1:
+            raise ValueError("max_records must be >= 1")
+        if max_windows is not None and max_windows < 1:
+            raise ValueError("max_windows must be >= 1")
+        if kayit_nos is not None and not kayit_nos:
+            raise ValueError("targeted acquisition requires at least one KAYIT NO")
+        target_refs = (
+            {str(value) for value in kayit_nos}
+            if kayit_nos is not None else None
+        )
+        if kayit_no:
+            target_refs = target_refs or set()
+            target_refs.add(str(kayit_no))
+
         windows = generate_date_windows(date_from, date_to)
-        if max_windows:
-            windows = windows[:max_windows]
+        if newest_first:
+            windows.reverse()
+        phase = PHASE_DISCOVERY if discovery_only else PHASE_ACQUISITION
+        started_at = time.monotonic()
         summary = {
             "category": CATEGORY_TASINMAZ,
             "province": province,
@@ -1036,6 +1761,13 @@ class UyapBulkCollector:
             "stopped_reason": None,
             "dry_run": bool(dry_run),
             "discovery_only": bool(discovery_only),
+            "phase": phase,
+            "newest_first": bool(newest_first),
+            "dense_windows_split": 0,
+            "saturated_windows_unresolved": 0,
+            "result_refresh_failures": 0,
+            "acquisition_windows_incomplete": 0,
+            "discovery_windows_incomplete": 0,
         }
         if dry_run:
             summary["planned_windows"] = windows
@@ -1078,31 +1810,132 @@ class UyapBulkCollector:
                                                     native_only=True, target_record_ref=record_ref)
 
             state = load_bulk_state(self.store_dir)
-            for w in windows:
-                rec = get_window_record(state, province, w["start"], w["end"])
+            pending_windows = (
+                list(windows)
+                if force
+                else prioritize_pending_windows(state, province, list(windows), phase)
+            )
+            while pending_windows:
+                if max_windows and summary["windows_processed"] >= max_windows:
+                    if phase == PHASE_DISCOVERY:
+                        summary["stopped_reason"] = "DISCOVERY_INCOMPLETE"
+                        summary["discovery_windows_incomplete"] = len(pending_windows)
+                    else:
+                        summary["stopped_reason"] = "ACQUISITION_INCOMPLETE"
+                        summary["acquisition_windows_incomplete"] = len(pending_windows)
+                    break
+                w = pending_windows.pop(0)
+                rec = get_window_record(state, province, w["start"], w["end"], phase)
+                targeted_retry = phase == PHASE_ACQUISITION and target_refs is not None
                 if rec and rec.get("status") == "COMPLETE" and not force:
-                    self._print(f"[UYAP BULK] pencere atlandı (tamamlanmış; yeniden çalıştırmak için --force): {w['start']}→{w['end']}")
+                    if targeted_retry:
+                        rec = new_window_record(province, w["start"], w["end"], phase)
+                        upsert_window_record(state, rec)
+                        save_bulk_state(state, self.store_dir)
+                    else:
+                        self._print(f"[UYAP BULK] pencere atlandı (tamamlanmış; yeniden çalıştırmak için --force): {w['start']}→{w['end']}")
+                        continue
+                if rec and rec.get("status") == "SPLIT" and targeted_retry and not force:
+                    retry_round = int(rec.get("retry_round") or 0)
+                    rec = new_window_record(province, w["start"], w["end"], phase)
+                    rec["retry_round"] = retry_round
+                    upsert_window_record(state, rec)
+                    save_bulk_state(state, self.store_dir)
+                if rec and rec.get("status") == "SPLIT" and not force:
+                    if not targeted_retry and window_tree_complete(state, province, w, phase):
+                        rec["status"] = "COMPLETE"
+                        upsert_window_record(state, rec)
+                        save_bulk_state(state, self.store_dir)
+                        continue
+                    children = split_date_window(w)
+                    if newest_first:
+                        children.reverse()
+                    if not force:
+                        children = prioritize_pending_windows(
+                            state, province, children, phase
+                        )
+                    pending_windows = children + pending_windows
+                    summary["windows_total"] += max(0, len(children) - 1)
                     continue
                 if rec is None or force:
-                    rec = new_window_record(province, w["start"], w["end"])  # force → sıfırdan (pages_completed sıfırlanır)
+                    preserved_failure_state = {
+                        field: list(rec.get(field) or [])
+                        for field in (
+                            "unresolved_untargeted_candidate_ids",
+                            "attempted_untargeted_candidate_ids",
+                            "attempted_candidate_ids",
+                            "attempted_record_refs",
+                            "pending_record_refs",
+                        )
+                        if rec and rec.get(field)
+                    }
+                    rec = new_window_record(province, w["start"], w["end"], phase)
+                    rec.update(preserved_failure_state)
                     upsert_window_record(state, rec)
                     save_bulk_state(state, self.store_dir)
 
                 stop = self._run_window(page, context, _acquire, province, w, rec, state,
-                                        summary, max_records, discovery_only, acquired_total, kayit_no,
+                                        summary, max_records, discovery_only, acquired_total,
+                                        target_kayit_nos=target_refs,
+                                        target_candidate_ids_by_ref=target_candidate_ids_by_ref,
                                         force=force)
                 acquired_total = summary["acquisitions_completed"] + summary["sold_skipped_known"]
                 summary["windows_processed"] += 1
+                if stop == "SPLIT_WINDOW":
+                    children = split_date_window(w)
+                    if newest_first:
+                        children.reverse()
+                    if not force:
+                        children = prioritize_pending_windows(
+                            state, province, children, phase
+                        )
+                    pending_windows = children + pending_windows
+                    summary["windows_total"] += len(children)
+                    summary["dense_windows_split"] += 1
+                    continue
+                if stop == "SATURATED_UNRESOLVED":
+                    summary["saturated_windows_unresolved"] += 1
+                    continue
+                if stop == "ACQUISITION_INCOMPLETE":
+                    summary["acquisition_windows_incomplete"] += 1
+                    summary["stopped_reason"] = "ACQUISITION_INCOMPLETE"
+                    continue
+                if stop in {
+                    "RESULT_REFRESH_UNVERIFIED",
+                    "RESULT_STATE_UNCONFIRMED",
+                    "DATE_INPUT_UNVERIFIED",
+                    "ARA_BUTTON_NOT_LOCATED",
+                    "PAGINATION_INCOMPLETE",
+                    "RESULT_COUNT_MISMATCH",
+                }:
+                    summary["stopped_reason"] = stop
+                    summary["result_refresh_failures"] += 1
+                    break
                 if stop == "SESSION_EXPIRED":
                     summary["stopped_reason"] = "SESSION_EXPIRED"
                     summary["session_interruptions"] += 1
                     break
+                if stop == "SELECTION_UNVERIFIED":
+                    summary["stopped_reason"] = "SELECTION_UNVERIFIED"
+                    break
                 if stop == "MAX_RECORDS":
-                    summary["stopped_reason"] = "max_records"
+                    if phase == PHASE_DISCOVERY:
+                        summary["discovery_windows_incomplete"] = 1 + len(pending_windows)
+                        summary["stopped_reason"] = "DISCOVERY_INCOMPLETE"
+                    else:
+                        if rec.get("status") == "ACQUISITION_INCOMPLETE":
+                            summary["acquisition_windows_incomplete"] += 1
+                        summary["stopped_reason"] = "max_records"
                     break
             self._live_active = False
             watchdog_stop.set()
 
+        elapsed = max(time.monotonic() - started_at, 1e-9)
+        summary["elapsed_seconds"] = round(elapsed, 2)
+        summary["windows_per_minute"] = round(summary["windows_processed"] * 60.0 / elapsed, 2)
+        summary["acquisitions_per_minute"] = round(
+            summary["acquisitions_completed"] * 60.0 / elapsed, 2
+        )
         for c in store.load_candidates(self.store_dir):
             dec = (c.get("audit") or {}).get("decision")
             if dec:
@@ -1112,7 +1945,42 @@ class UyapBulkCollector:
 
     def _run_window(self, page, context, acquire, province, w, rec, state, summary,
                     max_records, discovery_only, acquired_total, target_kayit_no=None,
+                    target_kayit_nos: set[str] | None = None,
+                    target_candidate_ids_by_ref: dict[str, set[str]] | None = None,
                     force: bool = False) -> str | None:  # pragma: no cover
+        pending_target_refs = (
+            set(str(value) for value in target_kayit_nos)
+            if target_kayit_nos is not None else None
+        )
+        pending_candidate_ids_by_ref = {
+            str(record_ref): {str(candidate_id) for candidate_id in candidate_ids}
+            for record_ref, candidate_ids in (target_candidate_ids_by_ref or {}).items()
+        }
+        attempted_target_refs = set(rec.get("attempted_record_refs") or [])
+        all_target_candidate_ids = {
+            candidate_id
+            for candidate_ids in pending_candidate_ids_by_ref.values()
+            for candidate_id in candidate_ids
+        }
+        attempted_candidate_ids = set(rec.get("attempted_candidate_ids") or [])
+        attempted_untargeted_candidate_ids = set(
+            rec.get("attempted_untargeted_candidate_ids") or []
+        )
+        unresolved_untargeted_candidate_ids = set(
+            rec.get("unresolved_untargeted_candidate_ids") or []
+        )
+        candidate_cursor = bool(all_target_candidate_ids)
+        all_attempted = (
+            all_target_candidate_ids.issubset(attempted_candidate_ids)
+            if candidate_cursor
+            else bool(pending_target_refs and pending_target_refs.issubset(attempted_target_refs))
+        )
+        if all_attempted:
+            attempted_target_refs.clear()
+            attempted_candidate_ids.clear()
+            rec["attempted_record_refs"] = []
+            rec["attempted_candidate_ids"] = []
+            rec["retry_round"] = int(rec.get("retry_round") or 0) + 1
         start_ui = format_uyap_ui_date(w["start"])
         end_ui = format_uyap_ui_date(w["end"])
         self._print(f"[UYAP BULK] pencere {w['start']}→{w['end']} · {CATEGORY_TASINMAZ} · {province}")
@@ -1121,20 +1989,43 @@ class UyapBulkCollector:
         self._dismiss_notices(page)
         cat_ok = self._select_category_tasinmaz(page)
         prov_ok = self._select_province(page, province)
+        if not cat_ok or not prov_ok:
+            rec["status"] = (
+                "CATEGORY_SELECTION_UNVERIFIED" if not cat_ok
+                else "PROVINCE_SELECTION_UNVERIFIED"
+            )
+            upsert_window_record(state, rec)
+            save_bulk_state(state, self.store_dir)
+            self._print(
+                f"  kategori/il seçimi doğrulanamadı (kategori={cat_ok} il={prov_ok}) — "
+                "arama çalıştırılmadı"
+            )
+            return "SELECTION_UNVERIFIED"
         if not self._set_and_verify_dates(page, start_ui, end_ui):
             rec["status"] = "DATE_INPUT_UNVERIFIED"
             upsert_window_record(state, rec)
             save_bulk_state(state, self.store_dir)
             self._print(f"  tarih girişi doğrulanamadı (kategori={cat_ok} il={prov_ok}) — pencere atlandı (uydurma yok).")
-            return None
-        if not self._click_ara(page):
+            return "DATE_INPUT_UNVERIFIED"
+        before_search_html = page.content()
+        self._beat("ARA sonrası sonuç durumu bekleniyor")
+        ara_clicked, result_html, refresh_verified = self._click_and_wait_result(
+            page,
+            result_state_signature(before_search_html),
+            ((start_ui, w["start"]), (end_ui, w["end"])),
+        )
+        if not ara_clicked:
             rec["status"] = "ARA_BUTTON_NOT_LOCATED"
             upsert_window_record(state, rec)
             save_bulk_state(state, self.store_dir)
             self._print("  ARA (arama) kontrolü bulunamadı — pencere atlandı. `--diagnose` çıktısındaki aksiyon adaylarını paylaşın.")
-            return None
-        self._beat("ARA sonrası sonuç durumu bekleniyor")
-        result_html = self._wait_result_state(page)
+            return "ARA_BUTTON_NOT_LOCATED"
+        if not refresh_verified:
+            rec["status"] = "RESULT_REFRESH_UNVERIFIED"
+            upsert_window_record(state, rec)
+            save_bulk_state(state, self.store_dir)
+            self._print("  ARA isteği/sonuç yenilenmesi doğrulanamadı — pencere tamamlanmadı")
+            return "RESULT_REFRESH_UNVERIFIED"
 
         exp = detect_session_expiration(result_html, page.url)
         if exp["expired"]:
@@ -1143,8 +2034,26 @@ class UyapBulkCollector:
             save_bulk_state(state, self.store_dir)
             self._print(f"  OTURUM SONA ERDİ ({exp['reason']}). Durum kaydedildi; yeniden giriş sonrası devam edilebilir.")
             return "SESSION_EXPIRED"
-        if zero_results(result_html):
+        result_cards = parse_result_cards(result_html)
+        if zero_results(result_html) and not result_cards:
             rec["result_count"] = 0
+            if pending_target_refs:
+                attempted_target_refs.update(pending_target_refs)
+                rec["attempted_record_refs"] = sorted(attempted_target_refs)
+                mark_acquisition_incomplete(rec, pending_target_refs)
+                upsert_window_record(state, rec)
+                save_bulk_state(state, self.store_dir)
+                self._print("  0 sonuç; hedef edinim tamamlanmadı ve tekrar denenebilir kaldı.")
+                return "ACQUISITION_INCOMPLETE"
+            if unresolved_untargeted_candidate_ids:
+                rec["status"] = "ACQUISITION_INCOMPLETE"
+                rec["pages_completed"] = []
+                upsert_window_record(state, rec)
+                save_bulk_state(state, self.store_dir)
+                self._print(
+                    "  0 sonuç; önceki edinim hataları çözülmediği için checkpoint COMPLETE yapılmadı"
+                )
+                return "ACQUISITION_INCOMPLETE"
             rec["status"] = "COMPLETE"
             upsert_window_record(state, rec)
             save_bulk_state(state, self.store_dir)
@@ -1152,7 +2061,7 @@ class UyapBulkCollector:
             return None
 
         meta = extract_result_metadata(result_html)
-        cards_present = bool(parse_result_cards(result_html))
+        cards_present = bool(result_cards)
         if meta.get("result_count") is None and not cards_present:
             rec["status"] = "RESULT_STATE_UNCONFIRMED"
             upsert_window_record(state, rec)
@@ -1160,19 +2069,32 @@ class UyapBulkCollector:
             self._print("  sonuç durumu doğrulanamadı: ARA sonrası numaralı 'N sonuç bulundu' ya da sonuç "
                         "kartı görünmedi (zaman aşımı / ARA tetiklenmedi / sonuçlar farklı yükleniyor olabilir). "
                         "Pencere COMPLETE İŞARETLENMEDİ — `--diagnose-results` ile sonuç yapısını paylaşın.")
-            return None
+            return "RESULT_STATE_UNCONFIRMED"
 
         rec["result_count"] = meta.get("result_count")
         rec["total_pages"] = meta.get("total_pages")
+        if rec.get("pages_completed"):
+            rec["pages_completed"] = []
+            rec["page_checkpoint_reset_reason"] = "fresh_search_revalidation"
+        valid_pages = self._valid_pages(page, meta)
+        if should_split_result_window(w, meta, valid_pages) and pending_target_refs is None:
+            rec["status"] = "SPLIT"
+            upsert_window_record(state, rec)
+            save_bulk_state(state, self.store_dir)
+            self._print(
+                f"  yoğun pencere ({meta.get('result_count')} sonuç / {meta.get('total_pages')} sayfa) "
+                "→ iki alt pencereye bölünüyor"
+            )
+            return "SPLIT_WINDOW"
         upsert_window_record(state, rec)
         save_bulk_state(state, self.store_dir)
 
-        valid_pages = self._valid_pages(page, meta)
         self._print(f"  sonuç={meta.get('result_count')} · geçerli sayfalar={valid_pages} "
                     f"(page 0 hariç) · tamamlanan={rec.get('pages_completed')}")
 
         processed_ids: set = set()
         pages_failed: list = []
+        acquisition_failed_pages: list = []
         for pnum in pages_remaining(rec, valid_pages):
             self._beat(f"sayfa {pnum} yükleniyor")
             if not self._goto_page(page, pnum):
@@ -1191,7 +2113,11 @@ class UyapBulkCollector:
             # Sayfalar arası KAYIT NO tekilleştirme: aynı kart iki sayfada görünürse tekrar işlenmez.
             new_cards = []
             for c in cards:
-                cid = c.get("kayit_no") or c.get("file_id")
+                cid = (
+                    str(c.get("kayit_no") or ""),
+                    str(c.get("file_id") or ""),
+                    _fold(c.get("institution_text") or province or ""),
+                )
                 if cid in processed_ids:
                     continue
                 processed_ids.add(cid)
@@ -1201,36 +2127,178 @@ class UyapBulkCollector:
             sold = [c for c in new_cards if c["sold"]]
             self._print(f"  sayfa {pnum}/{valid_pages[-1] if valid_pages else pnum} · kart={len(new_cards)} · Satıldı={len(sold)}")
 
-            for card in sold:
-                if target_kayit_no and (card.get("kayit_no") or "") != target_kayit_no:
-                    continue                # hedefli edinim: yalnız istenen KAYIT NO işlenir
-                if max_records and summary["records_processed"] >= max_records:
-                    return "MAX_RECORDS"
-                self._beat(f"KAYIT NO {card.get('kayit_no')}: belge ediniliyor (native)")
-                res = process_sold_auction(
-                    card, acquire_documents=acquire, store_dir=self.store_dir,
-                    genuine_path=self.genuine_path, discovery_only=discovery_only,
-                    source_page_ref=self._safe_ref(page.url), province_label=province, window=w,
-                    force=force,
+            def candidate_identity(card):
+                if not target_candidate_ids_by_ref:
+                    return None
+                record_ref = str(card.get("kayit_no") or "")
+                expected_ids = target_candidate_ids_by_ref.get(record_ref)
+                if not expected_ids:
+                    return None
+                file_id = card.get("file_id")
+                if not file_id:
+                    return None
+                institution = card.get("institution_text") or province or "UYAP e-Satış"
+                candidate_id = deterministic_candidate_id(institution, file_id, record_ref)
+                return candidate_id if candidate_id in expected_ids else None
+
+            def candidate_identity_matches(card):
+                return not target_candidate_ids_by_ref or candidate_identity(card) is not None
+
+            def mark_candidate_complete(card, result):
+                if pending_target_refs is None:
+                    return
+                record_ref = str(card.get("kayit_no") or "")
+                if not target_candidate_ids_by_ref:
+                    pending_target_refs.discard(record_ref)
+                    return
+                matched_candidate_id = candidate_identity(card)
+                if not matched_candidate_id or str(result.get("candidate_id") or "") != matched_candidate_id:
+                    return
+                pending_ids = pending_candidate_ids_by_ref.get(record_ref, set())
+                pending_ids.discard(matched_candidate_id)
+                if not pending_ids:
+                    pending_target_refs.discard(record_ref)
+
+            selected_sold = [
+                card for card in sold
+                if (not target_kayit_no or (card.get("kayit_no") or "") == target_kayit_no)
+                and (not target_kayit_nos or str(card.get("kayit_no") or "") in target_kayit_nos)
+                and (
+                    pending_target_refs is None
+                    or (
+                        candidate_identity(card) not in attempted_candidate_ids
+                        if candidate_cursor
+                        else str(card.get("kayit_no") or "") not in attempted_target_refs
+                    )
                 )
-                summary["records_processed"] += 1
-                rec["sold_discovered"] += 1
-                summary["sold_discovered"] += 1
-                self._report_auction(res)
-                if res["outcome"] == "skipped_already_acquired":
-                    rec["sold_skipped_known"] += 1
-                    summary["sold_skipped_known"] += 1
-                elif res["outcome"] == "acquired":
-                    rec["acquisitions_complete"] += 1
-                    summary["acquisitions_completed"] += 1
-                elif res["outcome"] == "acquisition_failed":
-                    rec["acquisitions_failed"] += 1
-                    summary["acquisition_failures"] += 1
-                self._close_modal(page)
-                if not discovery_only:
-                    page.wait_for_timeout(self.request_delay_ms)  # seri/tutucu kaynak davranışı
+                and candidate_identity_matches(card)
+                and (
+                    pending_target_refs is not None
+                    or deterministic_candidate_id(
+                        card.get("institution_text") or province or "UYAP e-Satış",
+                        card.get("file_id"),
+                        card.get("kayit_no"),
+                    ) not in attempted_untargeted_candidate_ids
+                )
+            ]
+            if discovery_only:
+                remaining = (
+                    max_records - summary["records_processed"]
+                    if max_records is not None else None
+                )
+                existing_ids = {
+                    str(candidate.get("candidate_id") or "")
+                    for candidate in store.load_candidates(self.store_dir)
+                }
+                discovery_batch = []
+                new_in_batch = 0
+                page_limit_reached = False
+                for card in selected_sold:
+                    file_id = card.get("file_id")
+                    if not file_id:
+                        discovery_batch.append(card)
+                        continue
+                    institution = card.get("institution_text") or province or "UYAP e-Satış"
+                    candidate_id = deterministic_candidate_id(
+                        institution, file_id, card.get("kayit_no")
+                    )
+                    is_new = candidate_id not in existing_ids
+                    if is_new and remaining is not None and new_in_batch >= remaining:
+                        page_limit_reached = True
+                        break
+                    discovery_batch.append(card)
+                    if is_new:
+                        existing_ids.add(candidate_id)
+                        new_in_batch += 1
+                outcomes = persist_discovered_cards(
+                    discovery_batch,
+                    store_dir=self.store_dir,
+                    source_page_ref=self._safe_ref(page.url),
+                    province_label=province,
+                    window=w,
+                )
+                for res in outcomes:
+                    if res["outcome"] == "discovered":
+                        summary["records_processed"] += 1
+                    rec["sold_discovered"] += 1
+                    summary["sold_discovered"] += 1
+                    self._report_auction(res)
                 upsert_window_record(state, rec)
                 save_bulk_state(state, self.store_dir)
+                if page_limit_reached:
+                    rec["status"] = "DISCOVERY_INCOMPLETE"
+                    upsert_window_record(state, rec)
+                    save_bulk_state(state, self.store_dir)
+                    return "MAX_RECORDS"
+            else:
+                page_acquisition_failed = False
+                for card in selected_sold:
+                    if max_records is not None and summary["records_processed"] >= max_records:
+                        if pending_target_refs:
+                            mark_acquisition_incomplete(rec, pending_target_refs)
+                        else:
+                            rec["status"] = "ACQUISITION_INCOMPLETE"
+                        upsert_window_record(state, rec)
+                        save_bulk_state(state, self.store_dir)
+                        return "MAX_RECORDS"
+                    self._beat(f"KAYIT NO {card.get('kayit_no')}: belge ediniliyor (native)")
+                    res = process_sold_auction(
+                        card, acquire_documents=acquire, store_dir=self.store_dir,
+                        genuine_path=self.genuine_path, discovery_only=False,
+                        source_page_ref=self._safe_ref(page.url), province_label=province, window=w,
+                        force=force,
+                    )
+                    if res["outcome"] != "skipped_already_acquired":
+                        summary["records_processed"] += 1
+                    if pending_target_refs is not None:
+                        matched_candidate_id = candidate_identity(card)
+                        if candidate_cursor and matched_candidate_id:
+                            attempted_candidate_ids.add(matched_candidate_id)
+                            rec["attempted_candidate_ids"] = sorted(attempted_candidate_ids)
+                        else:
+                            attempted_target_refs.add(str(card.get("kayit_no") or ""))
+                        rec["attempted_record_refs"] = sorted(attempted_target_refs)
+                    rec["sold_discovered"] += 1
+                    summary["sold_discovered"] += 1
+                    self._report_auction(res)
+                    if res["outcome"] == "skipped_already_acquired":
+                        rec["sold_skipped_known"] += 1
+                        summary["sold_skipped_known"] += 1
+                        mark_candidate_complete(card, res)
+                        if res.get("candidate_id"):
+                            unresolved_untargeted_candidate_ids.discard(res["candidate_id"])
+                    elif res["outcome"] == "acquired":
+                        rec["acquisitions_complete"] += 1
+                        summary["acquisitions_completed"] += 1
+                        mark_candidate_complete(card, res)
+                        if res.get("candidate_id"):
+                            unresolved_untargeted_candidate_ids.discard(res["candidate_id"])
+                    elif res["outcome"] == "acquisition_failed":
+                        rec["acquisitions_failed"] += 1
+                        summary["acquisition_failures"] += 1
+                        page_acquisition_failed = True
+                        if pending_target_refs is None and res.get("candidate_id"):
+                            unresolved_untargeted_candidate_ids.add(res["candidate_id"])
+                            rec["unresolved_untargeted_candidate_ids"] = sorted(
+                                unresolved_untargeted_candidate_ids
+                            )
+                            attempted_untargeted_candidate_ids.add(res["candidate_id"])
+                            rec["attempted_untargeted_candidate_ids"] = sorted(
+                                attempted_untargeted_candidate_ids
+                            )
+                    rec["unresolved_untargeted_candidate_ids"] = sorted(
+                        unresolved_untargeted_candidate_ids
+                    )
+                    self._close_modal(page)
+                    page.wait_for_timeout(self.request_delay_ms)
+                    upsert_window_record(state, rec)
+                    save_bulk_state(state, self.store_dir)
+                if page_acquisition_failed and pending_target_refs is None:
+                    acquisition_failed_pages.append(pnum)
+                    rec["status"] = "ACQUISITION_INCOMPLETE"
+                    upsert_window_record(state, rec)
+                    save_bulk_state(state, self.store_dir)
+                    continue
 
             mark_page_complete(rec, pnum)
             upsert_window_record(state, rec)
@@ -1238,11 +2306,96 @@ class UyapBulkCollector:
             self._print(f"  sayfa {pnum} kontrol noktası kaydedildi.")
 
         if pages_failed:
-            rec["status"] = "PAGINATION_INCOMPLETE"
+            if pending_target_refs:
+                mark_acquisition_incomplete(rec, pending_target_refs)
+            else:
+                rec["status"] = "PAGINATION_INCOMPLETE"
             upsert_window_record(state, rec)
             save_bulk_state(state, self.store_dir)
             self._print(f"  sayfa(lar) {pages_failed} yüklenemedi — pencere COMPLETE İŞARETLENMEDİ, sonraki koşuda tekrar denenir.")
-            return None
+            return "PAGINATION_INCOMPLETE"
+        if acquisition_failed_pages:
+            rec["status"] = "ACQUISITION_INCOMPLETE"
+            upsert_window_record(state, rec)
+            save_bulk_state(state, self.store_dir)
+            self._print(
+                f"  edinimi başarısız sayfa(lar) {acquisition_failed_pages} — "
+                "checkpoint COMPLETE yapılmadı"
+            )
+            return "ACQUISITION_INCOMPLETE"
+        if pending_target_refs is None and attempted_untargeted_candidate_ids:
+            rec["status"] = "ACQUISITION_INCOMPLETE"
+            rec["pages_completed"] = []
+            rec["attempted_untargeted_candidate_ids"] = []
+            upsert_window_record(state, rec)
+            save_bulk_state(state, self.store_dir)
+            self._print(
+                "  önceki başarısız adaylar ertelendi; sonraki kartlar işlendi ve "
+                "failure cursor yeni tur için sıfırlandı"
+            )
+            return "ACQUISITION_INCOMPLETE"
+        if pending_target_refs is None and unresolved_untargeted_candidate_ids:
+            rec["status"] = "ACQUISITION_INCOMPLETE"
+            rec["pages_completed"] = []
+            rec["unresolved_untargeted_candidate_ids"] = sorted(
+                unresolved_untargeted_candidate_ids
+            )
+            upsert_window_record(state, rec)
+            save_bulk_state(state, self.store_dir)
+            self._print("  önceki edinim hataları çözülmedi — checkpoint COMPLETE yapılmadı")
+            return "ACQUISITION_INCOMPLETE"
+        expected_result_count = int(meta.get("result_count") or 0)
+        if (
+            pending_target_refs is None
+            and expected_result_count > 0
+            and len(processed_ids) != expected_result_count
+        ):
+            rec["status"] = "RESULT_COUNT_MISMATCH"
+            rec["parsed_unique_count"] = len(processed_ids)
+            rec["pages_completed"] = []
+            upsert_window_record(state, rec)
+            save_bulk_state(state, self.store_dir)
+            self._print(
+                f"  kaynak sonuç sayısı={expected_result_count}, benzersiz parse edilen={len(processed_ids)} — "
+                "checkpoint COMPLETE yapılmadı"
+            )
+            return "RESULT_COUNT_MISMATCH"
+        if pending_target_refs:
+            if candidate_cursor:
+                for record_ref in pending_target_refs:
+                    attempted_candidate_ids.update(
+                        pending_candidate_ids_by_ref.get(record_ref, set())
+                    )
+                rec["attempted_candidate_ids"] = sorted(attempted_candidate_ids)
+            else:
+                attempted_target_refs.update(pending_target_refs)
+            rec["attempted_record_refs"] = sorted(attempted_target_refs)
+            mark_acquisition_incomplete(rec, pending_target_refs)
+            upsert_window_record(state, rec)
+            save_bulk_state(state, self.store_dir)
+            self._print(
+                f"  hedef edinim tamamlanmadı: {sorted(pending_target_refs)} · sonraki campaign tekrar deneyecek"
+            )
+            return "ACQUISITION_INCOMPLETE"
+        if pending_target_refs is None and result_window_saturated(
+            meta, valid_pages, len(processed_ids)
+        ):
+            children = split_date_window(w)
+            rec["pages_completed"] = []
+            rec["status"] = "SPLIT" if children else "SATURATED_UNRESOLVED"
+            upsert_window_record(state, rec)
+            save_bulk_state(state, self.store_dir)
+            if not children:
+                self._print(
+                    "  tek-gün/ayrıştırılamayan pencere kaynak limitinde doygun — "
+                    "görünür kartlar kaydedildi, COMPLETE yazılmadı"
+                )
+            return "SPLIT_WINDOW" if children else "SATURATED_UNRESOLVED"
+        rec.pop("pending_record_refs", None)
+        rec.pop("attempted_record_refs", None)
+        rec.pop("attempted_candidate_ids", None)
+        rec.pop("attempted_untargeted_candidate_ids", None)
+        rec.pop("unresolved_untargeted_candidate_ids", None)
         rec["status"] = "COMPLETE"
         upsert_window_record(state, rec)
         save_bulk_state(state, self.store_dir)
@@ -1411,7 +2564,7 @@ class UyapBulkCollector:
         except Exception:
             return False
 
-    def _click_ara(self, page):  # pragma: no cover - canlı DOM
+    def _click_ara(self, page, before_click=None):  # pragma: no cover - canlı DOM
         """Geçmiş İlanlar ARA kontrolünü bulur ve tıklar (button VEYA anchor/[role=button]).
 
         ARA çoğu zaman <a class="btn">Ara</a> olabilir; GÖRÜNÜR olan ilk eşleşme tıklanır."""
@@ -1432,6 +2585,8 @@ class UyapBulkCollector:
                     el = loc.nth(i)
                     try:
                         if el.is_visible():
+                            if before_click is not None:
+                                before_click()
                             el.click()
                             return True
                     except Exception:
@@ -1440,10 +2595,118 @@ class UyapBulkCollector:
                 continue
         return False
 
-    def _wait_result_state(self, page):  # pragma: no cover - canlı DOM
-        """ARA sonrası sonuçların TAM yüklenmesini bekler: kart imzası STABİLLEŞENE (art arda aynı)
-        kadar — AJAX kartları kademeli render edebilir (önce 8 görünüp sonra 20 olması gibi). Gerçek
-        0 sonuç / oturum kaybı hemen döner.
+    def _start_result_request_probe(
+        self, page, filter_groups=()
+    ):  # pragma: no cover - canlı DOM
+        probe = {
+            "armed": False,
+            "started": set(),
+            "pending": set(),
+            "completed": 0,
+            "evidence": [],
+            "latest_started_sequence": -1,
+            "latest_evidence_sequence": -1,
+            "latest_evidence": None,
+            "next_sequence": 0,
+            "request_sequences": {},
+            "handlers": [],
+        }
+
+        def eligible(request):
+            try:
+                return (
+                    request.resource_type in {"xhr", "fetch"}
+                    and request_has_filter_groups(request, filter_groups)
+                )
+            except Exception:
+                return False
+
+        def on_request(request):
+            if probe["armed"] and eligible(request):
+                request_id = id(request)
+                sequence = probe["next_sequence"]
+                probe["next_sequence"] += 1
+                probe["request_sequences"][request_id] = sequence
+                probe["latest_started_sequence"] = sequence
+                probe["started"].add(request_id)
+                probe["pending"].add(request_id)
+
+        def on_finished(request):
+            request_id = id(request)
+            if request_id in probe["started"]:
+                probe["pending"].discard(request_id)
+                probe["completed"] += 1
+                successful = False
+                payload = ""
+                try:
+                    response = request.response()
+                    successful = response is not None and 200 <= int(response.status) < 400
+                    if successful:
+                        payload = response.text()
+                except Exception:
+                    successful = False
+                evidence = result_payload_evidence(payload) if successful else None
+                sequence = probe["request_sequences"].get(request_id, -1)
+                if evidence is not None:
+                    probe["evidence"].append(evidence)
+                    if sequence >= probe["latest_evidence_sequence"]:
+                        probe["latest_evidence_sequence"] = sequence
+                        probe["latest_evidence"] = evidence
+
+        def on_failed(request):
+            probe["pending"].discard(id(request))
+
+        try:
+            for event, handler in (
+                ("request", on_request),
+                ("requestfinished", on_finished),
+                ("requestfailed", on_failed),
+            ):
+                page.on(event, handler)
+                probe["handlers"].append((event, handler))
+        except Exception:
+            self._stop_result_request_probe(page, probe)
+            return None
+        return probe
+
+    def _stop_result_request_probe(self, page, probe):  # pragma: no cover - canlı DOM
+        if not probe:
+            return
+        for event, handler in probe.get("handlers", []):
+            try:
+                page.remove_listener(event, handler)
+            except Exception:
+                continue
+
+    def _click_and_wait_result(
+        self, page, baseline_signature, filter_groups=()
+    ):  # pragma: no cover - canlı DOM
+        probe = self._start_result_request_probe(page, filter_groups)
+        try:
+            if probe is None:
+                clicked = self._click_ara(page)
+            else:
+                clicked = self._click_ara(
+                    page, before_click=lambda: probe.update(armed=True)
+                )
+            if not clicked:
+                return False, page.content(), False
+            if probe is None:
+                html, verified = self._wait_result_state(page, baseline_signature)
+            else:
+                html, verified = self._wait_result_state(
+                    page, baseline_signature, request_probe=probe
+                )
+            return True, html, verified
+        finally:
+            self._stop_result_request_probe(page, probe)
+
+    def _wait_result_state(
+        self, page, baseline_signature=None, request_probe=None
+    ):  # pragma: no cover - canlı DOM
+        """ARA sonrası sonuçların TAM yüklenmesini bekler: eski state'ten geçiş ve yeni state'in
+        stabil kalması gerekir. AJAX kartları kademeli render edebilir; 0 sonuç da ara yükleme
+        boşluğuyla karışmaması için art arda doğrulanır. Oturum kaybı hemen döner.
         """
         deadline = self.result_timeout_ms
         step = 400
@@ -1451,24 +2714,77 @@ class UyapBulkCollector:
         html = ""
         last_sig = None
         stable = 0
+        last_zero_state = None
+        zero_stable = 0
+        baseline_cards = baseline_signature[0] if baseline_signature else ()
+        baseline_zero = bool(baseline_signature and baseline_signature[4])
+        request_state = None
+        request_stable = 0
         while waited < deadline:
             try:
                 html = page.content()
             except Exception:
                 html = ""
-            if detect_session_expiration(html, page.url)["expired"] or zero_results(html):
-                return html
+            if detect_session_expiration(html, page.url)["expired"]:
+                return html, True
+            state_signature = result_state_signature(html)
             sig = result_card_signature(html)
-            if sig and sig == last_sig:
+            zero_state = bool(zero_results(html) and not sig)
+            current_request_state = None
+            if request_probe is not None:
+                latest_evidence = request_probe.get("latest_evidence")
+                evidence_values = (
+                    [latest_evidence]
+                    if latest_evidence is not None
+                    else list(request_probe.get("evidence") or ())
+                )
+                current_request_state = (
+                    request_probe.get("latest_started_sequence", len(evidence_values)),
+                    request_probe.get("latest_evidence_sequence", len(evidence_values)),
+                    len(request_probe.get("pending") or ()),
+                )
+                request_complete = (
+                    bool(evidence_values)
+                    and current_request_state[0] == current_request_state[1]
+                    and current_request_state[2] == 0
+                )
+                if request_complete and current_request_state == request_state:
+                    request_stable += 1
+                else:
+                    request_stable = 0
+                request_state = current_request_state
+            request_verified = request_stable >= 2 and any(
+                dom_matches_result_evidence(html, evidence)
+                for evidence in evidence_values
+            ) if request_probe is not None else False
+            cards_fresh = baseline_signature is None or sig != baseline_cards
+            zero_fresh = baseline_signature is None or not baseline_zero
+            result_verified = (
+                request_verified
+                if request_probe is not None
+                else (zero_fresh if zero_state else cards_fresh)
+            )
+            if zero_state and result_verified:
+                if state_signature == last_zero_state:
+                    zero_stable += 1
+                    if zero_stable >= 3:
+                        return html, True
+                else:
+                    last_zero_state = state_signature
+                    zero_stable = 0
+            else:
+                last_zero_state = None
+                zero_stable = 0
+            if sig and result_verified and sig == last_sig:
                 stable += 1
                 if stable >= 2:            # ~0.8s değişmedi → tam yüklendi
-                    return html
+                    return html, True
             else:
                 last_sig = sig
                 stable = 0
             page.wait_for_timeout(step)
             waited += step
-        return html
+        return html, False
 
     def _result_ready(self, html):  # pragma: no cover - canlı DOM
         """Gerçek sonuç durumu: NUMARALI 'N sonuç bulundu' YA DA en az bir sonuç kartı (şablon metni değil)."""
@@ -1497,9 +2813,17 @@ class UyapBulkCollector:
                 except Exception:
                     continue
         pages = valid_result_pages(labels)   # 0 ASLA dahil edilmez
-        if not pages and meta.get("total_pages"):
-            pages = list(range(1, int(meta["total_pages"]) + 1))
-        return pages or [1]
+        expected_total = int(meta.get("total_pages") or 0)
+        result_count = int(meta.get("result_count") or 0)
+        per_page = int(meta.get("per_page") or DEFAULT_PER_PAGE)
+        if result_count:
+            expected_total = max(
+                expected_total,
+                (result_count + per_page - 1) // per_page,
+            )
+        if pages:
+            expected_total = max(expected_total, max(pages))
+        return list(range(1, max(expected_total, 1) + 1))
 
     def _goto_page(self, page, pnum):  # pragma: no cover - canlı DOM
         """Geçerli sayfaya (pnum>0) gider; kart imzası GERÇEKTEN değişip STABİLLEŞENE kadar bekler.
@@ -1563,7 +2887,7 @@ class UyapBulkCollector:
             else:
                 last = s
                 stable = 0
-        return changed                     # değişti ama stabilize olmadıysa da kabul; hiç değişmediyse False
+        return False
 
     def _close_modal(self, page):  # pragma: no cover - canlı DOM
         import re as _re
@@ -1661,4 +2985,10 @@ class UyapBulkCollector:
         self._print(f"  edinilen: {s['acquisitions_completed']} · zaten bilinen (atlanan): {s['sold_skipped_known']} · edinim hatası: {s['acquisition_failures']}")
         self._print(f"  denetim kararları: {s['audit_decisions']}")
         self._print(f"  oturum kesintisi: {s['session_interruptions']} · durma nedeni: {s['stopped_reason']}")
+        if s.get("elapsed_seconds") is not None:
+            self._print(
+                f"  hız: {s['elapsed_seconds']}sn · {s['windows_per_minute']} pencere/dk · "
+                f"{s['acquisitions_per_minute']} edinim/dk · bölünen yoğun pencere={s['dense_windows_split']} · "
+                f"çözülemeyen doygun pencere={s['saturated_windows_unresolved']}"
+            )
         self._print("  NOT: admisyon YAPILMADI — ADMISSIBLE adaylar `sold uyap review`/`admit` ile AÇIKÇA alınır.")
