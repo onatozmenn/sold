@@ -41,6 +41,7 @@ MODE_OFFLINE = "offline_simulated"
 # Bilinen pilot kaydının ELLE-DENETLENMİŞ gerçeği — yalnızca DOĞRULAMA HEDEFİ (enjeksiyon DEĞİL).
 KNOWN_TRUTH = {
     "official_file_id": "2026/263 Esas",
+    "record_ref": "16737826545",
     "official_file_id_aliases": ["2026/263 esas", "2026/263 icra"],
     "institution": "Ankara Gayrimenkul Satış İcra Dairesi",
     "appraisal_value_tl": 6_800_000,
@@ -304,7 +305,10 @@ def run_pilot(
             from .collect import BrowserCollector
 
             coll = BrowserCollector(cdp_endpoint=cdp_endpoint).collect_record(
-                url=url, target_file_id=file_id, target_institution=KNOWN_TRUTH["institution"]
+                url=url,
+                target_file_id=file_id,
+                target_institution=KNOWN_TRUTH["institution"],
+                target_record_ref=KNOWN_TRUTH["record_ref"],
             )
             live_reached, browser_status = True, "connected"
             source_refs = [coll.get("url")]

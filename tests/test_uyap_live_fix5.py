@@ -33,6 +33,14 @@ from sold.ingestion.uyap import (
     visible_document_types,
 )
 from sold.ingestion.uyap.collect import _DOC_PRIORITY
+from sold.ingestion.uyap.collect import (
+    candidate_document_response_request_matches,
+    document_modal_matches_response,
+    document_response_uris,
+    filter_document_rows_by_response_uris,
+    newly_opened_document_modal,
+    scope_open_document_modal,
+)
 
 TARGET = "2026/263 Esas"
 
@@ -78,6 +86,171 @@ def test_modal_title_alone_is_insufficient():
 def test_at_least_two_distinct_document_types_required():
     two = detect_document_list(_modal_html(labels=["Satis Ilani", "1- Artirma Sonuc / Uzatma Tutanagi"]))
     assert two["detected"] is True and len(two["recognized_types"]) == 2
+
+
+def test_single_document_type_requires_exact_modal_scope():
+    single = _modal_html(labels=["Satis Ilani"])
+    assert detect_document_list(single)["detected"] is False
+
+    scoped = detect_document_list(single, min_types=1, trusted_scope=True)
+    assert scoped["detected"] is True
+    assert scoped["recognized_types"] == ["sale_notice"]
+
+
+def test_scope_selects_only_open_exact_document_modal():
+    hidden = (
+        '<div id="ihale_evraklari_modal" class="modal fade" style="display: none">'
+        '<h4>İhale Evrak Listesi</h4><div id="ihaleEvrakListesiResult">Satış İlanı</div></div>'
+    )
+    opened = (
+        '<div id="ihale_evraklari_modal" class="modal fade in">'
+        '<h4>İhale Evrak Listesi</h4><div id="ihaleEvrakListesiResult">Satış İlanı</div></div>'
+    )
+    assert scope_open_document_modal(hidden) is None
+    scoped = scope_open_document_modal(hidden + opened)
+    assert scoped is not None
+    assert 'class="modal fade in"' in scoped
+    assert newly_opened_document_modal(hidden, hidden + opened) is True
+    assert newly_opened_document_modal(opened, opened) is False
+
+    compact_hidden = hidden.replace('class="modal fade"', 'class="modal fade in"').replace(
+        "display: none", "display:none"
+    )
+    assert scope_open_document_modal(compact_hidden + opened) == scoped
+
+    hidden_ancestor = (
+        '<div style="visibility:hidden">'
+        + opened
+        + "</div>"
+    )
+    assert scope_open_document_modal(hidden_ancestor) is None
+
+    non_exact = (
+        '<div id="other_modal" class="modal fade in">'
+        '<h4>İhale Evrak Listesi</h4><div>Satış İlanı</div>'
+        '<div>Artırma Sonuç Tutanağı</div></div>'
+    )
+    assert scope_open_document_modal(non_exact) is None
+
+
+def test_candidate_bound_response_must_match_open_modal_uri():
+    assert candidate_document_response_request_matches(
+        "https://esatis.uyap.gov.tr/pp/getIhaleEvrakBilgileri_brd.ajx",
+        "POST",
+        "kayitId=17215252239",
+        "17215252239",
+    ) is True
+    assert candidate_document_response_request_matches(
+        "https://esatis.uyap.gov.tr/pp/getIhaleEvrakBilgileri_brd.ajx",
+        "POST",
+        "kayitId=111",
+        "17215252239",
+    ) is False
+    assert candidate_document_response_request_matches(
+        "https://evil.example/pp/getIhaleEvrakBilgileri_brd.ajx",
+        "POST",
+        "kayitId=17215252239",
+        "17215252239",
+    ) is False
+    assert candidate_document_response_request_matches(
+        "https://esatis.uyap.gov.tr/not-pp/getIhaleEvrakBilgileri_brd.ajx",
+        "POST",
+        "kayitId=17215252239",
+        "17215252239",
+    ) is False
+    assert candidate_document_response_request_matches(
+        "https://esatis.uyap.gov.tr/pp/getIhaleEvrakBilgileri_brd.ajx",
+        "GET",
+        "kayitId=17215252239",
+        "17215252239",
+    ) is False
+    assert candidate_document_response_request_matches(
+        "https://esatis.uyap.gov.tr/pp/getIhaleEvrakBilgileri_brd.ajx",
+        "POST",
+        "kayitId=111&kayitId=17215252239",
+        "17215252239",
+    ) is False
+
+    uris = document_response_uris({"0": [{"evrakUri": "owned-token"}]})
+    assert uris == ("owned-token",)
+    assert document_modal_matches_response(
+        '<div id="ihaleEvrakListesiResult"><button onclick="open(owned-token)"></button></div>',
+        uris,
+    ) is True
+    assert document_modal_matches_response(
+        '<div id="ihaleEvrakListesiResult"><button onclick="open(stale-token)"></button></div>',
+        uris,
+    ) is False
+
+    owned_action = {
+        "ownership_blob": "open(owned-token)",
+        "semantic": "view",
+        "response_owned": True,
+    }
+    stale_action = {"ownership_blob": "open(stale-token)"}
+    download_action = {"ownership_blob": "downloadDocURL(x)", "semantic": "download"}
+    owned = {
+        "label": "Satış İlanı",
+        "actions": [stale_action, download_action, owned_action],
+    }
+    stale = {"label": "Artırma Sonuç Tutanağı", "actions": [{"ownership_blob": "open(stale-token)"}]}
+    assert filter_document_rows_by_response_uris([stale, owned], uris) == [
+        {
+            "label": "Satış İlanı",
+            "actions": [
+                owned_action,
+                {**download_action, "row_owner_uri": "owned-token", "response_owned": True},
+            ],
+        }
+    ]
+    assert filter_document_rows_by_response_uris([stale], uris) == []
+
+    unsupported_uri = ("unsupported-token",)
+    assert filter_document_rows_by_response_uris([owned], uris + unsupported_uri) == [
+        {
+            "label": "Satış İlanı",
+            "actions": [
+                owned_action,
+                {**download_action, "row_owner_uri": "owned-token", "response_owned": True},
+            ],
+        }
+    ]
+
+    duplicate_owner = {
+        "label": "Satış İlanı",
+        "actions": [
+            owned_action,
+            {"ownership_blob": "preview(owned-token)", "semantic": "view"},
+            download_action,
+        ],
+    }
+    filtered = filter_document_rows_by_response_uris([duplicate_owner], uris)
+    assert all(action.get("semantic") != "download" for action in filtered[0]["actions"])
+
+    prefix_collision = {
+        "label": "Satış İlanı",
+        "actions": [{"ownership_blob": "open(owned-token-10)", "semantic": "view"}],
+    }
+    assert filter_document_rows_by_response_uris(
+        [prefix_collision], ("owned-token-1",)
+    ) == []
+    assert document_modal_matches_response(
+        '<button onclick="open(owned-token-10)"></button>',
+        ("owned-token-1",),
+    ) is False
+
+    actionless = {"label": "Satış Şartnamesi", "actions": []}
+    assert filter_document_rows_by_response_uris([actionless, owned], uris)
+
+    direct_download = {
+        "label": "Satış İlanı",
+        "actions": [{
+            "ownership_blob": "download(owned-token)",
+            "semantic": "download",
+        }],
+    }
+    direct_filtered = filter_document_rows_by_response_uris([direct_download], uris)
+    assert len(direct_filtered[0]["actions"]) == 1
 
 
 def test_hidden_document_labels_are_ignored():

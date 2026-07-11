@@ -176,6 +176,43 @@ def test_shared_esas_selects_card_by_kayit_no():
     assert find_target_record_card(html, "2026/12", target_record_ref="99999999999") is None
 
 
+def test_same_file_and_record_ref_requires_exact_institution():
+    html = (
+        '<div class="ilan-card"><span class="incelenen-li 16760703981"></span>'
+        '2. İhale Ankara 1. İcra Dairesi 2026/12 İcra '
+        '<button>İhale Evrak Listesi</button></div>'
+        '<div class="ilan-card"><span class="incelenen-li 16760703981"></span>'
+        '2. İhale Ankara 2. İcra Dairesi 2026/12 İcra '
+        '<button>İhale Evrak Listesi</button></div>'
+    )
+    selected = find_target_record_card(
+        html,
+        "2026/12",
+        institution="Ankara 2. İcra Dairesi",
+        target_record_ref="16760703981",
+    )
+    assert selected is not None
+    assert "Ankara 2. İcra Dairesi" in selected["html"]
+    assert "Ankara 1. İcra Dairesi" not in selected["html"]
+    assert {"file_id", "institution", "record_ref"} <= set(selected["match_fields"])
+    assert find_target_record_card(
+        html,
+        "2026/12",
+        institution="Ankara 3. İcra Dairesi",
+        target_record_ref="16760703981",
+    ) is None
+
+    wrapper = f'<div class="result-wrapper">{html}</div>'
+    wrapped = find_target_record_card(
+        wrapper,
+        "2026/12",
+        institution="Ankara 2. İcra Dairesi",
+        target_record_ref="16760703981",
+    )
+    assert wrapped is not None
+    assert "Ankara 1. İcra Dairesi" not in wrapped["html"]
+
+
 def test_generic_page_level_evrak_text_not_treated_as_target():
     # Hedef kayıt olmayan sayfada genel 'İhale Evrak Listesi' başlığı → hedef kart YOK
     assert find_target_record_card(_listing_page_no_target(), TARGET, INSTITUTION) is None

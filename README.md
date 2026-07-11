@@ -4,7 +4,7 @@
 [![Data refresh](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml/badge.svg)](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-816%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-827%20passing-brightgreen.svg)](tests/)
 [![Data](https://img.shields.io/badge/evidence-UYAP%20%C2%B7%20KAP%20%C2%B7%20TCMB%20%C2%B7%20TOK%C4%B0-informational.svg)](#provenance-audited-public-structural-evidence)
 
 > A **mechanism-aware structural econometric prototype** that infers a **structural transaction-price distribution** for a Turkish home from an **asking-price signal** and public economic evidence.
@@ -288,6 +288,14 @@ Bounded runs are intentionally resumable: deferred, saturated, truncated, stale,
 work is never reported as complete and returns a nonzero status for automation. Neither phase admits evidence:
 `sold uyap review` and explicit `sold uyap admit` remain separate.
 
+> **Nationwide live run (2026-07-11).** A manually authenticated, user-controlled Chrome session completed
+> metadata discovery for **81/81 provinces** over `2026-07-05..2026-07-11`: **535 source result cards** and
+> **3 terminal `Satıldı` candidates**. Candidate-bound native acquisition completed **3/3** (Erzincan 2,
+> Sakarya 1), leaving **0 queued candidates and 0 blockers**. Audit outcomes were one new
+> `ADMISSIBLE_COMPLETED_SALE` and two `PENDING_REVIEW`; **no record was admitted automatically**. The live
+> adapters bind search results to exact AJAX response/cardinality and document actions to exact KAYIT,
+> response URI, modal row and action fingerprint.
+
 > **Live status.** UYAP Live Browser Pilot 1 reached **`PASS`** on the real **2026/263 Esas** record. A later bounded Ankara batch (`2026-06-18..2026-06-24`) collected five terminal-sale cards through native UDF artifacts: two new records were explicitly admitted, two were identified as existing observations (one primary ID and one alias), and one remains blocked for human review. This is **not** an official API, does **not** automate authentication, is **not** unattended continuous ingestion, and does **not** prove universal layout coverage. The automated test suite remains fully offline.
 
 ### UYAP Live Browser Pilot 1 (live verification)
@@ -502,7 +510,7 @@ tests/               # offline unit / end-to-end tests
 ## Testing
 
 ```bash
-pytest -q             # 816 tests, fully offline (no network or API key required)
+pytest -q             # 827 tests, fully offline (no network or API key required)
 ```
 
 The automated suite is fully offline. The **UYAP live browser pilot is a separate, operator-run verification** (a real user-controlled session against the live site) and is **not** part of the offline CI suite.

@@ -21,7 +21,7 @@ import hashlib
 import re
 import shutil
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from . import store
 from .models import (
@@ -359,6 +359,9 @@ def _action_spec(el) -> dict:
         "class_tokens": _safe_class_tokens(el.get("class")),
         "icon_tokens": _icon_tokens(el),
         "handler_tokens": _handler_tokens(el),
+        "ownership_blob": (
+            f"{el.get('href') or ''} {el.get('onclick') or ''}".strip() or None
+        ),
         "css": " ".join(el.get("class") or []),
     }
     spec["semantic"] = classify_action_semantic(spec)
@@ -525,6 +528,9 @@ def _is_hidden(el) -> bool:
         if hasattr(cur, "get"):
             style = _ascii_lower(cur.get("style") or "").replace(" ", "")
             if "display:none" in style or "visibility:hidden" in style:
+                return True
+            classes = {_ascii_lower(value) for value in (cur.get("class") or [])}
+            if classes.intersection({"hidden", "hide", "d-none", "ng-hide"}):
                 return True
             if cur.has_attr("hidden"):
                 return True
@@ -716,19 +722,30 @@ def visible_document_types(html: str) -> list[str]:
     return sorted({atype for _, atype, _ in _semantic_label_elements(_bs_soup(html))})
 
 
-def detect_document_list(html: str) -> dict:
+def detect_document_list(
+    html: str,
+    *,
+    min_types: int = 2,
+    trusted_scope: bool = False,
+) -> dict:
     """Açık belge listesini GÖRÜNÜR semantikten algılar: başlık + ≥2 distinkt tür (başlık TEK BAŞINA yetmez)."""
+    if min_types < 1:
+        raise ValueError("min_types must be >= 1")
     rows = extract_document_rows_semantic(html)
     types = sorted({t for t in (classify_document_label(r["label"]) for r in rows) if t})
     title = _has_doc_list_title(html)
     cont = detect_document_container(html)
+    container_found = bool(cont["found"] or trusted_scope)
     return {
-        "detected": bool(title and len(types) >= 2 and cont["found"]),
+        "detected": bool(title and len(types) >= min_types and container_found),
         "title_present": title,
         "recognized_types": types,
         "labels": [r["label"] for r in rows],
         "n_rows": len(rows),
-        "container_strategy": cont.get("strategy", "not_found"),
+        "container_strategy": (
+            cont.get("strategy", "not_found")
+            if cont["found"] else "scoped_document_modal"
+        ),
     }
 
 
@@ -743,24 +760,124 @@ def scope_open_document_modal(html: str) -> str | None:
     soup = _bs_soup(html)
     if soup is None:
         return None
-    node = soup.find(id="ihaleEvrakListesiResult")
-    if node is not None:
+    for node in soup.find_all(id="ihaleEvrakListesiResult"):
         cur = node
         for _ in range(6):
             if cur is None or not getattr(cur, "name", None):
                 break
             classes = cur.get("class") or [] if hasattr(cur, "get") else []
-            if "modal" in classes:  # tam class token (modal-body/modal-header DEĞİL) → başlık dahil modal
-                return str(cur)
+            if "modal" in classes:
+                if ("in" in classes or "show" in classes) and not _is_hidden(cur):
+                    return str(cur)
+                break
             cur = cur.parent
-        return str(node)
-    for m in soup.select("[class*=modal]"):
-        classes = m.get("class") or []
-        if "in" in classes or "show" in classes:
-            t = _ascii_lower(_demojibake(m.get_text(" ", strip=True)))
-            if len(_distinct_doc_types(t)) >= 2:
-                return str(m)
     return None
+
+
+def newly_opened_document_modal(before_html: str, after_html: str) -> bool:
+    """Single-document modal ownership: no exact modal before click, exact open modal after click."""
+    return (
+        scope_open_document_modal(before_html) is None
+        and scope_open_document_modal(after_html) is not None
+    )
+
+
+def candidate_document_response_request_matches(
+    url: str,
+    method: str,
+    post_data: str | None,
+    target_record_ref: object,
+) -> bool:
+    """Exact UYAP document-list request ownership for one public KAYIT NO."""
+    if not str(target_record_ref or "").strip():
+        return False
+    if str(method or "").upper() != "POST":
+        return False
+    parsed = urlparse(str(url or ""))
+    if parsed.hostname != "esatis.uyap.gov.tr":
+        return False
+    if parsed.path != "/pp/getIhaleEvrakBilgileri_brd.ajx":
+        return False
+    values = parse_qs(str(post_data or ""), keep_blank_values=True)
+    record_refs = [str(value) for value in values.get("kayitId", [])]
+    return record_refs == [str(target_record_ref)]
+
+
+def document_response_uris(payload: object) -> tuple[str, ...]:
+    """Extract nonempty document URI ownership tokens from the observed response mapping."""
+    if not isinstance(payload, dict):
+        return ()
+    uris = []
+    for rows in payload.values():
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if isinstance(row, dict) and row.get("evrakUri"):
+                uris.append(str(row["evrakUri"]))
+    return tuple(sorted(set(uris)))
+
+
+def document_modal_matches_response(modal_html: str, response_uris: tuple[str, ...]) -> bool:
+    """The open modal must carry every URI returned by the candidate-bound response."""
+    blob = str(modal_html or "")
+    return bool(response_uris) and all(
+        re.search(rf"(?<![\w-]){re.escape(uri)}(?![\w-])", blob)
+        for uri in response_uris
+    )
+
+
+def _ownership_blob_has_uri(blob: object, uri: object) -> bool:
+    return bool(re.search(
+        rf"(?<![\w-]){re.escape(str(uri))}(?![\w-])",
+        str(blob or ""),
+    ))
+
+
+def filter_document_rows_by_response_uris(
+    rows: list[dict],
+    response_uris: tuple[str, ...],
+) -> list[dict]:
+    """Keep only rows whose own actions carry a candidate-bound response URI."""
+    if not response_uris:
+        return []
+    selected = []
+    for row in rows or []:
+        actions = list(row.get("actions") or [])
+        direct_owned_actions = []
+        matched_uris = set()
+        owned_actions = []
+        for action in actions:
+            blob = str(action.get("ownership_blob") or action.get("href") or "")
+            action_matches = {
+                uri for uri in response_uris
+                if _ownership_blob_has_uri(blob, uri)
+            }
+            if action_matches:
+                matched_uris.update(action_matches)
+                direct_owned_actions.append({**action, "response_owned": True})
+        owned_actions = list(direct_owned_actions)
+        download_actions = [
+            action for action in actions
+            if (action.get("semantic") or classify_action_semantic(action)) == "download"
+        ]
+        if (
+            len(matched_uris) == 1
+            and len(direct_owned_actions) == 1
+            and len(download_actions) == 1
+        ):
+            download_action = download_actions[0]
+            if not any(
+                action.get("ownership_blob") == download_action.get("ownership_blob")
+                for action in owned_actions
+            ):
+                owned_actions.append({
+                    **download_action,
+                    "row_owner_uri": next(iter(matched_uris)),
+                    "response_owned": True,
+                })
+        if owned_actions:
+            selected.append({**row, "actions": owned_actions})
+    return selected
 
 
 def document_list_semantic_transition(before_html: str, after_html: str) -> dict:
@@ -1395,6 +1512,21 @@ def file_identity_matches(text: str, target_file_id: str) -> bool:
     return bool(re.search(pat, fold))
 
 
+def normalize_institution_identity(value: object) -> str:
+    folded = _ascii_lower(_demojibake(str(value or "")))
+    folded = re.sub(r"^\s*\d+\s*\.?\s*ihale\s+", "", folded)
+    folded = re.sub(r"[^a-z0-9]+", " ", folded)
+    return re.sub(r"\s+", " ", folded).strip()
+
+
+def institution_identity_matches(card_text: object, target_institution: object) -> bool:
+    target = normalize_institution_identity(target_institution)
+    if not target:
+        return False
+    card = normalize_institution_identity(card_text)
+    return bool(re.search(rf"(?<![a-z0-9]){re.escape(target)}(?![a-z0-9])", card))
+
+
 def classify_document_entry_path(page_state: str) -> str:
     """Sayfa durumundan belge-giriş yolunu türetir (listing_card_modal / detail_tab_panel)."""
     if page_state == "search_listing":
@@ -1437,6 +1569,36 @@ def _card_matches_record_ref(card_el, record_ref: str | None) -> bool:
     return False
 
 
+def _card_root_record_refs(card_el) -> set[str]:
+    refs = set()
+    nodes = [card_el]
+    try:
+        nodes.extend(card_el.select(".incelenen-li"))
+    except Exception:
+        pass
+    for index, node in enumerate(nodes):
+        classes = node.get("class") or []
+        if isinstance(classes, str):
+            classes = [classes]
+        if index > 0 and "incelenen-li" not in classes:
+            continue
+        for token in list(classes) + [node.get("id") or ""]:
+            digits = re.sub(r"\D", "", str(token))
+            if len(digits) >= 6:
+                refs.add(digits)
+    return refs
+
+
+def _card_root_count(card_el) -> int:
+    try:
+        roots = card_el.select(".incelenen-li")
+    except Exception:
+        roots = []
+    own_classes = card_el.get("class") or []
+    own = 1 if "incelenen-li" in own_classes else 0
+    return max(own, len(roots))
+
+
 def find_target_record_card(html: str, target_file_id: str, institution: str | None = None,
                             target_record_ref: str | None = None) -> dict | None:
     """Listeleme sayfasında HEDEF kaydı resmî dosya kimliğiyle bulur (fiyat/P/Q/nth DEĞİL).
@@ -1455,28 +1617,49 @@ def find_target_record_card(html: str, target_file_id: str, institution: str | N
     for sel in ("[class*=card]", "[class*=sonuc]", "[class*=result]", "[class*=ilan]", "li", "tr", "div"):
         matches = []
         for c in soup.select(sel):
-            text = c.get_text(" ", strip=True)
-            if not file_identity_matches(text, target_file_id):
+            if _is_hidden(c):
+                continue
+            try:
+                visible_soup = BeautifulSoup(str(c), "html.parser")
+                visible_card = visible_soup.find()
+                for descendant in list(visible_card.find_all(True)):
+                    if descendant is not visible_card and _is_hidden(descendant):
+                        descendant.decompose()
+            except Exception:
+                visible_card = c
+            text = visible_card.get_text(" ", strip=True)
+            descendant_record_refs = _card_root_record_refs(visible_card)
+            if _card_root_count(visible_card) > 1 or len(descendant_record_refs) > 1:
                 continue
             nums = set(re.findall(r"\d{3,4}\s*/\s*\d+", _ascii_lower(text)))
-            if len({re.sub(r"\s+", "", n) for n in nums}) != 1:
-                continue  # birden çok kayıt → container, kart değil
+            normalized_nums = {normalize_file_identity(n) for n in nums}
+            title = visible_card.select_one("h4#ilanTitle.box-title, h4#ilanTitle")
+            title_file = normalize_file_identity(title.get_text(" ", strip=True)) if title else ""
+            if len(normalized_nums) > 1:
+                if not title_file or title_file != tnum:
+                    continue
+            elif not file_identity_matches(text, target_file_id):
+                continue
             match_fields = ["file_id"]
             if institution:
-                inst_tok = _ascii_lower(institution).split()
-                if inst_tok and inst_tok[0] in _ascii_lower(text):
-                    match_fields.append("institution")
-            ref_match = _card_matches_record_ref(c, target_record_ref)
-            matches.append((c, re.sub(r"\s+", " ", text), match_fields, ref_match))
+                if not institution_identity_matches(text, institution):
+                    continue
+                match_fields.append("institution")
+            ref_match = _card_matches_record_ref(visible_card, target_record_ref)
+            matches.append((visible_card, re.sub(r"\s+", " ", text), match_fields, ref_match))
         if not matches:
             continue
         if target_record_ref:
             ref_hits = [m for m in matches if m[3]]
             if not ref_hits:
                 continue  # bu selector'da KAYIT NO eşleşen kart YOK → yanlış kartı ALMA, sonrakini dene
+            if institution and len(ref_hits) != 1:
+                return None
             c, text, match_fields, _ = ref_hits[0]
             match_fields = match_fields + ["record_ref"]
         else:
+            if institution and len(matches) != 1:
+                return None
             c, text, match_fields, _ = matches[0]
         return {
             "html": str(c),
@@ -1693,8 +1876,14 @@ class BrowserCollector:
             page.close()
             return html
 
-    def collect_record(self, url: str | None = None, follow_documents: bool = True,
-                       target_file_id: str | None = None, target_institution: str | None = None) -> dict:  # pragma: no cover - canlı tarayıcı gerektirir
+    def collect_record(
+        self,
+        url: str | None = None,
+        follow_documents: bool = True,
+        target_file_id: str | None = None,
+        target_institution: str | None = None,
+        target_record_ref: str | None = None,
+    ) -> dict:  # pragma: no cover - canlı tarayıcı gerektirir
         """Kullanıcının açtığı GERÇEK UYAP kaydını (arama/listeleme YA DA detay sayfası) toplar.
 
         SAYFA-DURUMU FARKINDA: ``search_listing`` ise HEDEF kayıt kartı (``target_file_id`` /
@@ -1734,7 +1923,18 @@ class BrowserCollector:
             page_url = page.url
             pse = page_state_evidence(html, page_url)
             sel = page_selection or {}
-            links = discover_document_links(html)
+            record_html = html
+            if pse["page_state"] == "search_listing":
+                target_card = find_target_record_card(
+                    html,
+                    target_file_id,
+                    target_institution,
+                    target_record_ref,
+                ) if target_file_id and target_record_ref else None
+                record_html = target_card["html"] if target_card else ""
+                links = []
+            else:
+                links = discover_document_links(html)
             documents: list[dict] = []
             access_patterns: list[dict] = []
             collection_diagnostics: dict = {
@@ -1792,13 +1992,19 @@ class BrowserCollector:
                     except Exception as exc:
                         access_patterns.append({"label": lk["text"], "pattern": "navigation_failed", "detail": str(exc)[:120]})
                 # SAYFA-DURUMU FARKINDA belge girişi (listeleme-kartı-modal VEYA detay-tab-panel).
-                m_docs, m_patterns, m_diag = self._collect_documents(page, context, target_file_id, target_institution)
+                m_docs, m_patterns, m_diag = self._collect_documents(
+                    page,
+                    context,
+                    target_file_id,
+                    target_institution,
+                    target_record_ref=target_record_ref,
+                )
                 documents += m_docs
                 access_patterns += m_patterns
                 # Fix 4: sayfa-seçim/kanıt tanılarını KORU (belge-giriş tanılarıyla birleştir).
                 collection_diagnostics.update(m_diag)
             return {
-                "html": html,
+                "html": record_html,
                 "title": title,
                 "url": page_url,
                 "document_links": links,
@@ -1879,6 +2085,13 @@ class BrowserCollector:
 
         control = None
         if page_state == "search_listing":
+            if not target_record_ref:
+                diag["document_collection_attempts"].append({
+                    "stage": "target_card",
+                    "blocking_reason": "listing_collection_requires_target_record_ref",
+                })
+                diag["document_collection_failures"] += 1
+                return documents, patterns, diag
             if not target_file_id:
                 diag["document_collection_attempts"].append({"stage": "target_card", "blocking_reason": "no_target_file_id_provided"})
                 diag["document_collection_failures"] += 1
@@ -1901,7 +2114,9 @@ class BrowserCollector:
                 return documents, patterns, diag
             # Kart-yerel kontrolü CANLI DOM'da HEDEF kart kapsamında bul (global text locator DEĞİL —
             # üçüncü canlı hatanın kök nedeni buydu).
-            control = self._locate_card_control(page, target_file_id, target_record_ref)
+            control = self._locate_card_control(
+                page, target_file_id, target_record_ref, target_institution
+            )
         elif page_state == "record_detail":
             if target_file_id and not file_identity_matches(html, target_file_id):
                 diag["document_collection_attempts"].append({"stage": "detail_identity", "blocking_reason": "detail_page_does_not_match_target_file_id"})
@@ -1936,11 +2151,14 @@ class BrowserCollector:
         except Exception:
             pre_html = ""
         diag["pre_click_visible_document_types"] = visible_document_types(pre_html)
+        pre_open_document_modal = scope_open_document_modal(pre_html)
 
         # Fix 7: kart-kontrolüne TIKLAMADAN önce — GEÇERLİ görünür belge-listesi zaten açık mı? (pre-opened/
         # stale UI). Aynı-bağlam (hedef kimlik + desteklenen sayfa + sınırlı konteyner) geçerli liste açıksa
         # tekrar tıklanmaz; doğrudan satır toplamaya geçilir (gizli şablon / ham-HTML pre-opened SAYILMAZ).
-        if preopened_document_list_reusable(pre_html, page_url, target_file_id):
+        if page_state != "search_listing" and preopened_document_list_reusable(
+            pre_html, page_url, target_file_id
+        ):
             preopen_rows = extract_document_rows_semantic(pre_html) or extract_panel_document_rows(pre_html)
             if preopen_rows:
                 det0 = detect_document_list(pre_html)
@@ -1969,10 +2187,27 @@ class BrowserCollector:
         # önlenir; başarılı kart İLK denemede erken döner (retry yalnız yarışan karta ek süre getirir).
         rows: list[dict] = []
         det = {"detected": False, "recognized_types": [], "container_strategy": "not_found"}
+        single_type_owned = False
         click_attempts = 0
         for _attempt in range(2):
+            response_uris: tuple[str, ...] = ()
             try:
-                control.click(timeout=5000)
+                if page_state == "search_listing" and target_record_ref:
+                    with page.expect_response(
+                        lambda response: candidate_document_response_request_matches(
+                            response.url,
+                            response.request.method,
+                            response.request.post_data,
+                            target_record_ref,
+                        ),
+                        timeout=7000,
+                    ) as response_info:
+                        control.click(timeout=5000)
+                    response = response_info.value
+                    if 200 <= int(response.status) < 400:
+                        response_uris = document_response_uris(response.json())
+                else:
+                    control.click(timeout=5000)
                 click_attempts += 1
             except Exception as exc:
                 if _attempt == 0:
@@ -1982,7 +2217,9 @@ class BrowserCollector:
                         pass
                     page.wait_for_timeout(300)
                     if page_state == "search_listing":
-                        control = self._locate_card_control(page, target_file_id, target_record_ref) or control
+                        control = self._locate_card_control(
+                            page, target_file_id, target_record_ref, target_institution
+                        ) or control
                     continue
                 diag["document_collection_attempts"].append({"stage": "control_click", "blocking_reason": str(exc)[:120]})
                 diag["document_collection_failures"] += 1
@@ -1996,10 +2233,27 @@ class BrowserCollector:
                 # Açık belge modalına scope et: sayfadaki (modal DIŞI) başıboş belge etiketleri ortak-atayı
                 # body'ye genişletip algılamayı bozar (bulk listing modalında görüldü). Modal bulunamazsa
                 # tüm-sayfa davranışına düşer (pilot yolu korunur).
-                scoped = scope_open_document_modal(cur_html) or cur_html
-                det = detect_document_list(scoped)
+                modal_scoped = scope_open_document_modal(cur_html)
+                scoped = modal_scoped or cur_html
+                response_owned = bool(
+                    modal_scoped
+                    and document_modal_matches_response(modal_scoped, response_uris)
+                )
+                single_type_owned = bool(
+                    response_owned
+                    and newly_opened_document_modal(pre_html, cur_html)
+                )
+                det = detect_document_list(
+                    scoped,
+                    min_types=1 if single_type_owned else 2,
+                    trusted_scope=single_type_owned,
+                )
+                if page_state == "search_listing" and target_record_ref and not response_owned:
+                    det["detected"] = False
                 if det["detected"]:
                     rows = extract_document_rows_semantic(scoped) or extract_panel_document_rows(scoped)
+                    if page_state == "search_listing" and target_record_ref:
+                        rows = filter_document_rows_by_response_uris(rows, response_uris)
                     if rows:
                         break
                 page.wait_for_timeout(500)
@@ -2013,14 +2267,17 @@ class BrowserCollector:
                     pass
                 page.wait_for_timeout(300)
                 if page_state == "search_listing":
-                    control = self._locate_card_control(page, target_file_id, target_record_ref) or control
+                    control = self._locate_card_control(
+                        page, target_file_id, target_record_ref, target_institution
+                    ) or control
         diag["document_control_click_attempts"] = click_attempts
 
         pre_types = diag.get("pre_click_visible_document_types", [])
         post_types = det.get("recognized_types", [])
         diag["post_click_visible_document_types"] = post_types
         diag["document_list_semantic_transition_detected"] = (
-            len(set(post_types)) >= 2 and len(set(post_types) - set(pre_types)) >= 1
+            len(set(post_types)) >= (1 if single_type_owned else 2)
+            and len(set(post_types) - set(pre_types)) >= 1
         )
         diag["document_container_strategy"] = det.get("container_strategy", "not_found")
         diag["document_container_recognized_types"] = post_types
@@ -2042,7 +2299,13 @@ class BrowserCollector:
         patterns += p2
         return documents, patterns, diag
 
-    def _locate_card_control(self, page, target_file_id, target_record_ref=None):  # pragma: no cover - canlı DOM
+    def _locate_card_control(
+        self,
+        page,
+        target_file_id,
+        target_record_ref=None,
+        target_institution=None,
+    ):  # pragma: no cover - canlı DOM
         """HEDEF kaydın CANLI kartını bulur; kart-yerel "İhale Evrak Listesi" kontrolünü döner.
 
         ``target_record_ref`` (KAYIT NO) verilmişse PAYLAŞILAN-Esas'ta kart o KAYIT NO ile daraltılır
@@ -2060,16 +2323,92 @@ class BrowserCollector:
             for name in ("button", "link"):
                 try:
                     act = card.get_by_role(name, name=_re.compile("evrak listesi", _re.I))
-                    if act.count() > 0:
-                        return act.first
+                    for index in range(min(act.count(), 10)):
+                        if act.nth(index).is_visible():
+                            return act.nth(index)
                 except Exception:
                     continue
             try:
                 act = card.get_by_text(_re.compile("evrak listesi", _re.I))
-                if act.count() > 0:
-                    return act.first
+                for index in range(min(act.count(), 10)):
+                    if act.nth(index).is_visible():
+                        return act.nth(index)
             except Exception:
                 pass
+            return None
+
+        def _validated_control(cards):
+            try:
+                count = min(cards.count(), 100)
+            except Exception:
+                return None
+            for index in range(count):
+                card = cards.nth(index)
+                try:
+                    if not card.is_visible():
+                        continue
+                    outer_html = card.evaluate("el => el.outerHTML")
+                except Exception:
+                    continue
+                if find_target_record_card(
+                    outer_html,
+                    target_file_id,
+                    target_institution,
+                    target_record_ref=target_record_ref,
+                ) is None:
+                    continue
+                exact_card = card
+                if ref:
+                    try:
+                        exact_candidates = []
+                        if find_target_record_card(
+                            outer_html,
+                            target_file_id,
+                            target_institution,
+                            target_record_ref=target_record_ref,
+                        ) is not None and ref in re.sub(r"\D", "", card.inner_text() or ""):
+                            exact_candidates.append(card)
+                        own_classes = set((card.get_attribute("class") or "").split())
+                        own_id = card.get_attribute("id") or ""
+                        if (ref in own_classes or ref == own_id) and card not in exact_candidates:
+                            exact_candidates.append(card)
+                        else:
+                            scoped = card.locator(f'[class~="{ref}"], [id="{ref}"]')
+                            for scoped_index in range(min(scoped.count(), 20)):
+                                holder = scoped.nth(scoped_index)
+                                if not holder.is_visible():
+                                    continue
+                                candidates = [holder]
+                                try:
+                                    candidates.append(holder.locator(
+                                        'xpath=ancestor-or-self::*[.//a or .//button or .//*[@role="button"]][1]'
+                                    ))
+                                except Exception:
+                                    pass
+                                for candidate in candidates:
+                                    try:
+                                        if not candidate.is_visible():
+                                            continue
+                                        candidate_html = candidate.evaluate("el => el.outerHTML")
+                                    except Exception:
+                                        continue
+                                    if find_target_record_card(
+                                        candidate_html,
+                                        target_file_id,
+                                        target_institution,
+                                        target_record_ref=target_record_ref,
+                                    ) is not None and _control_in(candidate) is not None:
+                                        exact_candidates.append(candidate)
+                                        break
+                        if len(exact_candidates) == 1:
+                            exact_card = exact_candidates[0]
+                        else:
+                            continue
+                    except Exception:
+                        continue
+                control = _control_in(exact_card)
+                if control is not None:
+                    return control
             return None
 
         if ref:
@@ -2077,24 +2416,18 @@ class BrowserCollector:
             for csel in card_selectors:
                 try:
                     cc = page.locator(csel).filter(has_text=_re.compile(key, _re.I)).filter(has_text=_re.compile(ref))
-                    if cc.count() > 0:
-                        ctrl = _control_in(cc.first)
-                        if ctrl is not None:
-                            return ctrl
+                    ctrl = _validated_control(cc)
+                    if ctrl is not None:
+                        return ctrl
                 except Exception:
                     continue
             # (b) KAYIT NO class niteliğinde ('incelenen-li {NO}'): o elemanın evrak-kontrolü içeren kart atası
             try:
-                holder = page.locator(f'[class*="{ref}"]')
+                holder = page.locator(f'[class~="{ref}"]')
                 if holder.count() > 0:
-                    for xp in ('xpath=ancestor-or-self::*[.//*[contains(@id,"detailButton")]][1]',
-                               'xpath=ancestor-or-self::*[.//a or .//button][1]'):
-                        try:
-                            ctrl = _control_in(holder.first.locator(xp))
-                            if ctrl is not None:
-                                return ctrl
-                        except Exception:
-                            continue
+                    ctrl = _validated_control(holder)
+                    if ctrl is not None:
+                        return ctrl
             except Exception:
                 pass
             return None  # KAYIT NO verildi ama DOĞRU kart bulunamadı → yanlış kartı ALMA (dürüst)
@@ -2103,9 +2436,7 @@ class BrowserCollector:
         for csel in card_selectors:
             try:
                 cards = page.locator(csel).filter(has_text=_re.compile(key, _re.I))
-                if cards.count() == 0:
-                    continue
-                ctrl = _control_in(cards.first)
+                ctrl = _validated_control(cards)
                 if ctrl is not None:
                     return ctrl
             except Exception:
@@ -2280,7 +2611,10 @@ class BrowserCollector:
                 diag["document_collection_attempts"].append(attempt)
                 continue
             # Fix 6: POZİTİF çözülmüş view eylemini canlı DOM'da bul (satır-yerel; global Nth DEĞİL).
-            eye = self._locate_row_view_action(page, label, resolution.get("view_action")) or self._locate_row_eye(page, label)
+            view_spec = resolution.get("view_action")
+            eye = self._locate_row_view_action(page, label, view_spec)
+            if eye is None and not (view_spec or {}).get("response_owned"):
+                eye = self._locate_row_eye(page, label)
             if eye is None:
                 attempt["blocking_reason"] = "row_local_eye_control_not_located"
                 diag["document_collection_failures"] += 1
@@ -2491,6 +2825,8 @@ class BrowserCollector:
 
         if not view_spec:
             return None
+        if view_spec.get("response_owned"):
+            return self._locate_response_owned_action(page, view_spec)
         key = _re.escape(_demojibake(label or "").split("/")[0].strip()[:24])
         if not key:
             return None
@@ -2572,6 +2908,8 @@ class BrowserCollector:
 
         if not download_spec:
             return None
+        if download_spec.get("response_owned"):
+            return self._locate_response_owned_action(page, download_spec)
         key = _re.escape(_demojibake(label or "").split("/")[0].strip()[:24])
         if not key:
             return None
@@ -2610,6 +2948,49 @@ class BrowserCollector:
             except Exception:
                 continue
         return None
+
+    def _locate_response_owned_action(self, page, action_spec):  # pragma: no cover - canlı DOM
+        """Reacquire one exact response-owned action inside the visible exact document modal."""
+        expected = str((action_spec or {}).get("ownership_blob") or "").strip()
+        if not expected:
+            return None
+        selector = (
+            "#ihale_evraklari_modal.in #ihaleEvrakListesiResult, "
+            "#ihale_evraklari_modal.show #ihaleEvrakListesiResult"
+        )
+        matches = []
+        try:
+            containers = page.locator(selector)
+            for container_index in range(min(containers.count(), 5)):
+                container = containers.nth(container_index)
+                if not container.is_visible():
+                    continue
+                owner_uri = str((action_spec or {}).get("row_owner_uri") or "")
+                search_root = container
+                if owner_uri:
+                    owner_matches = []
+                    owner_actions = container.locator("a, button, [role=button], [onclick]")
+                    for owner_index in range(min(owner_actions.count(), 100)):
+                        owner_action = owner_actions.nth(owner_index)
+                        if not owner_action.is_visible():
+                            continue
+                        owner_blob = f"{owner_action.get_attribute('href') or ''} {owner_action.get_attribute('onclick') or ''}".strip()
+                        if _ownership_blob_has_uri(owner_blob, owner_uri):
+                            owner_matches.append(owner_action)
+                    if len(owner_matches) != 1:
+                        continue
+                    search_root = owner_matches[0].locator("xpath=..")
+                actions = search_root.locator("a, button, [role=button], [onclick]")
+                for action_index in range(min(actions.count(), 100)):
+                    action = actions.nth(action_index)
+                    if not action.is_visible():
+                        continue
+                    observed = f"{action.get_attribute('href') or ''} {action.get_attribute('onclick') or ''}".strip()
+                    if observed == expected:
+                        matches.append(action)
+        except Exception:
+            return None
+        return matches[0] if len(matches) == 1 else None
 
     def _collect_native_udf_download(self, page, label, sel, resolution, attempt, diag, documents):  # pragma: no cover - canlı DOM
         """Fix 12+13: AYNI-SATIR resmî ``.udf`` indirme → NATIVE çıkarım → belge-türü KORROBORASYONU → kaynak metin.

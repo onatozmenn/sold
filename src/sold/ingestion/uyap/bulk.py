@@ -250,13 +250,42 @@ def classify_card_status(status_text: object) -> dict:
 # --------------------------------------------------------------------------- #
 # 4) Sonuç metaverisi (SAF) — kaynak gezinme metaverisi olarak ayrıştırılır.
 # --------------------------------------------------------------------------- #
+def _result_marker_text(value: object) -> str:
+    source = str(value or "")
+    if "<" not in source or ">" not in source:
+        return source
+    if source.lstrip().startswith(("{", "[")):
+        return source
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(source, "html.parser")
+        for node in soup.select("script, style, template, [hidden], [aria-hidden=true]"):
+            node.decompose()
+        for node in list(soup.find_all(True)):
+            if node.parent is None:
+                continue
+            style = re.sub(r"\s+", "", _fold(node.get("style") or ""))
+            classes = {_fold(value) for value in (node.get("class") or [])}
+            if (
+                "display:none" in style
+                or "visibility:hidden" in style
+                or classes.intersection({"hidden", "hide", "d-none", "ng-hide"})
+            ):
+                node.decompose()
+        visible = soup.get_text(" ", strip=True)
+    except Exception:
+        return source
+    return visible
+
+
 def extract_result_metadata(text: object) -> dict:
     """Görünür ``N sonuç bulundu`` / ``Toplam M sayfa`` / ``P. sayfa`` / ``her sayfada K kayıt``.
 
     Yalnızca güvenilir biçimde bulunanlar döndürülür (yoksa ``None``). ``20`` sonsuza dek
     varsayılmaz — her sayfada gerçek metaveri okunur.
     """
-    fold = _fold(text)
+    fold = _fold(_result_marker_text(text))
     out = {"result_count": None, "total_pages": None, "current_page": None, "per_page": None}
     result_counts = [int(value) for value in re.findall(r"(\d+)\s*sonuc\s+bulundu", fold)]
     total_pages = [int(value) for value in re.findall(r"toplam\s+(\d+)\s+sayfa", fold)]
@@ -275,7 +304,7 @@ def extract_result_metadata(text: object) -> dict:
 
 def zero_results(text: object) -> bool:
     """Pozitif sıfır-sonuç tespiti (giriş sayfası / oturum kaybı ile KARIŞTIRILMAZ)."""
-    fold = _fold(text)
+    fold = _fold(_result_marker_text(text))
     counts = [int(value) for value in re.findall(r"(\d+)\s*sonuc\s+bulundu", fold)]
     if counts:
         return max(counts) == 0
@@ -314,6 +343,21 @@ def _card_file_id(text: str) -> str | None:
     return re.sub(r"\s*/\s*", "/", m.group(0)).strip()
 
 
+def _card_file_id_from_element(element, text: str) -> str | None:
+    """Prefer the card-local official title; descriptions may cite unrelated file numbers."""
+    try:
+        title = element.select_one("h4#ilanTitle.box-title, h4#ilanTitle")
+        if title is not None:
+            official = _card_file_id(title.get_text(" ", strip=True))
+            if official:
+                return official
+    except Exception:
+        pass
+    if len({re.sub(r"\s+", "", value) for value in _FILE_ID_RE.findall(text)}) > 1:
+        return None
+    return _card_file_id(text)
+
+
 def _card_status_raw(text: str) -> str | None:
     fold = _fold(text)
     hits = [p for p in _STATUS_PHRASES if _fold(p) in fold]
@@ -341,6 +385,73 @@ def _kayit_no_from_el(el) -> str | None:
     return None
 
 
+def _card_root_record_refs(element) -> set[str]:
+    refs = set()
+    nodes = [element]
+    try:
+        nodes.extend(element.select(".incelenen-li"))
+    except Exception:
+        pass
+    for index, node in enumerate(nodes):
+        classes = node.get("class") or []
+        if isinstance(classes, str):
+            classes = [classes]
+        if index > 0 and "incelenen-li" not in classes:
+            continue
+        ref = _kayit_no_from_el(node)
+        if ref:
+            refs.add(ref)
+    return refs
+
+
+def _card_root_count(element) -> int:
+    try:
+        roots = element.select(".incelenen-li")
+    except Exception:
+        roots = []
+    own_classes = element.get("class") or []
+    own = 1 if "incelenen-li" in own_classes else 0
+    return max(own, len(roots))
+
+
+def _card_element_hidden(element) -> bool:
+    current = element
+    while current is not None and getattr(current, "name", None):
+        try:
+            style = re.sub(r"\s+", "", _fold(current.get("style") or ""))
+            classes = {_fold(value) for value in (current.get("class") or [])}
+            if (
+                "display:none" in style
+                or "visibility:hidden" in style
+                or current.has_attr("hidden")
+                or _fold(current.get("aria-hidden") or "") == "true"
+                or classes.intersection({"hidden", "hide", "d-none", "ng-hide"})
+            ):
+                return True
+        except Exception:
+            pass
+        current = current.parent
+    return False
+
+
+def _visible_card_element(element):
+    """Clone a card and remove hidden descendants before extracting identity/status text."""
+    try:
+        from bs4 import BeautifulSoup
+
+        clone = BeautifulSoup(str(element), "html.parser").find()
+        if clone is None:
+            return element
+        for descendant in list(clone.find_all(True)):
+            if descendant is clone:
+                continue
+            if _card_element_hidden(descendant):
+                descendant.decompose()
+        return clone
+    except Exception:
+        return element
+
+
 def parse_result_cards(html: object) -> list[dict]:
     """Sonuç sayfasındaki açık-artırma kartlarını KART-YEREL olarak ayrıştırır.
 
@@ -348,28 +459,41 @@ def parse_result_cards(html: object) -> list[dict]:
     Kimlik + görünür durum AYNI kart elementinden alınır (A'nın durumu B'nin butonuyla EŞLEŞTİRİLMEZ).
     ``kayit_no`` kaynak kanıtı olarak korunur. Kaydırma gerektirmez (statik DOM'dan). OFFLINE testable.
     """
+    source = str(html or "")
+    if "<" not in source or ">" not in source:
+        return []
     try:
         from bs4 import BeautifulSoup
 
-        soup = BeautifulSoup(html or "", "html.parser")
+        soup = BeautifulSoup(source, "html.parser")
     except Exception:
         return []
     for sel in ("[class*=card]", "[class*=sonuc]", "[class*=result]", "[class*=ilan]", "[class*=incelenen]", "li", "tr"):
         candidates: list = []
         for el in soup.select(sel):
-            text = el.get_text(" ", strip=True)
+            if _card_element_hidden(el):
+                continue
+            visible_el = _visible_card_element(el)
+            descendant_record_refs = _card_root_record_refs(visible_el)
+            if _card_root_count(visible_el) > 1 or len(descendant_record_refs) > 1:
+                continue
+            text = visible_el.get_text(" ", strip=True)
             if not text:
                 continue
             fids = {re.sub(r"\s+", "", n) for n in _FILE_ID_RE.findall(text)}
-            if len(fids) != 1:              # 0 → kimlik yok; >1 → container
+            if not fids:
                 continue
-            candidates.append((el, text))
+            if len(fids) > 1 and not _kayit_no_from_el(visible_el):
+                # Çoklu dosya numarası büyük bir container göstergesidir; ancak gerçek kart kökü
+                # kendi class/attribute'ında stabil KAYIT NO taşıyorsa açıklamadaki ek atıflar meşrudur.
+                continue
+            candidates.append((visible_el, text))
         if not candidates:
             continue
         cards: list[dict] = []
         seen: set = set()
         for el, text in candidates:
-            fid = _card_file_id(text)
+            fid = _card_file_id_from_element(el, text)
             if not fid:
                 continue
             kayit = _card_kayit_no(text) or _kayit_no_from_el(el)
@@ -437,6 +561,39 @@ def result_payload_evidence(payload: object) -> dict | None:
         decoded = json.loads(text)
     except Exception:
         decoded = None
+    if (
+        isinstance(decoded, list)
+        and len(decoded) >= 4
+        and isinstance(decoded[0], list)
+        and isinstance(decoded[1], (int, float))
+        and isinstance(decoded[2], (int, float))
+        and isinstance(decoded[3], (int, float))
+    ):
+        rows = decoded[0]
+        cards = []
+        valid_rows = True
+        for row in rows:
+            if not isinstance(row, dict) or "kayitID" not in row or "dosyaNoTurKod" not in row:
+                valid_rows = False
+                break
+            auction_order = row.get("ihaleSirasi")
+            institution = str(row.get("birimAdi") or "")
+            institution_text = (
+                f"{auction_order}. ihale {institution}"
+                if auction_order is not None else institution
+            )
+            cards.append((
+                str(row.get("kayitID") or ""),
+                _card_file_id(str(row.get("dosyaNoTurKod") or "")) or "",
+                _fold(_card_institution(institution_text) or ""),
+            ))
+        if valid_rows:
+            result_count = int(decoded[2])
+            return {
+                "cards": tuple(sorted(cards)),
+                "result_count": result_count,
+                "zero": result_count == 0,
+            }
     identity_keys = {"kayitno", "recordref", "listingref", "dosyano", "esasno"}
     count_keys = {"resultcount", "totalcount", "totalelements", "toplamkayit", "toplamkayitsayisi"}
 
@@ -457,7 +614,10 @@ def result_payload_evidence(payload: object) -> dict | None:
             except (TypeError, ValueError):
                 pass
         elif isinstance(value, str):
-            signature = result_card_signature(value)
+            signature = (
+                result_card_signature(value)
+                if "<" in value and ">" in value else ()
+            )
             if signature:
                 embedded_signatures.append(signature)
             child_metadata = extract_result_metadata(value)
@@ -705,6 +865,23 @@ def summarize_result_structure(html: object) -> dict:
             banners.append(t[:80])
     out["count_banners"] = list(dict.fromkeys(banners))[:12]
     return out
+
+
+def select_diagnostic_result_card(
+    cards: list[dict],
+    target_file_id: object = None,
+    target_kayit_no: object = None,
+) -> dict | None:
+    """Select one explicit card; only selector-free diagnosis may fall back to the first sold card."""
+    file_value = str(target_file_id or "").strip()
+    record_value = str(target_kayit_no or "").strip()
+    if file_value or record_value:
+        return next((
+            card for card in cards
+            if (not file_value or str(card.get("file_id") or "") == file_value)
+            and (not record_value or str(card.get("kayit_no") or "") == record_value)
+        ), None)
+    return next((card for card in cards if card.get("sold")), None)
 
 
 def summarize_document_area(html: object) -> list[dict]:
@@ -1511,6 +1688,7 @@ def process_sold_auction(
     )
     existing["state"] = STATE_COLLECTED
     bm = existing.setdefault("bulk", {})
+    bm.pop("last_acquisition_error", None)
     bm["document_access_patterns"] = patterns or []
     bm["collection_diagnostics"] = diag or {}
     store.log_event(existing, "bulk_collected", f"docs={len(artifacts or [])}")
@@ -1673,19 +1851,22 @@ class UyapBulkCollector:
                 if dates else (False, page.content(), False)
             )
             cards = parse_result_cards(result_html) if ara and refresh_verified else []
-            target = None
-            for c in cards:
-                if target_kayit_no and c.get("kayit_no") == target_kayit_no:
-                    target = c
-                    break
-                if target_file_id and str(c.get("file_id")) == str(target_file_id):
-                    target = c
-                    break
-            if target is None:
-                target = next((c for c in cards if c.get("sold")), None)
-            fid = target.get("file_id") if target else None
+            target = select_diagnostic_result_card(
+                cards,
+                target_file_id=target_file_id,
+                target_kayit_no=target_kayit_no,
+            )
+            fid = target.get("file_id") if target else target_file_id
             pre_tabs = [self._safe_ref(p.url) for p in context.pages]
-            docs, patterns, diag = collector._collect_documents(page, context, fid, province, native_only=True, target_record_ref=target_kayit_no)
+            selected_record_ref = target.get("kayit_no") if target else target_kayit_no
+            docs, patterns, diag = collector._collect_documents(
+                page,
+                context,
+                fid,
+                target.get("institution_text") if target else None,
+                native_only=True,
+                target_record_ref=selected_record_ref,
+            )
             post_tabs = [self._safe_ref(p.url) for p in context.pages]
             keys = ("page_state", "document_entry_path", "target_record_card_found",
                     "document_list_control_found", "document_list_control_kind", "document_list_opened",
@@ -2034,9 +2215,18 @@ class UyapBulkCollector:
             save_bulk_state(state, self.store_dir)
             self._print(f"  OTURUM SONA ERDİ ({exp['reason']}). Durum kaydedildi; yeniden giriş sonrası devam edilebilir.")
             return "SESSION_EXPIRED"
+        rec["pages_completed"] = []
+        rec["result_cards_inspected"] = 0
+        rec["sold_discovered"] = 0
+        rec["sold_skipped_known"] = 0
+        rec["acquisitions_complete"] = 0
+        rec["acquisitions_failed"] = 0
+        rec.pop("parsed_unique_count", None)
+        rec["page_checkpoint_reset_reason"] = "fresh_search_revalidation"
         result_cards = parse_result_cards(result_html)
         if zero_results(result_html) and not result_cards:
             rec["result_count"] = 0
+            rec["total_pages"] = None
             if pending_target_refs:
                 attempted_target_refs.update(pending_target_refs)
                 rec["attempted_record_refs"] = sorted(attempted_target_refs)
@@ -2064,6 +2254,8 @@ class UyapBulkCollector:
         cards_present = bool(result_cards)
         if meta.get("result_count") is None and not cards_present:
             rec["status"] = "RESULT_STATE_UNCONFIRMED"
+            rec["result_count"] = None
+            rec["total_pages"] = None
             upsert_window_record(state, rec)
             save_bulk_state(state, self.store_dir)
             self._print("  sonuç durumu doğrulanamadı: ARA sonrası numaralı 'N sonuç bulundu' ya da sonuç "
@@ -2073,9 +2265,6 @@ class UyapBulkCollector:
 
         rec["result_count"] = meta.get("result_count")
         rec["total_pages"] = meta.get("total_pages")
-        if rec.get("pages_completed"):
-            rec["pages_completed"] = []
-            rec["page_checkpoint_reset_reason"] = "fresh_search_revalidation"
         valid_pages = self._valid_pages(page, meta)
         if should_split_result_window(w, meta, valid_pages) and pending_target_refs is None:
             rec["status"] = "SPLIT"

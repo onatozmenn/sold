@@ -931,5 +931,24 @@ truncated, deferred, count-mismatched or failed work remains explicitly incomple
 KAYIT NO values to discovered candidate IDs, while durable failure and retry cursors prevent both starvation and
 false completion. Province/window bounds apply to both phases and return nonzero status while backlog remains.
 Empty native-document collections are acquisition failures, never successful status-card-only acquisitions.
-Final offline validation: **108 bulk/campaign tests**, **580 UYAP tests**, and **816 tests in the complete suite**.
+Final offline validation at initial release: **108 bulk/campaign tests**, **580 UYAP tests**, and **816 tests in the complete suite**.
 The final independent P0/P1/P2 release audit reported **NO BLOCKING FINDINGS**.
+
+## 2026-07-11 — Nationwide live discovery and targeted acquisition
+
+A user manually authenticated to UYAP e-Satış in the dedicated Chrome/CDP profile; no login, MFA, CAPTCHA,
+consent or admission step was automated. The campaign then completed one metadata-only seven-day discovery
+window (`2026-07-05..2026-07-11`) for **all 81 provinces**. The verified source cardinality was **535 result
+cards**. Three terminal `Satıldı` candidates were discovered: two in Erzincan and one in Sakarya. Exact,
+candidate-bound native acquisition completed **3/3**, leaving the acquisition queue and blocker list empty.
+The audits yielded one new `ADMISSIBLE_COMPLETED_SALE` candidate and two `PENDING_REVIEW` candidates; none was
+admitted, so the genuine structural evidence remains at 20 UYAP observations pending explicit review/admission.
+
+Live interoperability hardening added visible-only result metadata, the observed history-search JSON adapter,
+canonical-title handling for cards containing additional file references, and an end-to-end document ownership
+chain: exact host/path/POST/single KAYIT request, response URI, exact visible modal, logical row, and exact action
+fingerprint. Hidden/stale cards, panels, modals and actions fail closed. The final Sakarya one-document modal was
+live-verified under this ownership chain. Final validation: **116 bulk/campaign tests**, **591 UYAP tests**, and
+**827 tests in the complete suite**. Independent review findings were incorporated into the final ownership
+guards before release; the post-fix audit found no P0/P1 correctness blocker. Persisted telemetry reconciles to
+81/81 complete provinces, 535 source cards, 3/3 acquired candidates, and an empty acquisition queue.

@@ -406,6 +406,70 @@ def test_result_metadata_parsing():
     assert meta == {"result_count": 32, "total_pages": 2, "current_page": 1, "per_page": 20}
 
 
+def test_diagnostic_target_selection_is_exact_when_selectors_are_supplied():
+    cards = [
+        {"file_id": "2026/1", "kayit_no": "1001", "sold": True},
+        {"file_id": "2026/2", "kayit_no": "1002", "sold": True},
+    ]
+    assert bulk.select_diagnostic_result_card(cards)["kayit_no"] == "1001"
+    assert bulk.select_diagnostic_result_card(
+        cards, target_file_id="2026/2", target_kayit_no="1002"
+    )["kayit_no"] == "1002"
+    assert bulk.select_diagnostic_result_card(
+        cards, target_file_id="2026/1", target_kayit_no="1002"
+    ) is None
+    assert bulk.select_diagnostic_result_card(
+        cards, target_kayit_no="missing"
+    ) is None
+
+
+def test_result_metadata_parses_fragmented_visible_html():
+    html = """
+    <div><strong>28</strong> sonuç bulundu.</div>
+    <div>Toplam <strong>2</strong> sayfa içerisinde <span>1</span> . sayfayı görmektesiniz.</div>
+    <div>Her sayfada <strong>20</strong> kayıt gösterilir.</div>
+    """
+    assert bulk.extract_result_metadata(html) == {
+        "result_count": 28,
+        "total_pages": 2,
+        "current_page": 1,
+        "per_page": 20,
+    }
+
+
+def test_result_metadata_ignores_hidden_stale_panels():
+    html = """
+    <section id="searchResults" style="display: none"><div>99 sonuç bulundu.</div></section>
+    <section id="historyResults" style="display: block"><div>0 sonuç bulundu.</div></section>
+    <section id="dosyaResults" aria-hidden="true"><div>77 sonuç bulundu.</div></section>
+    """
+    assert bulk.extract_result_metadata(html)["result_count"] == 0
+    assert bulk.zero_results(html) is True
+
+
+def test_result_payload_evidence_parses_live_history_json_shape():
+    payload = json.dumps([
+        [{
+            "kayitID": 16975383463,
+            "dosyaNoTurKod": "2026/123 Talimat",
+            "birimAdi": "Beypazarı İcra Dairesi",
+            "ihaleSirasi": 2,
+        }],
+        20,
+        28,
+        1,
+    ], ensure_ascii=False)
+    evidence = bulk.result_payload_evidence(payload)
+    assert evidence["cards"] == ((
+        "16975383463",
+        "2026/123",
+        "2. ihale beypazari icra dairesi",
+    ),)
+    assert evidence["result_count"] == 28
+    assert evidence["zero"] is False
+    assert bulk.result_payload_evidence("[[], 20, 0, 1]")["zero"] is True
+
+
 def test_result_metadata_ignores_hidden_zero_banner():
     text = (
         "0 sonuç bulundu. 40 sonuç bulundu. Toplam 2 sayfa içerisinde 1. sayfayı "
@@ -1647,6 +1711,42 @@ def test_runner_distinguishes_confirmed_zero_from_unconfirmed_state(
     assert rec["status"] == expected_status
 
 
+def test_fresh_zero_result_clears_stale_window_telemetry(tmp_path, monkeypatch):
+    collector, page = _runner_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        collector, "_wait_result_state",
+        lambda page, baseline=None: ("sonuç bulunamadı", True),
+    )
+    window = {"start": "2026-06-01", "end": "2026-06-07"}
+    state, rec, summary = _runner_state(window, bulk.PHASE_DISCOVERY)
+    rec.update({
+        "pages_completed": [1, 2],
+        "result_cards_inspected": 40,
+        "sold_discovered": 5,
+        "sold_skipped_known": 1,
+        "acquisitions_complete": 4,
+        "acquisitions_failed": 1,
+        "parsed_unique_count": 39,
+        "total_pages": 2,
+    })
+
+    stop = collector._run_window(
+        page, object(), _fake_acquire_ok, "ANKARA", window, rec, state, summary,
+        max_records=None, discovery_only=True, acquired_total=0,
+    )
+
+    assert stop is None
+    assert rec["status"] == "COMPLETE"
+    assert rec["result_count"] == 0
+    assert rec["total_pages"] is None
+    assert rec["pages_completed"] == []
+    assert rec["result_cards_inspected"] == 0
+    assert rec["sold_discovered"] == 0
+    assert rec["acquisitions_complete"] == 0
+    assert rec["acquisitions_failed"] == 0
+    assert "parsed_unique_count" not in rec
+
+
 def test_targeted_zero_result_remains_acquisition_incomplete(tmp_path, monkeypatch):
     collector, page = _runner_fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(
@@ -1920,6 +2020,128 @@ def test_parser_preserves_candidate_siblings_with_same_record_ref():
         assert {identity[0] for identity in evidence["cards"]} == {"3301"}
         assert len({identity[2] for identity in evidence["cards"]}) == 2
         assert bulk.dom_matches_result_evidence(payload, evidence) is True
+
+
+def test_parser_keeps_stable_card_with_additional_file_reference():
+        html = """
+        <li class="incelenen-li 16792885364">
+            <article class="box">
+                <span>KAYIT NO: 16792885364</span>
+                <h4 id="ilanTitle" class="box-title">2026/1612 Esas</h4>
+                <span>2. İhale Ankara İcra Dairesi</span>
+                <span>Açıklama içinde ilgili 2025/44 dosyasına atıf vardır.</span>
+            </article>
+        </li>
+        """
+        cards = bulk.parse_result_cards(html)
+        assert len(cards) == 1
+        assert cards[0]["kayit_no"] == "16792885364"
+        assert cards[0]["file_id"] == "2026/1612"
+
+
+def test_parser_prefers_official_title_when_reference_appears_first():
+        html = """
+        <li class="incelenen-li 16792885364">
+            <article class="box">
+                <p><span id="ihaleAciklamaSpan">İlgili 2025/44 dosyasına atıf.</span></p>
+                <h4 id="ilanTitle" class="box-title">2026/1612 Esas</h4>
+                <span>2. İhale Ankara İcra Dairesi</span>
+            </article>
+        </li>
+        """
+        cards = bulk.parse_result_cards(html)
+        assert len(cards) == 1
+        assert cards[0]["file_id"] == "2026/1612"
+
+        no_title = html.replace(
+            '<h4 id="ilanTitle" class="box-title">2026/1612 Esas</h4>',
+            '<span>2026/1612 Esas</span>',
+        )
+        assert bulk.parse_result_cards(no_title) == []
+
+        from sold.ingestion.uyap.collect import find_target_record_card
+
+        selected = find_target_record_card(html, "2026/1612", target_record_ref="16792885364")
+        assert selected is not None
+        assert "record_ref" in selected["match_fields"]
+        assert find_target_record_card(
+            no_title, "2026/1612", target_record_ref="16792885364"
+        ) is None
+
+        hidden = f'<div style="display:none">{html}</div>'
+        assert bulk.parse_result_cards(hidden) == []
+        assert find_target_record_card(
+            hidden, "2026/1612", target_record_ref="16792885364"
+        ) is None
+
+        hidden_class = f'<div class="d-none">{html}</div>'
+        assert bulk.parse_result_cards(hidden_class) == []
+        assert find_target_record_card(
+            hidden_class, "2026/1612", target_record_ref="16792885364"
+        ) is None
+
+        hidden_descendant = """
+        <li class="incelenen-li 16792885364">
+            <h4 id="ilanTitle">2026/1612 Esas</h4>
+            <span>Sonuç girilmemiştir</span>
+            <span class="d-none">Satıldı · 2025/44 Esas</span>
+        </li>
+        """
+        visible_cards = bulk.parse_result_cards(hidden_descendant)
+        assert len(visible_cards) == 1
+        assert visible_cards[0]["file_id"] == "2026/1612"
+        assert visible_cards[0]["sold"] is False
+
+        from sold.ingestion.uyap.collect import find_target_record_card
+
+        hidden_target = """
+        <div class="result-wrapper">
+            <button>İhale Evrak Listesi</button>
+            <div class="d-none">
+                <li class="incelenen-li 16792885364">
+                    <h4 id="ilanTitle">2026/1612 Esas</h4>
+                </li>
+            </div>
+        </div>
+        """
+        assert find_target_record_card(
+                hidden_target, "2026/1612", target_record_ref="16792885364"
+        ) is None
+
+
+def test_target_card_selection_rejects_multi_record_wrapper():
+        from sold.ingestion.uyap.collect import find_target_record_card
+
+        html = """
+        <div class="result-wrapper">
+            <li class="incelenen-li 11111111">
+                <h4 id="ilanTitle">2026/77 Esas</h4><button>İhale Evrak Listesi</button>
+            </li>
+            <li class="incelenen-li 22222222">
+                <h4 id="ilanTitle">2026/77 Esas</h4><button>İhale Evrak Listesi</button>
+            </li>
+        </div>
+        """
+        selected = find_target_record_card(
+                html, "2026/77", target_record_ref="22222222"
+        )
+        assert selected is not None
+        assert "22222222" in selected["html"]
+        assert "11111111" not in selected["html"]
+        parsed = bulk.parse_result_cards(html)
+        assert {card["kayit_no"] for card in parsed} == {"11111111", "22222222"}
+
+        same_ref = html.replace(
+            '<h4 id="ilanTitle">2026/77 Esas</h4><button>İhale Evrak Listesi</button>',
+            '<h4 id="ilanTitle">2026/77 Esas</h4><span>Ankara 1. İcra Dairesi</span><button>İhale Evrak Listesi</button>',
+            1,
+        ).replace(
+            '<h4 id="ilanTitle">2026/77 Esas</h4><button>İhale Evrak Listesi</button>',
+            '<h4 id="ilanTitle">2026/77 Esas</h4><span>Ankara 2. İcra Dairesi</span><button>İhale Evrak Listesi</button>',
+            1,
+        ).replace("11111111", "22222222")
+        same_ref_parsed = bulk.parse_result_cards(same_ref)
+        assert len(same_ref_parsed) == 2
 
 
 def test_page_transition_distinguishes_same_ref_sibling_institution():
@@ -2400,6 +2622,8 @@ def test_fresh_search_revalidates_prior_page_checkpoints(tmp_path, monkeypatch):
     window = {"start": "2026-06-01", "end": "2026-06-07"}
     state, rec, summary = _runner_state(window, bulk.PHASE_DISCOVERY)
     rec["pages_completed"] = [1]
+    rec["result_cards_inspected"] = 99
+    rec["parsed_unique_count"] = 1
 
     stop = collector._run_window(
         page, object(), _fake_acquire_ok, "ANKARA", window, rec, state, summary,
@@ -2409,6 +2633,8 @@ def test_fresh_search_revalidates_prior_page_checkpoints(tmp_path, monkeypatch):
     assert stop is None
     assert visited == [1, 2]
     assert rec["page_checkpoint_reset_reason"] == "fresh_search_revalidation"
+    assert rec["result_cards_inspected"] == 2
+    assert "parsed_unique_count" not in rec
     assert rec["status"] == "COMPLETE"
 
 
@@ -2647,6 +2873,18 @@ def test_empty_native_collection_is_retryable_acquisition_failure(tmp_path):
     assert candidate["bulk"]["collection_diagnostics"]["blocking_reason"]
     assert candidate.get("audit") is None
     assert bulk.should_acquire(candidate) is True
+
+    recovered = bulk.process_sold_auction(
+        _sold_card(),
+        acquire_documents=_fake_acquire_ok,
+        store_dir=tmp_path,
+        genuine_path=tmp_path / "genuine_uyap.json",
+        province_label="ANKARA",
+        force=True,
+    )
+    recovered_candidate = store.get_candidate(recovered["candidate_id"], tmp_path)
+    assert recovered["outcome"] == "acquired"
+    assert "last_acquisition_error" not in recovered_candidate["bulk"]
 
 
 def test_same_esas_different_kayit_no_are_distinct_candidates(tmp_path):
