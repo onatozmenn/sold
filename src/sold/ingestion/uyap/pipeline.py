@@ -46,7 +46,12 @@ def _validate_artifacts(candidate: dict, store_dir: Path | str | None) -> None:
             raise ValueError(f"artifact is missing a full sha256: {path}")
 
 
-def run_extract(candidate: dict, store_dir: Path | str | None = None) -> dict:
+def run_extract(
+    candidate: dict,
+    store_dir: Path | str | None = None,
+    *,
+    persist: bool = True,
+) -> dict:
     """Aday artifact'larından deterministik çıkarım yapar; ``extracted`` alanını doldurur."""
     _validate_artifacts(candidate, store_dir)
     ev = extract_evidence(
@@ -57,7 +62,7 @@ def run_extract(candidate: dict, store_dir: Path | str | None = None) -> dict:
     candidate["extracted"] = ev.to_dict()
     candidate["state"] = STATE_EXTRACTED
     store.log_event(candidate, "extracted", f"status={ev.extraction_status}")
-    return store.upsert(candidate, store_dir)
+    return store.upsert(candidate, store_dir) if persist else candidate
 
 
 def _genuine_ids(genuine_path: Path | str | None) -> set[str]:
@@ -74,10 +79,12 @@ def run_audit(
     candidate: dict,
     store_dir: Path | str | None = None,
     genuine_path: Path | str | None = None,
+    *,
+    persist: bool = True,
 ) -> dict:
     """Aynı-varlık mutabakatı + kural-tabanlı denetim; ADMİSYON DEĞİL, ``audit`` doldurur."""
     rec = reconcile(candidate.get("artifacts", []), candidate.get("institution"), candidate.get("file_id"))
-    candidate = run_extract(candidate, store_dir)
+    candidate = run_extract(candidate, store_dir, persist=False)
     ev_dict = candidate["extracted"]
     ev = ExtractedEvidence(**ev_dict)
     audit = audit_candidate(ev, rec)
@@ -100,7 +107,7 @@ def run_audit(
         STATE_PENDING_REVIEW if audit.decision in REVIEW_DECISIONS else STATE_AUDITED
     )
     store.log_event(candidate, "audited", audit.decision)
-    return store.upsert(candidate, store_dir)
+    return store.upsert(candidate, store_dir) if persist else candidate
 
 
 def status_summary(store_dir: Path | str | None = None) -> dict:

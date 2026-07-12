@@ -21,6 +21,10 @@ from pathlib import Path
 # Çözülmüş kaynak için makul depo-yerel güvenlik sınırı (zip-bomb koruması). Ölçülen content.xml ≈ 17.9 KB.
 MAX_UDF_DECOMPRESSED_BYTES = 8 * 1024 * 1024  # 8 MiB
 CONTENT_MEMBER = "content.xml"
+ODF_MIMETYPE_MEMBER = "mimetype"
+ODF_TEXT_MIMETYPE = "application/vnd.oasis.opendocument.text"
+ODF_OFFICE_NS = "urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+ODF_TEXT_NS = "urn:oasis:names:tc:opendocument:xmlns:text:1.0"
 # Gizlilik-güvenli özet için bilinen yapısal üye adları (kişisel/opak değil).
 _KNOWN_MEMBERS = ("documentproperties.xml", "content.xml", "sign.sgn")
 
@@ -218,3 +222,122 @@ def native_udf_supported(diag: dict) -> bool:
     return bool(diag and diag.get("zip_valid") and diag.get("content_xml_found")
                 and diag.get("xml_parse_succeeded") and diag.get("content_element_found")
                 and diag.get("source_text_available"))
+
+
+def _odf_node_text(element, parts: list[str]) -> None:
+    local_name = str(element.tag).split("}")[-1]
+    if element.text:
+        parts.append(element.text)
+    for child in list(element):
+        child_local = str(child.tag).split("}")[-1]
+        if child_local == "s":
+            count = child.attrib.get(f"{{{ODF_TEXT_NS}}}c", "1")
+            try:
+                parts.append(" " * min(max(int(count), 1), 1000))
+            except ValueError:
+                parts.append(" ")
+        elif child_local == "tab":
+            parts.append("\t")
+        elif child_local == "line-break":
+            parts.append("\n")
+        else:
+            _odf_node_text(child, parts)
+        if child.tail:
+            parts.append(child.tail)
+    if local_name in ("p", "h", "list-item", "table-row"):
+        parts.append("\n")
+
+
+def extract_odf_source_text(source) -> tuple:
+    """Extract text from the portal's exact-URI WebODF transformation with UDF-equivalent guards."""
+    diag = _new_diag()
+    diag["container_kind"] = "zip_odf"
+    if isinstance(source, (bytes, bytearray)):
+        data = bytes(source)
+    else:
+        try:
+            data = Path(source).read_bytes()
+        except Exception:
+            diag["blocking_reason"] = "artifact_unreadable"
+            return None, diag
+    if not zipfile.is_zipfile(io.BytesIO(data)):
+        diag["blocking_reason"] = "not_a_zip_compatible_container"
+        return None, diag
+    diag["zip_valid"] = True
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except Exception:
+        diag["blocking_reason"] = "zip_open_failed"
+        return None, diag
+    with archive:
+        names = archive.namelist()
+        diag["member_names_safe_summary"] = {
+            "member_count": len(names),
+            "has_unsafe_member_path": any(_unsafe_member(name) for name in names),
+            "has_content_xml": names.count(CONTENT_MEMBER) == 1,
+            "has_mimetype": names.count(ODF_MIMETYPE_MEMBER) == 1,
+        }
+        if diag["member_names_safe_summary"]["has_unsafe_member_path"]:
+            diag["blocking_reason"] = "unsafe_archive_member_path"
+            return None, diag
+        if names.count(CONTENT_MEMBER) != 1 or names.count(ODF_MIMETYPE_MEMBER) != 1:
+            diag["blocking_reason"] = "odf_required_member_missing_or_ambiguous"
+            return None, diag
+        if archive.getinfo(ODF_MIMETYPE_MEMBER).file_size > 256:
+            diag["blocking_reason"] = "odf_mimetype_too_large"
+            return None, diag
+        try:
+            mimetype = archive.read(ODF_MIMETYPE_MEMBER).decode("ascii")
+        except Exception:
+            diag["blocking_reason"] = "odf_mimetype_unreadable"
+            return None, diag
+        if mimetype != ODF_TEXT_MIMETYPE:
+            diag["blocking_reason"] = "unsupported_odf_mimetype"
+            return None, diag
+        info = archive.getinfo(CONTENT_MEMBER)
+        if info.file_size > MAX_UDF_DECOMPRESSED_BYTES:
+            diag["blocking_reason"] = "content_xml_too_large"
+            return None, diag
+        try:
+            with archive.open(CONTENT_MEMBER) as handle:
+                raw = handle.read(MAX_UDF_DECOMPRESSED_BYTES + 1)
+        except Exception:
+            diag["blocking_reason"] = "content_xml_unreadable"
+            return None, diag
+    if len(raw) > MAX_UDF_DECOMPRESSED_BYTES:
+        diag["blocking_reason"] = "content_xml_too_large"
+        return None, diag
+    diag["content_xml_found"] = True
+    diag["content_xml_size"] = len(raw)
+    try:
+        xml_text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        diag["blocking_reason"] = "unsupported_encoding"
+        return None, diag
+    low = xml_text.lower()
+    if "<!doctype" in low or "<!entity" in low or "xinclude" in low or "<?xml-stylesheet" in low:
+        diag["blocking_reason"] = "doctype_or_entity_not_allowed"
+        return None, diag
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        diag["blocking_reason"] = "malformed_xml"
+        return None, diag
+    diag["xml_parse_succeeded"] = True
+    if root.tag != f"{{{ODF_OFFICE_NS}}}document-content":
+        diag["blocking_reason"] = "odf_document_content_root_missing"
+        return None, diag
+    text_elements = root.findall(f".//{{{ODF_OFFICE_NS}}}text")
+    if len(text_elements) != 1:
+        diag["blocking_reason"] = "odf_text_element_missing_or_ambiguous"
+        return None, diag
+    diag["content_element_found"] = True
+    parts: list[str] = []
+    _odf_node_text(text_elements[0], parts)
+    text = "".join(parts).strip()
+    if not text:
+        diag["blocking_reason"] = "empty_content_text"
+        return None, diag
+    diag["source_text_available"] = True
+    diag["text_extraction_supported"] = True
+    return text, diag

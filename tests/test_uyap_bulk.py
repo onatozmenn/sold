@@ -8,13 +8,16 @@ ile test edilir. Yapısal ekonometrik çekirdeğin donmuş olduğu ayrıca doğr
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
+import io
 import json
 from types import SimpleNamespace
+import zipfile
 
 import pytest
 
-from sold.ingestion.uyap import bulk, store
+from sold.ingestion.uyap import bulk, io as uyap_io, store
 from sold.ingestion.uyap.models import (
     AUDIT_DECISIONS,
     STATE_AUDITED,
@@ -28,6 +31,29 @@ from sold.ingestion.uyap.models import (
 # --------------------------------------------------------------------------- #
 # 1) Tarih penceresi üretimi — deterministik, boşluksuz, örtüşmesiz, ≤7 gün.
 # --------------------------------------------------------------------------- #
+def test_atomic_json_write_retries_transient_permission_error(tmp_path, monkeypatch):
+    target = tmp_path / "state.json"
+    original_replace = uyap_io.os.replace
+    attempts = {"count": 0}
+
+    def flaky_replace(source, destination):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise PermissionError("transient sync lock")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(uyap_io.os, "replace", flaky_replace)
+    monkeypatch.setattr(uyap_io.time, "sleep", lambda _seconds: None)
+
+    uyap_io.atomic_write_json(target, {"ok": True})
+
+    assert attempts["count"] == 3
+    assert json.loads(target.read_text(encoding="utf-8")) == {"ok": True}
+    binary = tmp_path / "artifact.udf"
+    uyap_io.atomic_write_bytes(binary, b"PK\x03\x04fixture")
+    assert binary.read_bytes() == b"PK\x03\x04fixture"
+
+
 def test_date_windows_canonical_seven_day_inclusive():
     ws = bulk.generate_date_windows("2025-01-01", "2025-01-21")
     assert ws == [
@@ -491,6 +517,7 @@ def test_fast_history_contract_uses_structured_sold_status():
         "dosyaNoTurKod": "2026/123 Talimat",
         "birimAdi": "Erzincan İcra Dairesi",
         "satisDurumu": "0",
+        "malAciklama": "3. kat 8 no.lu mesken ve arsa payı",
     }], 1, 21, 2], ensure_ascii=False), expected_page=2)
     assert response["per_page"] == 20
     assert response["total_pages"] == 2
@@ -508,11 +535,409 @@ def test_fast_history_contract_uses_structured_sold_status():
         "sold": True,
         "card_html": None,
         "card_text": "Erzincan İcra Dairesi 2026/123 16975383463 Satıldı",
+        "property_type_hint": "residential_mixed",
+        "residential_hint": True,
+        "property_hint_classes": ["land", "residential"],
+        "property_hint_terms": ["arsa", "mesken"],
+        "property_hint_version": "uyap-history-property-v1",
     }]
     assert bulk.history_province_codes([
         {"label": "--Seçiniz--", "value": ""},
         {"label": "ERZİNCAN", "value": "24"},
     ]) == {"ERZİNCAN": "24"}
+
+
+def test_property_hint_uses_token_boundaries_and_retains_no_description():
+    independent = bulk.classify_property_description(
+        "Konut nitelikli bağımsız bölüm ve eklentisi"
+    )
+    assert independent == {
+        "property_type_hint": "residential",
+        "residential_hint": True,
+        "property_hint_classes": ["residential"],
+        "property_hint_terms": ["konut"],
+        "property_hint_version": "uyap-history-property-v1",
+    }
+    assert bulk.classify_property_description("Tarla ve bağ") == {
+        "property_type_hint": "land",
+        "residential_hint": False,
+        "property_hint_classes": ["land"],
+        "property_hint_terms": ["bag", "tarla"],
+        "property_hint_version": "uyap-history-property-v1",
+    }
+
+
+def test_document_manifest_requires_unique_notice_and_result():
+    payload = {
+        "0": [{"evrakId": "notice", "evrakUri": "uri-notice"}],
+        "1": [],
+        "2": [
+            {"evrakId": "report", "evrakUri": "uri-report", "aciklama": "BLR_BILIRKISI_RAPORU"},
+            {"evrakId": "spec", "evrakUri": "uri-spec", "aciklama": "Satış Şartnamesi Ve Tutanağı"},
+        ],
+        "3": [],
+        "4": [{"evrakId": "result", "evrakUri": "uri-result"}],
+    }
+    parsed = bulk.parse_document_manifest(payload)
+    assert parsed["group_counts"] == {"0": 1, "1": 0, "2": 2, "3": 0, "4": 1}
+    assert parsed["document_count"] == 4
+    assert parsed["response_uri_count"] == 4
+    assert parsed["sale_notice_count"] == 1
+    assert parsed["auction_result_count"] == 1
+    assert parsed["direct_download_eligible"] is True
+    assert [item["islem_turu"] for item in parsed["downloads"]] == ["satis", "tutanak"]
+
+    payload["4"].append({"evrakId": "result-2", "evrakUri": "uri-result-2"})
+    ambiguous = bulk.parse_document_manifest(payload)
+    assert ambiguous["auction_result_count"] == 2
+    assert ambiguous["direct_download_eligible"] is False
+    assert ambiguous["downloads"] == []
+    assert len(ambiguous["review_downloads"]) == 3
+    source_error = bulk.parse_document_manifest({
+        "errorCode": "SOURCE_ERROR", "error": "not exposed",
+    })
+    assert source_error["source_error"] is True
+    assert source_error["direct_download_eligible"] is False
+
+
+def test_native_download_gate_validates_udf_and_document_type():
+    content = (
+        '<?xml version="1.0" encoding="UTF-8"?><template format_id="1.8"><content><![CDATA['
+        "ARTIRMA SONUÇ TUTANAĞI\nİhale Bedeli : 1.250.000,00 TL\n"
+        "Satış İşlemleri Tamamlandı"
+        "]]></content></template>"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("documentproperties.xml", "<properties/>")
+        archive.writestr("content.xml", content)
+        archive.writestr("sign.sgn", b"SYNTHETIC_SIGNATURE")
+    data = buffer.getvalue()
+    payload = {
+        "ok": True,
+        "status": 200,
+        "size": len(data),
+        "body_base64": base64.b64encode(data).decode("ascii"),
+    }
+
+    validated = bulk.validate_native_download(payload, "auction_result")
+
+    assert validated["data"] == data
+    assert len(validated["sha256"]) == 64
+    assert validated["diagnostics"]["zip_valid"] is True
+    with pytest.raises(ValueError, match="document type mismatch"):
+        bulk.validate_native_download(payload, "sale_notice")
+
+
+def test_exact_uri_odf_parser_and_document_gate():
+        from sold.ingestion.uyap.udf import extract_odf_source_text
+
+        content = '''<?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content
+            xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+            xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+            <office:body><office:text>
+                <text:p>ARTIRMA SONUÇ TUTANAĞI</text:p>
+                <text:p>İhale Bedeli : 1.250.000,00 TL</text:p>
+                <text:p>Satış İşlemleri Tamamlandı</text:p>
+            </office:text></office:body>
+        </office:document-content>'''
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("mimetype", "application/vnd.oasis.opendocument.text")
+                archive.writestr("content.xml", content)
+                archive.writestr("styles.xml", "<styles/>")
+                archive.writestr("META-INF/manifest.xml", "<manifest/>")
+
+        text, diagnostics = extract_odf_source_text(buffer.getvalue())
+
+        assert "ARTIRMA SONUÇ TUTANAĞI" in text
+        assert "İhale Bedeli : 1.250.000,00 TL" in text
+        assert diagnostics["container_kind"] == "zip_odf"
+        assert diagnostics["text_extraction_supported"] is True
+        data = buffer.getvalue()
+        payload = {
+            "ok": True, "status": 200, "size": len(data),
+            "body_base64": base64.b64encode(data).decode("ascii"),
+        }
+        validated = bulk.validate_exact_view_document(payload, "auction_result")
+        assert validated["container_extension"] == ".odt"
+        assert validated["source_transport"] == "manifest_uri_view"
+        with pytest.raises(ValueError, match="document type mismatch"):
+            bulk.validate_exact_view_document(payload, "sale_notice")
+
+        mixed_content = content.replace(
+            "ARTIRMA SONUÇ TUTANAĞI",
+            "TAŞINMAZIN ELEKTRONİK SATIŞ ORTAMINDA AÇIK ARTIRMA İLANI "
+            "ARTIRMA SONUÇ TUTANAĞI",
+        )
+        mixed_buffer = io.BytesIO()
+        with zipfile.ZipFile(mixed_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("mimetype", "application/vnd.oasis.opendocument.text")
+            archive.writestr("content.xml", mixed_content)
+        mixed_data = mixed_buffer.getvalue()
+        mixed_payload = {
+            "ok": True, "status": 200, "size": len(mixed_data),
+            "body_base64": base64.b64encode(mixed_data).decode("ascii"),
+        }
+        mixed = bulk.validate_exact_view_document(mixed_payload, "sale_notice")
+        assert mixed["diagnostics"]["mixed_document_type"] is True
+        assert mixed["diagnostics"]["document_types_present"] == [
+            "auction_result", "sale_notice",
+        ]
+
+
+def test_multi_result_agreement_requires_same_price_and_asset():
+    def result_udf(amount):
+        content = (
+            '<?xml version="1.0" encoding="UTF-8"?><template><content><![CDATA['
+            f"ARTIRMA SONUÇ TUTANAĞI\n123 Ada 4 Parsel\nİhale Bedeli: {amount} TL"
+            "]]></content></template>"
+        )
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("content.xml", content)
+        data = buffer.getvalue()
+        return {
+            "data": data,
+            "container_extension": ".udf",
+        }
+
+    documents = [
+        ({"artifact_type": "auction_result"}, result_udf("1.250.000,00")),
+        ({"artifact_type": "auction_result"}, result_udf("1.250.000,00")),
+    ]
+    agreed = bulk.multi_result_documents_agree(documents)
+    assert agreed["agreed"] is True
+    assert agreed["result_document_count"] == 2
+    assert agreed["agreed_ihale_bedeli"] == 1250000.0
+
+    documents[1] = (
+        {"artifact_type": "auction_result"}, result_udf("1.300.000,00")
+    )
+    conflict = bulk.multi_result_documents_agree(documents)
+    assert conflict["agreed"] is False
+    assert conflict["reason"] == "result_document_ihale_bedeli_conflict"
+
+
+def test_inspection_ledger_separates_audit_from_manual_requirements(tmp_path):
+    audited = store.new_candidate("Ankara İcra", "2026/1", record_ref="8101")
+    audited["bulk"] = {
+        "window_start": "2026-06-01", "window_end": "2026-06-07",
+    }
+    audited["audit"] = {"decision": "ADMISSIBLE_COMPLETED_SALE"}
+    missing = store.new_candidate("Ankara İcra", "2026/2", record_ref="8102")
+    missing["bulk"] = {
+        "window_start": "2026-06-01", "window_end": "2026-06-07",
+        "document_manifest": {
+            "status": "REQUIRES_UI_FALLBACK",
+            "sale_notice_count": 1,
+            "auction_result_count": 0,
+        },
+    }
+    conflict = store.new_candidate("Ankara İcra", "2026/3", record_ref="8103")
+    conflict["bulk"] = {
+        "window_start": "2026-06-01", "window_end": "2026-06-07",
+        "document_manifest": {"status": "REQUIRES_UI_FALLBACK"},
+        "direct_acquisition": {
+            "status": "REQUIRES_UI_FALLBACK",
+            "error": "multi_result:result_document_ihale_bedeli_conflict",
+        },
+    }
+    store.save_candidates([audited, missing, conflict], tmp_path)
+
+    result = bulk.finalize_inspection_statuses(
+        tmp_path, date_from="2026-06-01", date_to="2026-06-30"
+    )
+
+    assert result["all_inspected"] is True
+    assert result["by_status"] == {"AUDITED": 1, "MANUAL_REQUIRED": 2}
+    assert result["by_reason"]["auction_result_missing"] == 1
+    assert result["by_reason"]["multi_result_documents_not_agreed"] == 1
+    stored = store.load_candidates(tmp_path)
+    assert stored[0]["bulk"]["inspection"]["status"] == "AUDITED"
+    assert stored[1]["audit"] is None
+    assert stored[1]["bulk"]["inspection"]["status"] == "MANUAL_REQUIRED"
+
+
+def test_fast_manifest_pool_batch_persists_only_safe_summary(tmp_path, monkeypatch):
+    candidate = bulk.process_sold_auction(
+        _sold_card(fid="2026/701", kayit="7011"),
+        acquire_documents=_fake_acquire_fail,
+        store_dir=tmp_path,
+        genuine_path=tmp_path / "genuine.json",
+        discovery_only=True,
+        province_label="ANKARA",
+        window={"start": "2026-06-01", "end": "2026-06-07"},
+    )
+    collector = bulk.UyapBulkCollector("http://127.0.0.1:9222", store_dir=tmp_path)
+    payload = {
+        "0": [{"evrakUri": "private-uri-notice"}],
+        "1": [], "2": [], "3": [],
+        "4": [{"evrakUri": "private-uri-result"}],
+    }
+
+    monkeypatch.setattr(
+        collector,
+        "_fetch_document_manifests",
+        lambda page, targets, concurrency: [{
+            "candidate_id": targets[0]["candidate_id"],
+            "record_ref": targets[0]["record_ref"],
+            "ok": True,
+            "status": 200,
+            "body": json.dumps(payload),
+            "attempts": 1,
+            "error": None,
+        }],
+    )
+    summary = collector._scan_document_manifest_tasks(
+        SimpleNamespace(url="https://esatis.uyap.gov.tr/pp/index.jsp"),
+        [{"candidate_ids": [candidate["candidate_id"]]}],
+        concurrency=8,
+    )
+
+    assert summary["candidates_scanned"] == 1
+    assert summary["direct_download_eligible"] == 1
+    stored = store.get_candidate(candidate["candidate_id"], tmp_path)
+    manifest = stored["bulk"]["document_manifest"]
+    assert manifest["status"] == "DIRECT_ELIGIBLE"
+    assert manifest["document_count"] == 2
+    assert "downloads" not in manifest
+    assert "private-uri" not in json.dumps(stored)
+
+    rescanned = collector._scan_document_manifest_tasks(
+        SimpleNamespace(url="https://esatis.uyap.gov.tr/pp/index.jsp"),
+        [{"candidate_ids": [candidate["candidate_id"]]}],
+        concurrency=8,
+    )
+    assert rescanned["targets_total"] == 0
+
+
+def test_fast_direct_acquisition_batches_native_udf_and_audit(tmp_path, monkeypatch):
+    def make_udf(source_text):
+        content = (
+            '<?xml version="1.0" encoding="UTF-8"?><template format_id="1.8"><content><![CDATA['
+            + source_text + "]]></content></template>"
+        )
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("documentproperties.xml", "<properties/>")
+            archive.writestr("content.xml", content)
+            archive.writestr("sign.sgn", b"SYNTHETIC_SIGNATURE")
+        return buffer.getvalue()
+
+    discovered = bulk.process_sold_auction(
+        _sold_card(fid="2026/703", kayit="7031"),
+        acquire_documents=_fake_acquire_fail,
+        store_dir=tmp_path,
+        genuine_path=tmp_path / "genuine.json",
+        discovery_only=True,
+        province_label="ANKARA",
+        window={"start": "2026-06-01", "end": "2026-06-07"},
+    )
+    candidate = store.get_candidate(discovered["candidate_id"], tmp_path)
+    candidate["bulk"]["document_manifest"] = {
+        "version": "uyap-document-manifest-v1",
+        "status": "DIRECT_ELIGIBLE",
+    }
+    store.upsert(candidate, tmp_path)
+    collector = bulk.UyapBulkCollector(
+        "http://127.0.0.1:9222", store_dir=tmp_path,
+        genuine_path=tmp_path / "genuine.json",
+    )
+    manifest = {
+        "0": [{"evrakUri": "uri-notice"}],
+        "1": [], "2": [], "3": [],
+        "4": [{"evrakUri": "uri-result"}],
+    }
+    sale_notice = make_udf(
+        "TAŞINMAZIN ELEKTRONİK SATIŞ ORTAMINDA AÇIK ARTIRMA İLANI\n"
+        "123 Ada 4 Parsel 6 No'lu 5. Kat Mesken\n"
+        "Muhammen Bedeli : 2.000.000,00 TL\nKDV Oranı : %20"
+    )
+    auction_result = make_udf(
+        "ARTIRMA SONUÇ TUTANAĞI\n123 Ada 4 Parsel 6 No'lu 5. Kat Mesken\n"
+        "İhale Bedeli : 1.750.000,00 TL\nSatış İşlemleri Tamamlandı"
+    )
+
+    monkeypatch.setattr(
+        collector,
+        "_fetch_document_manifests",
+        lambda page, targets, concurrency: [{
+            "candidate_id": targets[0]["candidate_id"],
+            "record_ref": targets[0]["record_ref"],
+            "ok": True, "status": 200, "body": json.dumps(manifest),
+            "attempts": 1, "error": None,
+        }],
+    )
+
+    def download(page, jobs, concurrency):
+        data_by_type = {
+            "sale_notice": auction_result,
+            "auction_result": auction_result,
+        }
+        return [{
+            "job_id": job["job_id"],
+            "candidate_id": job["candidate_id"],
+            "artifact_type": job["artifact_type"],
+            "ok": True, "status": 200,
+            "size": len(data_by_type[job["artifact_type"]]),
+            "body_base64": base64.b64encode(
+                data_by_type[job["artifact_type"]]
+            ).decode("ascii"),
+            "attempts": 1, "error": None,
+        } for job in jobs]
+
+    monkeypatch.setattr(collector, "_fetch_native_downloads", download)
+
+    def exact_view(page, jobs, concurrency):
+        if not jobs:
+            return []
+        assert [job["artifact_type"] for job in jobs] == ["sale_notice"]
+        content = '''<?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content
+          xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+          xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+          <office:body><office:text>
+            <text:p>TAŞINMAZIN ELEKTRONİK SATIŞ ORTAMINDA AÇIK ARTIRMA İLANI</text:p>
+            <text:p>123 Ada 4 Parsel 6 No'lu 5. Kat Mesken</text:p>
+            <text:p>Muhammen Bedeli : 2.000.000,00 TL</text:p>
+          </office:text></office:body>
+        </office:document-content>'''
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("mimetype", "application/vnd.oasis.opendocument.text")
+            archive.writestr("content.xml", content)
+        data = buffer.getvalue()
+        return [{
+            "job_id": jobs[0]["job_id"],
+            "candidate_id": jobs[0]["candidate_id"],
+            "artifact_type": jobs[0]["artifact_type"],
+            "ok": True, "status": 200, "size": len(data),
+            "body_base64": base64.b64encode(data).decode("ascii"),
+            "attempts": 1, "error": None,
+        }]
+
+    monkeypatch.setattr(collector, "_fetch_exact_view_documents", exact_view)
+    summary = collector._run_fast_direct_acquisition_tasks(
+        SimpleNamespace(url="https://esatis.uyap.gov.tr/pp/index.jsp"),
+        [{"candidate_ids": [discovered["candidate_id"]]}],
+        concurrency=4,
+    )
+
+    assert summary["acquired"] == 1
+    assert summary["retryable_failures"] == 0
+    stored = store.get_candidate(discovered["candidate_id"], tmp_path)
+    assert stored["state"] in (STATE_AUDITED, STATE_PENDING_REVIEW)
+    assert {artifact["artifact_type"] for artifact in stored["artifacts"]} == {
+        "auction_result", "sale_notice", "status_card",
+    }
+    assert stored["bulk"]["direct_acquisition"]["status"] == "COLLECTED"
+    assert "uri-notice" not in json.dumps(stored)
+    assert any(
+        str(artifact.get("local_path") or "").endswith(".odt")
+        for artifact in stored["artifacts"]
+    )
 
 
 def test_fast_discovery_pool_persists_only_structured_sold_rows(tmp_path, monkeypatch):
@@ -841,6 +1266,15 @@ def test_acquisition_queue_contains_only_incomplete_discovered_windows(tmp_path)
         tmp_path, ["ANKARA"], date_from="2026-06-05", date_to="2026-06-05"
     )
     assert overlapping[0]["record_refs"] == ["1001"]
+
+    admitted_candidate["bulk"]["residential_hint"] = True
+    store.upsert(admitted_candidate, tmp_path)
+    residential = bulk.build_acquisition_queue(tmp_path, residential_only=True)
+    assert residential[0]["record_refs"] == ["1001"]
+    admitted_candidate["bulk"]["residential_hint"] = False
+    store.upsert(admitted_candidate, tmp_path)
+    assert bulk.build_acquisition_queue(tmp_path, residential_only=True) == []
+    assert bulk.acquisition_queue_blockers(tmp_path, residential_only=True) == []
 
 
 def test_targeted_acquisition_rejects_card_with_different_candidate_identity(
@@ -1361,6 +1795,147 @@ def test_campaign_discovery_uses_fast_pool_by_default(tmp_path, monkeypatch):
     }]
     assert "keşif=fast" in result.output
     assert "'requests': 1" in result.output
+
+
+def test_campaign_rescreen_revisits_complete_discovery_window(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from sold.cli import app
+
+    state = {"windows": []}
+    complete = bulk.new_window_record(
+        "ANKARA", "2026-06-01", "2026-06-07", bulk.PHASE_DISCOVERY
+    )
+    complete["status"] = "COMPLETE"
+    bulk.upsert_window_record(state, complete)
+    bulk.save_bulk_state(state, tmp_path)
+    calls = []
+
+    def run_fast(self, tasks, concurrency=8, force=False, **kwargs):
+        calls.append((tasks, force))
+        return {
+            "windows_processed": 1,
+            "result_cards_inspected": 0,
+            "saturated_windows_unresolved": 0,
+            "acquisition_windows_incomplete": 0,
+            "discovery_windows_incomplete": 0,
+            "request_count": 1,
+            "elapsed_seconds": 0.1,
+            "requests_per_minute": 600.0,
+            "stopped_reason": None,
+        }
+
+    monkeypatch.setattr(bulk.UyapBulkCollector, "run_fast_discovery", run_fast)
+    result = CliRunner().invoke(app, [
+        "uyap", "campaign", "--phase", "discover", "--provinces", "ANKARA",
+        "--date-from", "2026-06-01", "--date-to", "2026-06-07",
+        "--rescreen", "--cdp-endpoint", "http://127.0.0.1:9222",
+        "--store-dir", str(tmp_path),
+    ])
+
+    assert result.exit_code == 0
+    assert calls == [([{
+        "phase": "discovery", "province": "ANKARA",
+        "start": "2026-06-01", "end": "2026-06-07",
+    }], True)]
+
+
+def test_campaign_manifest_only_bypasses_serial_acquisition(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from sold.cli import app
+
+    discovered = bulk.process_sold_auction(
+        _sold_card(fid="2026/702", kayit="7021"),
+        acquire_documents=_fake_acquire_fail,
+        store_dir=tmp_path,
+        genuine_path=tmp_path / "genuine.json",
+        discovery_only=True,
+        province_label="ANKARA",
+        window={"start": "2026-06-01", "end": "2026-06-07"},
+    )
+    candidate = store.get_candidate(discovered["candidate_id"], tmp_path)
+    candidate["bulk"]["residential_hint"] = True
+    store.upsert(candidate, tmp_path)
+    calls = []
+
+    def scan(self, tasks, concurrency=8, max_records=None, **kwargs):
+        calls.append((tasks, concurrency, max_records))
+        return {
+            "targets_total": 1, "candidates_scanned": 1,
+            "direct_download_eligible": 1, "requires_ui_fallback": 0,
+            "manifest_failures": 0, "request_count": 1,
+            "stopped_reason": None, "elapsed_seconds": 0.1,
+        }
+
+    monkeypatch.setattr(bulk.UyapBulkCollector, "run_fast_manifest_scan", scan)
+    monkeypatch.setattr(
+        bulk.UyapBulkCollector, "run",
+        lambda *args, **kwargs: pytest.fail("serial acquisition must not run"),
+    )
+    result = CliRunner().invoke(app, [
+        "uyap", "campaign", "--phase", "acquire", "--provinces", "ANKARA",
+        "--date-from", "2026-06-01", "--date-to", "2026-06-07",
+        "--residential-only", "--manifest-only",
+        "--cdp-endpoint", "http://127.0.0.1:9222", "--store-dir", str(tmp_path),
+    ])
+
+    assert result.exit_code == 0
+    assert len(calls) == 1
+    assert calls[0][0][0]["candidate_ids"] == [discovered["candidate_id"]]
+    assert "Belge manifest taraması" in result.output
+
+
+def test_campaign_direct_bypasses_serial_acquisition(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from sold.cli import app
+
+    discovered = bulk.process_sold_auction(
+        _sold_card(fid="2026/704", kayit="7041"),
+        acquire_documents=_fake_acquire_fail,
+        store_dir=tmp_path,
+        genuine_path=tmp_path / "genuine.json",
+        discovery_only=True,
+        province_label="ANKARA",
+        window={"start": "2026-06-01", "end": "2026-06-07"},
+    )
+    candidate = store.get_candidate(discovered["candidate_id"], tmp_path)
+    candidate["bulk"].update({
+        "residential_hint": True,
+        "document_manifest": {
+            "version": "uyap-document-manifest-v1",
+            "status": "DIRECT_ELIGIBLE",
+        },
+    })
+    store.upsert(candidate, tmp_path)
+    calls = []
+
+    def acquire(self, tasks, concurrency=4, max_records=None):
+        calls.append((tasks, concurrency, max_records))
+        return {
+            "targets_total": 1, "candidates_processed": 1, "acquired": 1,
+            "retryable_failures": 0, "manifest_changed": 0,
+            "request_count": 3, "downloaded_bytes": 100,
+            "audit_decisions": {"PENDING_REVIEW": 1},
+            "stopped_reason": None, "elapsed_seconds": 0.1,
+        }
+
+    monkeypatch.setattr(
+        bulk.UyapBulkCollector, "run_fast_direct_acquisition", acquire
+    )
+    monkeypatch.setattr(
+        bulk.UyapBulkCollector, "run",
+        lambda *args, **kwargs: pytest.fail("serial acquisition must not run"),
+    )
+    result = CliRunner().invoke(app, [
+        "uyap", "campaign", "--phase", "acquire", "--provinces", "ANKARA",
+        "--date-from", "2026-06-01", "--date-to", "2026-06-07",
+        "--residential-only", "--direct", "--concurrency", "4",
+        "--cdp-endpoint", "http://127.0.0.1:9222", "--store-dir", str(tmp_path),
+    ])
+
+    assert result.exit_code == 0
+    assert len(calls) == 1 and calls[0][1] == 4
+    assert calls[0][0][0]["candidate_ids"] == [discovered["candidate_id"]]
+    assert "Doğrudan native edinim" in result.output
 
 
 def test_campaign_cli_reports_bounded_split_as_incomplete(tmp_path, monkeypatch):

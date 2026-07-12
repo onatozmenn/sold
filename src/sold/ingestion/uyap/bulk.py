@@ -17,8 +17,11 @@ açık artırmalar edinim hedefidir. Fiyat/İncele/eksik-metin ASLA "satıldı" 
 
 from __future__ import annotations
 
+import base64
+import copy
 import datetime as dt
 import functools
+import hashlib
 import json
 import os
 import re
@@ -31,6 +34,8 @@ from urllib.parse import unquote_plus
 from . import store
 from .discovery import discover
 from .models import (
+    ARTIFACT_AUCTION_RESULT,
+    ARTIFACT_SALE_NOTICE,
     STATE_ADMITTED,
     STATE_AUDITED,
     STATE_COLLECTED,
@@ -53,6 +58,12 @@ BULK_STATE_FILE = "bulk_state.json"
 PHASE_DISCOVERY = "discovery"
 PHASE_ACQUISITION = "acquisition"
 HISTORY_ENDPOINT_PATH = "/pp/gecmisIhaleler_brd.ajx"
+DOCUMENT_MANIFEST_ENDPOINT_PATH = "/pp/getIhaleEvrakBilgileri_brd.ajx"
+DOCUMENT_DOWNLOAD_ENDPOINT_PATH = "/pp/evrak_indir_brd.uyap"
+DOCUMENT_VIEW_ENDPOINT_PATH = "/pp/view_document_brd.uyap"
+PROPERTY_HINT_VERSION = "uyap-history-property-v1"
+DOCUMENT_MANIFEST_VERSION = "uyap-document-manifest-v1"
+INSPECTION_VERSION = "uyap-candidate-inspection-v1"
 
 UYAP_PROVINCES = (
     "ADANA", "ADIYAMAN", "AFYONKARAHİSAR", "AĞRI", "AMASYA", "ANKARA", "ANTALYA",
@@ -94,6 +105,25 @@ _HISTORY_STATUS_LABELS = {
     "2": "İkinci Alıcıya Süre Verildi",
     "3": "Satış Düştü",
     "4": "Alacağa Mahsuben",
+}
+
+_PROPERTY_HINT_TERMS = {
+    "residential": (
+        "mesken", "konut", "daire", "apartman", "villa", "yazlik",
+        "dubleks", "tripleks", "mustakil ev", "kagir ev", "kargir ev",
+    ),
+    "land": (
+        "arsa", "tarla", "zeytinlik", "bag", "bahce", "findiklik",
+        "uzum bagi", "cay bahcesi",
+    ),
+    "commercial": (
+        "dukkan", "isyeri", "is yeri", "buro", "ofis", "depo", "fabrika",
+        "atolye", "otel", "pansiyon", "lokanta", "magaza", "ticarethane",
+    ),
+    "other": (
+        "ahir", "samanlik", "garaj", "otopark", "akaryakit", "istasyon",
+        "sanayi tesisi",
+    ),
 }
 
 # Oturum-kaybı / yeniden-yönlendirme kanıtı (giriş sayfası ≠ sıfır sonuç).
@@ -732,6 +762,39 @@ def parse_history_response(payload: object, expected_page: int | None = None) ->
     }
 
 
+def classify_property_description(description: object) -> dict:
+    """Classify public property text without retaining its raw or normalized contents."""
+    folded = _fold(description)
+    matched: dict[str, list[str]] = {}
+    for property_class, terms in _PROPERTY_HINT_TERMS.items():
+        hits = [
+            term for term in terms
+            if re.search(
+                rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])",
+                folded,
+            )
+        ]
+        if hits:
+            matched[property_class] = hits
+    classes = sorted(matched)
+    residential = "residential" in matched
+    if residential:
+        hint = "residential" if len(classes) == 1 else "residential_mixed"
+    elif len(classes) == 1:
+        hint = classes[0]
+    elif classes:
+        hint = "mixed_nonresidential"
+    else:
+        hint = "unknown"
+    return {
+        "property_type_hint": hint,
+        "residential_hint": residential,
+        "property_hint_classes": classes,
+        "property_hint_terms": sorted({term for terms in matched.values() for term in terms}),
+        "property_hint_version": PROPERTY_HINT_VERSION,
+    }
+
+
 def history_rows_to_cards(rows: list[dict]) -> list[dict]:
     """Convert structured history rows using the portal renderer's status mapping."""
     cards = []
@@ -747,6 +810,7 @@ def history_rows_to_cards(rows: list[dict]) -> list[dict]:
         status_code = str(raw_status).strip() if raw_status is not None else None
         status_raw = _HISTORY_STATUS_LABELS.get(status_code)
         classified = classify_card_status(status_raw or "")
+        property_hint = classify_property_description(row.get("malAciklama"))
         cards.append({
             "kayit_no": kayit_no,
             "file_id": file_id,
@@ -758,6 +822,7 @@ def history_rows_to_cards(rows: list[dict]) -> list[dict]:
             "card_text": " ".join(
                 value for value in (institution, file_id, kayit_no, status_raw) if value
             ),
+            **property_hint,
         })
     return cards
 
@@ -779,6 +844,280 @@ def history_province_codes(options: object) -> dict[str, str]:
             raise ValueError(f"conflicting province code for {province}")
         result[province] = code
     return result
+
+
+def parse_document_manifest(payload: object) -> dict:
+    """Parse the observed five-group, candidate-bound UYAP document manifest."""
+    if isinstance(payload, str):
+        try:
+            decoded = json.loads(payload)
+        except Exception as exc:
+            raise ValueError("document manifest is not valid JSON") from exc
+    else:
+        decoded = payload
+    if not isinstance(decoded, dict):
+        raise ValueError("document manifest must be an object")
+    if (
+        set(decoded) == {"errorCode", "error"}
+        and all(isinstance(decoded.get(key), str) for key in ("errorCode", "error"))
+    ):
+        return {
+            "version": DOCUMENT_MANIFEST_VERSION,
+            "group_counts": {},
+            "document_count": 0,
+            "response_uri_count": 0,
+            "recognized_document_types": [],
+            "sale_notice_count": 0,
+            "auction_result_count": 0,
+            "direct_download_eligible": False,
+            "source_error": True,
+            "downloads": [],
+        }
+
+    groups: dict[int, list[dict]] = {}
+    for index in range(5):
+        rows = decoded.get(str(index), decoded.get(index))
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise ValueError(f"document manifest group {index} is invalid")
+        groups[index] = rows
+
+    from .collect import classify_document_label
+
+    downloads = []
+    recognized_types = set()
+    for index, row in enumerate(groups[0]):
+        downloads.append({
+            "artifact_type": ARTIFACT_SALE_NOTICE,
+            "islem_turu": "satis",
+            "evrak_sayisi": None,
+            "response_uri": str(row.get("evrakUri") or ""),
+            "group": 0,
+            "index": index,
+        })
+        recognized_types.add(ARTIFACT_SALE_NOTICE)
+    for group_index in (1, 2, 3):
+        for index, row in enumerate(groups[group_index]):
+            artifact_type = classify_document_label(str(row.get("aciklama") or ""))
+            if artifact_type:
+                recognized_types.add(artifact_type)
+            if group_index == 3 and artifact_type == ARTIFACT_AUCTION_RESULT:
+                downloads.append({
+                    "artifact_type": artifact_type,
+                    "islem_turu": "satisSonu",
+                    "evrak_sayisi": index,
+                    "response_uri": str(row.get("evrakUri") or ""),
+                    "group": group_index,
+                    "index": index,
+                })
+    for index, row in enumerate(groups[4]):
+        downloads.append({
+            "artifact_type": ARTIFACT_AUCTION_RESULT,
+            "islem_turu": "tutanak",
+            "evrak_sayisi": index,
+            "response_uri": str(row.get("evrakUri") or ""),
+            "group": 4,
+            "index": index,
+        })
+        recognized_types.add(ARTIFACT_AUCTION_RESULT)
+
+    sale_notices = [
+        item for item in downloads if item["artifact_type"] == ARTIFACT_SALE_NOTICE
+    ]
+    auction_results = [
+        item for item in downloads if item["artifact_type"] == ARTIFACT_AUCTION_RESULT
+    ]
+    selected = sale_notices + auction_results
+    direct_eligible = (
+        len(sale_notices) == 1
+        and len(auction_results) == 1
+        and all(item["response_uri"] for item in selected)
+    )
+    response_uris = {
+        str(row.get("evrakUri"))
+        for rows in groups.values()
+        for row in rows
+        if row.get("evrakUri")
+    }
+    return {
+        "version": DOCUMENT_MANIFEST_VERSION,
+        "group_counts": {str(index): len(groups[index]) for index in range(5)},
+        "document_count": sum(len(rows) for rows in groups.values()),
+        "response_uri_count": len(response_uris),
+        "recognized_document_types": sorted(recognized_types),
+        "sale_notice_count": len(sale_notices),
+        "auction_result_count": len(auction_results),
+        "direct_download_eligible": direct_eligible,
+        "downloads": selected if direct_eligible else [],
+        "review_downloads": selected,
+    }
+
+
+def validate_native_download(payload: object, requested_artifact_type: str) -> dict:
+    """Validate one direct native download before it can become a source artifact."""
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        raise ValueError("native download request failed")
+    if int(payload.get("status") or 0) != 200:
+        raise ValueError("native download returned a non-200 status")
+    encoded = payload.get("body_base64")
+    if not isinstance(encoded, str) or not encoded:
+        raise ValueError("native download body is missing")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise ValueError("native download body is not valid base64") from exc
+    if len(data) != int(payload.get("size") or -1):
+        raise ValueError("native download byte count mismatch")
+
+    from .extract import corroborate_native_document_type
+    from .udf import extract_udf_source_text, native_udf_supported
+
+    text, udf_diagnostics = extract_udf_source_text(data)
+    if not text or not native_udf_supported(udf_diagnostics):
+        raise ValueError(
+            str(udf_diagnostics.get("blocking_reason") or "native UDF source unavailable")
+        )
+    corroboration = corroborate_native_document_type(text, requested_artifact_type)
+    if not corroboration["native_document_type_corroborated"]:
+        raise ValueError(
+            f"native document type mismatch: "
+            f"{corroboration['native_document_type_corroboration_reason']}"
+        )
+    return {
+        "data": data,
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "size": len(data),
+        "container_extension": ".udf",
+        "source_transport": "candidate_bound_download",
+        "diagnostics": {
+            "container_kind": udf_diagnostics.get("container_kind"),
+            "zip_valid": bool(udf_diagnostics.get("zip_valid")),
+            "content_xml_found": bool(udf_diagnostics.get("content_xml_found")),
+            "xml_parse_succeeded": bool(udf_diagnostics.get("xml_parse_succeeded")),
+            "detected_document_type": corroboration.get("native_detected_document_type"),
+            "document_type_corroborated": True,
+        },
+    }
+
+
+def validate_exact_view_document(payload: object, requested_artifact_type: str) -> dict:
+    """Validate a manifest-URI-owned ODF transformation before source promotion."""
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        raise ValueError("exact view document request failed")
+    if int(payload.get("status") or 0) != 200:
+        raise ValueError("exact view document returned a non-200 status")
+    encoded = payload.get("body_base64")
+    if not isinstance(encoded, str) or not encoded:
+        raise ValueError("exact view document body is missing")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise ValueError("exact view document body is not valid base64") from exc
+    if len(data) != int(payload.get("size") or -1):
+        raise ValueError("exact view document byte count mismatch")
+
+    from .extract import corroborate_manifest_document_type
+    from .udf import extract_odf_source_text
+
+    text, diagnostics = extract_odf_source_text(data)
+    if not text or not diagnostics.get("text_extraction_supported"):
+        raise ValueError(
+            str(diagnostics.get("blocking_reason") or "exact ODF source unavailable")
+        )
+    corroboration = corroborate_manifest_document_type(text, requested_artifact_type)
+    if not corroboration["native_document_type_corroborated"]:
+        raise ValueError(
+            f"exact view document type mismatch: "
+            f"{corroboration['native_document_type_corroboration_reason']}"
+        )
+    return {
+        "data": data,
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "size": len(data),
+        "container_extension": ".odt",
+        "source_transport": "manifest_uri_view",
+        "diagnostics": {
+            "container_kind": diagnostics.get("container_kind"),
+            "zip_valid": bool(diagnostics.get("zip_valid")),
+            "content_xml_found": bool(diagnostics.get("content_xml_found")),
+            "xml_parse_succeeded": bool(diagnostics.get("xml_parse_succeeded")),
+            "detected_document_type": corroboration.get("native_detected_document_type"),
+            "document_type_corroborated": True,
+            "document_types_present": corroboration.get("manifest_document_types_present"),
+            "mixed_document_type": bool(corroboration.get("manifest_document_mixed_type")),
+        },
+    }
+
+
+def _validated_document_text(validated: dict) -> str:
+    from .udf import extract_odf_source_text, extract_udf_source_text
+
+    parser = (
+        extract_odf_source_text
+        if validated.get("container_extension") == ".odt"
+        else extract_udf_source_text
+    )
+    text, diagnostics = parser(validated["data"])
+    if not text or not diagnostics.get("text_extraction_supported"):
+        raise ValueError(
+            str(diagnostics.get("blocking_reason") or "validated document text unavailable")
+        )
+    return text
+
+
+def multi_result_documents_agree(documents: list[tuple[dict, dict]]) -> dict:
+    """Require all result documents to agree on price and non-personal asset identity."""
+    from .extract import extract_evidence
+
+    result_documents = [
+        (spec, validated)
+        for spec, validated in documents
+        if spec.get("artifact_type") == ARTIFACT_AUCTION_RESULT
+    ]
+    if len(result_documents) < 2:
+        return {"agreed": False, "reason": "multiple_result_documents_required"}
+    amounts = []
+    descriptor_values = {
+        field: set()
+        for field in ("ada", "parsel", "block", "section_no", "floor", "property_type")
+    }
+    for _, validated in result_documents:
+        text = _validated_document_text(validated)
+        evidence = extract_evidence([{
+            "artifact_type": ARTIFACT_AUCTION_RESULT,
+            "text": text,
+        }])
+        if evidence.ihale_bedeli is None:
+            return {"agreed": False, "reason": "result_document_missing_ihale_bedeli"}
+        amounts.append(round(float(evidence.ihale_bedeli), 2))
+        for field, values in descriptor_values.items():
+            value = getattr(evidence, field, None)
+            if value not in (None, ""):
+                values.add(str(value))
+    distinct_amounts = sorted(set(amounts))
+    if len(distinct_amounts) != 1:
+        return {
+            "agreed": False,
+            "reason": "result_document_ihale_bedeli_conflict",
+            "distinct_amount_count": len(distinct_amounts),
+        }
+    conflicts = sorted(
+        field for field, values in descriptor_values.items() if len(values) > 1
+    )
+    if conflicts:
+        return {
+            "agreed": False,
+            "reason": "result_document_asset_identity_conflict",
+            "conflicting_fields": conflicts,
+        }
+    return {
+        "agreed": True,
+        "reason": "same_ihale_bedeli_and_no_asset_identity_conflict",
+        "result_document_count": len(result_documents),
+        "agreed_ihale_bedeli": distinct_amounts[0],
+        "matched_descriptor_fields": sorted(
+            field for field, values in descriptor_values.items() if len(values) == 1
+        ),
+    }
 
 
 def dom_matches_result_evidence(html: object, evidence: dict) -> bool:
@@ -1483,6 +1822,7 @@ def build_acquisition_queue(
     provinces: list[str] | tuple[str, ...] | None = None,
     date_from: object | None = None,
     date_to: object | None = None,
+    residential_only: bool = False,
 ) -> list[dict]:
     ordered_provinces = normalize_campaign_provinces(provinces) if provinces else list(UYAP_PROVINCES)
     allowed = set(ordered_provinces) if provinces else None
@@ -1497,6 +1837,8 @@ def build_acquisition_queue(
         if not should_acquire(candidate) or candidate.get("admitted_public_record_id"):
             continue
         metadata = candidate.get("bulk") or {}
+        if residential_only and metadata.get("residential_hint") is not True:
+            continue
         province = canonicalize_province_label(metadata.get("province_label"))
         window_start = metadata.get("window_start")
         window_end = metadata.get("window_end")
@@ -1562,6 +1904,7 @@ def acquisition_queue_blockers(
     provinces: list[str] | tuple[str, ...] | None = None,
     date_from: object | None = None,
     date_to: object | None = None,
+    residential_only: bool = False,
 ) -> list[dict]:
     allowed = set(normalize_campaign_provinces(provinces)) if provinces else None
     start = _parse_iso(date_from) if date_from else None
@@ -1573,6 +1916,8 @@ def acquisition_queue_blockers(
         if not should_acquire(candidate) or candidate.get("admitted_public_record_id"):
             continue
         metadata = candidate.get("bulk") or {}
+        if residential_only and metadata.get("residential_hint") is not True:
+            continue
         raw_province = metadata.get("province_label")
         province = canonicalize_province_label(raw_province)
         if allowed:
@@ -1703,13 +2048,22 @@ def persist_discovered_cards(
                 )
                 candidate["source_page_ref"] = source_page_ref or candidate.get("source_page_ref")
                 store.log_event(candidate, "rediscovered_batch", card.get("source_status_raw") or "")
-            candidate.setdefault("bulk", {}).update({
+            bulk_metadata = {
                 "kayit_no": kayit_no,
                 "province_label": province_label,
                 "window_start": (window or {}).get("start"),
                 "window_end": (window or {}).get("end"),
                 "source_status_raw": card.get("source_status_raw"),
-            })
+            }
+            if card.get("property_hint_version"):
+                bulk_metadata.update({
+                    "property_type_hint": card.get("property_type_hint"),
+                    "residential_hint": bool(card.get("residential_hint")),
+                    "property_hint_classes": list(card.get("property_hint_classes") or []),
+                    "property_hint_terms": list(card.get("property_hint_terms") or []),
+                    "property_hint_version": card.get("property_hint_version"),
+                })
+            candidate.setdefault("bulk", {}).update(bulk_metadata)
             changed = True
             outcome.update({
                 "candidate_id": candidate_id,
@@ -1850,6 +2204,100 @@ def summarize_candidates(store_dir: Path | str | None = None) -> dict:
         if c.get("admitted_public_record_id"):
             admitted += 1
     return {"by_audit_decision": by_decision, "admitted": admitted}
+
+
+def candidate_inspection_result(candidate: dict) -> dict:
+    audit_decision = (candidate.get("audit") or {}).get("decision")
+    if audit_decision:
+        return {
+            "version": INSPECTION_VERSION,
+            "status": "AUDITED",
+            "reason": str(audit_decision),
+        }
+    metadata = candidate.get("bulk") or {}
+    manifest = metadata.get("document_manifest") or {}
+    direct = metadata.get("direct_acquisition") or {}
+    manifest_status = manifest.get("status")
+    direct_status = direct.get("status")
+    if manifest_status == "SOURCE_ERROR":
+        reason = "source_manifest_error"
+    elif direct_status == "REQUIRES_UI_FALLBACK":
+        error = str(direct.get("error") or "")
+        reason = (
+            "multi_result_documents_not_agreed"
+            if error.startswith("multi_result:")
+            else "manifest_group_content_semantics_mismatch"
+        )
+    elif manifest_status == "REQUIRES_UI_FALLBACK":
+        sale_count = int(manifest.get("sale_notice_count") or 0)
+        result_count = int(manifest.get("auction_result_count") or 0)
+        if sale_count == 0:
+            reason = "sale_notice_missing"
+        elif result_count == 0:
+            reason = "auction_result_missing"
+        else:
+            reason = "manifest_document_identity_ambiguous"
+    else:
+        return {
+            "version": INSPECTION_VERSION,
+            "status": "INCOMPLETE",
+            "reason": "candidate_not_terminally_inspected",
+        }
+    return {
+        "version": INSPECTION_VERSION,
+        "status": "MANUAL_REQUIRED",
+        "reason": reason,
+    }
+
+
+def finalize_inspection_statuses(
+    store_dir: Path | str | None = None,
+    date_from: object | None = None,
+    date_to: object | None = None,
+) -> dict:
+    start = _parse_iso(date_from) if date_from else None
+    end = _parse_iso(date_to) if date_to else None
+    if start and end and end < start:
+        raise ValueError("date_to must be >= date_from")
+    from .io import locked
+
+    with locked(store.store_path(store_dir)):
+        candidates = store.load_candidates(store_dir)
+        scoped = 0
+        changed = False
+        by_status: dict[str, int] = {}
+        by_reason: dict[str, int] = {}
+        for candidate in candidates:
+            metadata = candidate.get("bulk") or {}
+            window_start = metadata.get("window_start")
+            window_end = metadata.get("window_end")
+            if start or end:
+                if not window_start or not window_end:
+                    continue
+                window_start_day = _parse_iso(window_start)
+                window_end_day = _parse_iso(window_end)
+                if start and window_end_day < start:
+                    continue
+                if end and window_start_day > end:
+                    continue
+            scoped += 1
+            result = candidate_inspection_result(candidate)
+            status = result["status"]
+            reason = result["reason"]
+            by_status[status] = by_status.get(status, 0) + 1
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+            if metadata.get("inspection") != result:
+                candidate.setdefault("bulk", {})["inspection"] = result
+                store.log_event(candidate, "candidate_inspection_finalized", f"{status}:{reason}")
+                changed = True
+        if changed:
+            store.save_candidates(candidates, store_dir)
+    return {
+        "candidates_scoped": scoped,
+        "by_status": by_status,
+        "by_reason": by_reason,
+        "all_inspected": by_status.get("INCOMPLETE", 0) == 0,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -2136,6 +2584,916 @@ class UyapBulkCollector:
                 "defaultPerPage": DEFAULT_PER_PAGE,
             },
         )
+
+    def _fetch_document_manifests(
+        self,
+        page,
+        targets: list[dict],
+        concurrency: int,
+    ) -> list[dict]:  # pragma: no cover - canlı ağ
+        if not targets:
+            return []
+        return page.evaluate(
+            """async ({targets, concurrency, endpoint, timeoutMs}) => {
+                const output = new Array(targets.length);
+                let cursor = 0;
+
+                async function fetchManifest(target) {
+                    let last = null;
+                    for (let attempt = 1; attempt <= 2; attempt += 1) {
+                        const controller = new AbortController();
+                        const timer = setTimeout(() => controller.abort(), timeoutMs);
+                        try {
+                            const response = await fetch(endpoint, {
+                                method: 'POST',
+                                credentials: 'same-origin',
+                                headers: {
+                                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                                    'X-Requested-With': 'XMLHttpRequest'
+                                },
+                                body: new URLSearchParams({kayitId: target.record_ref}),
+                                signal: controller.signal
+                            });
+                            last = {
+                                candidate_id: target.candidate_id,
+                                record_ref: target.record_ref,
+                                ok: response.ok,
+                                status: response.status,
+                                body: await response.text(),
+                                attempts: attempt,
+                                error: null
+                            };
+                            if (response.ok || response.status === 401 || response.status === 403) {
+                                return last;
+                            }
+                        } catch (error) {
+                            last = {
+                                candidate_id: target.candidate_id,
+                                record_ref: target.record_ref,
+                                ok: false,
+                                status: 0,
+                                body: '',
+                                attempts: attempt,
+                                error: String(error && error.message || error)
+                            };
+                        } finally {
+                            clearTimeout(timer);
+                        }
+                    }
+                    return last;
+                }
+
+                async function worker() {
+                    while (true) {
+                        const index = cursor++;
+                        if (index >= targets.length) return;
+                        output[index] = await fetchManifest(targets[index]);
+                    }
+                }
+
+                const workerCount = Math.min(Math.max(1, concurrency), targets.length);
+                await Promise.all(Array.from({length: workerCount}, () => worker()));
+                return output;
+            }""",
+            {
+                "targets": targets,
+                "concurrency": concurrency,
+                "endpoint": DOCUMENT_MANIFEST_ENDPOINT_PATH,
+                "timeoutMs": self.result_timeout_ms,
+            },
+        )
+
+    def _fetch_native_downloads(
+        self,
+        page,
+        jobs: list[dict],
+        concurrency: int,
+    ) -> list[dict]:  # pragma: no cover - canlı ağ
+        if not jobs:
+            return []
+        return page.evaluate(
+            """async ({jobs, concurrency, endpoint, timeoutMs}) => {
+                const output = new Array(jobs.length);
+                let cursor = 0;
+
+                function bytesToBase64(bytes) {
+                    let binary = '';
+                    const chunkSize = 32768;
+                    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+                        binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+                    }
+                    return btoa(binary);
+                }
+
+                async function fetchDocument(job) {
+                    let last = null;
+                    for (let attempt = 1; attempt <= 2; attempt += 1) {
+                        const controller = new AbortController();
+                        const timer = setTimeout(() => controller.abort(), timeoutMs);
+                        try {
+                            const params = {
+                                kayitId: job.record_ref,
+                                islemTuru: job.islem_turu
+                            };
+                            if (job.evrak_sayisi !== null) {
+                                params.evrakSayisi = String(job.evrak_sayisi);
+                            }
+                            const response = await fetch(
+                                endpoint + '?' + new URLSearchParams(params),
+                                {credentials: 'same-origin', signal: controller.signal}
+                            );
+                            const bytes = new Uint8Array(await response.arrayBuffer());
+                            last = {
+                                job_id: job.job_id,
+                                candidate_id: job.candidate_id,
+                                artifact_type: job.artifact_type,
+                                ok: response.ok,
+                                status: response.status,
+                                content_type: response.headers.get('content-type'),
+                                disposition: response.headers.get('content-disposition'),
+                                size: bytes.length,
+                                body_base64: bytesToBase64(bytes),
+                                attempts: attempt,
+                                error: null
+                            };
+                            if (response.ok || response.status === 401 || response.status === 403) {
+                                return last;
+                            }
+                        } catch (error) {
+                            last = {
+                                job_id: job.job_id,
+                                candidate_id: job.candidate_id,
+                                artifact_type: job.artifact_type,
+                                ok: false,
+                                status: 0,
+                                content_type: null,
+                                disposition: null,
+                                size: 0,
+                                body_base64: '',
+                                attempts: attempt,
+                                error: String(error && error.message || error)
+                            };
+                        } finally {
+                            clearTimeout(timer);
+                        }
+                    }
+                    return last;
+                }
+
+                async function worker() {
+                    while (true) {
+                        const index = cursor++;
+                        if (index >= jobs.length) return;
+                        output[index] = await fetchDocument(jobs[index]);
+                    }
+                }
+
+                const workerCount = Math.min(Math.max(1, concurrency), jobs.length);
+                await Promise.all(Array.from({length: workerCount}, () => worker()));
+                return output;
+            }""",
+            {
+                "jobs": jobs,
+                "concurrency": concurrency,
+                "endpoint": DOCUMENT_DOWNLOAD_ENDPOINT_PATH,
+                "timeoutMs": self.result_timeout_ms,
+            },
+        )
+
+    def _fetch_exact_view_documents(
+        self,
+        page,
+        jobs: list[dict],
+        concurrency: int,
+    ) -> list[dict]:  # pragma: no cover - canlı ağ
+        if not jobs:
+            return []
+        return page.evaluate(
+            """async ({jobs, concurrency, endpoint, timeoutMs}) => {
+                const output = new Array(jobs.length);
+                let cursor = 0;
+
+                function bytesToBase64(bytes) {
+                    let binary = '';
+                    for (let offset = 0; offset < bytes.length; offset += 32768) {
+                        binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+                    }
+                    return btoa(binary);
+                }
+
+                async function fetchDocument(job) {
+                    let last = null;
+                    for (let attempt = 1; attempt <= 2; attempt += 1) {
+                        const controller = new AbortController();
+                        const timer = setTimeout(() => controller.abort(), timeoutMs);
+                        try {
+                            const query = new URLSearchParams({
+                                mimeType: 'Udf', evrakId: job.response_uri
+                            });
+                            const response = await fetch(endpoint + '?' + query, {
+                                credentials: 'same-origin', signal: controller.signal
+                            });
+                            const bytes = new Uint8Array(await response.arrayBuffer());
+                            last = {
+                                job_id: job.job_id,
+                                candidate_id: job.candidate_id,
+                                artifact_type: job.artifact_type,
+                                ok: response.ok,
+                                status: response.status,
+                                size: bytes.length,
+                                body_base64: bytesToBase64(bytes),
+                                attempts: attempt,
+                                error: null
+                            };
+                            if (response.ok || response.status === 401 || response.status === 403) {
+                                return last;
+                            }
+                        } catch (error) {
+                            last = {
+                                job_id: job.job_id,
+                                candidate_id: job.candidate_id,
+                                artifact_type: job.artifact_type,
+                                ok: false,
+                                status: 0,
+                                size: 0,
+                                body_base64: '',
+                                attempts: attempt,
+                                error: String(error && error.message || error)
+                            };
+                        } finally {
+                            clearTimeout(timer);
+                        }
+                    }
+                    return last;
+                }
+
+                async function worker() {
+                    while (true) {
+                        const index = cursor++;
+                        if (index >= jobs.length) return;
+                        output[index] = await fetchDocument(jobs[index]);
+                    }
+                }
+
+                const workerCount = Math.min(Math.max(1, concurrency), jobs.length);
+                await Promise.all(Array.from({length: workerCount}, () => worker()));
+                return output;
+            }""",
+            {
+                "jobs": jobs,
+                "concurrency": concurrency,
+                "endpoint": DOCUMENT_VIEW_ENDPOINT_PATH,
+                "timeoutMs": self.result_timeout_ms,
+            },
+        )
+
+    def _scan_document_manifest_tasks(
+        self,
+        page,
+        tasks: list[dict],
+        concurrency: int,
+        max_records: int | None = None,
+        force: bool = False,
+        batch_size: int = 50,
+    ) -> dict:
+        candidates = store.load_candidates(self.store_dir)
+        by_id = {str(candidate.get("candidate_id")): candidate for candidate in candidates}
+        requested_ids = list(dict.fromkeys(
+            str(candidate_id)
+            for task in tasks
+            for candidate_id in (task.get("candidate_ids") or [])
+        ))
+        targets = []
+        for candidate_id in requested_ids:
+            candidate = by_id.get(candidate_id)
+            if not candidate or not should_acquire(candidate):
+                continue
+            metadata = candidate.get("bulk") or {}
+            existing_manifest = metadata.get("document_manifest") or {}
+            if (
+                not force
+                and existing_manifest.get("version") == DOCUMENT_MANIFEST_VERSION
+                and existing_manifest.get("status")
+                in ("DIRECT_ELIGIBLE", "REQUIRES_UI_FALLBACK", "SOURCE_ERROR")
+            ):
+                continue
+            record_ref = candidate.get("kayit_no") or metadata.get("kayit_no")
+            if not record_ref:
+                continue
+            targets.append({
+                "candidate_id": candidate_id,
+                "record_ref": str(record_ref),
+            })
+        if max_records is not None:
+            targets = targets[:max_records]
+        summary = {
+            "targets_total": len(targets),
+            "candidates_scanned": 0,
+            "direct_download_eligible": 0,
+            "requires_ui_fallback": 0,
+            "source_errors": 0,
+            "manifest_failures": 0,
+            "request_count": 0,
+            "stopped_reason": None,
+        }
+        from .io import locked
+
+        for offset in range(0, len(targets), max(1, batch_size)):
+            batch = targets[offset:offset + max(1, batch_size)]
+            try:
+                responses = self._fetch_document_manifests(page, batch, concurrency)
+            except Exception as exc:
+                summary["manifest_failures"] += len(batch)
+                summary["stopped_reason"] = type(exc).__name__
+                break
+            responses_by_id = {
+                str(response.get("candidate_id")): response
+                for response in (responses or [])
+                if isinstance(response, dict) and response.get("candidate_id")
+            }
+            for target in batch:
+                candidate = by_id[target["candidate_id"]]
+                metadata = candidate.setdefault("bulk", {})
+                response = responses_by_id.get(target["candidate_id"])
+                if not response:
+                    metadata["document_manifest"] = {
+                        "version": DOCUMENT_MANIFEST_VERSION,
+                        "status": "REQUEST_FAILED",
+                        "error": "missing manifest response",
+                    }
+                    summary["manifest_failures"] += 1
+                    continue
+                summary["request_count"] += int(response.get("attempts") or 1)
+                if not response.get("ok"):
+                    status_code = int(response.get("status") or 0)
+                    metadata["document_manifest"] = {
+                        "version": DOCUMENT_MANIFEST_VERSION,
+                        "status": "REQUEST_FAILED",
+                        "http_status": status_code,
+                        "error": str(response.get("error") or "request failed")[:120],
+                    }
+                    summary["manifest_failures"] += 1
+                    if status_code in (401, 403):
+                        summary["stopped_reason"] = "SESSION_EXPIRED"
+                    continue
+                try:
+                    parsed = parse_document_manifest(response.get("body"))
+                except ValueError as exc:
+                    metadata["document_manifest"] = {
+                        "version": DOCUMENT_MANIFEST_VERSION,
+                        "status": "INVALID_RESPONSE",
+                        "error": str(exc)[:120],
+                    }
+                    summary["manifest_failures"] += 1
+                    continue
+                manifest_summary = {
+                    key: value for key, value in parsed.items()
+                    if key not in ("downloads", "review_downloads")
+                }
+                if parsed.get("source_error"):
+                    manifest_summary["status"] = "SOURCE_ERROR"
+                elif parsed["direct_download_eligible"]:
+                    manifest_summary["status"] = "DIRECT_ELIGIBLE"
+                else:
+                    manifest_summary["status"] = "REQUIRES_UI_FALLBACK"
+                metadata["document_manifest"] = manifest_summary
+                store.log_event(
+                    candidate,
+                    "document_manifest_scanned",
+                    manifest_summary["status"],
+                )
+                summary["candidates_scanned"] += 1
+                if parsed.get("source_error"):
+                    summary["source_errors"] += 1
+                elif parsed["direct_download_eligible"]:
+                    summary["direct_download_eligible"] += 1
+                else:
+                    summary["requires_ui_fallback"] += 1
+            with locked(store.store_path(self.store_dir)):
+                store.save_candidates(candidates, self.store_dir)
+            if summary["stopped_reason"] == "SESSION_EXPIRED":
+                break
+        return summary
+
+    def _persist_direct_udf(
+        self,
+        candidate_id: str,
+        record_ref: str,
+        spec: dict,
+        validated: dict,
+    ) -> tuple[dict, dict]:
+        from .io import atomic_write_bytes
+
+        safe_candidate = re.sub(r"[^A-Za-z0-9._-]", "_", candidate_id)
+        artifact_type = str(spec["artifact_type"])
+        digest = str(validated["sha256"])
+        extension = str(validated.get("container_extension") or ".udf")
+        artifact_dir = Path(self.store_dir or store.DEFAULT_STORE_DIR) / "artifacts" / safe_candidate
+        destination = artifact_dir / f"{artifact_type}_{digest[:16]}{extension}"
+        if not destination.exists():
+            atomic_write_bytes(destination, validated["data"])
+        params = {
+            "kayitId": record_ref,
+            "islemTuru": spec["islem_turu"],
+        }
+        if spec.get("evrak_sayisi") is not None:
+            params["evrakSayisi"] = str(spec["evrak_sayisi"])
+        uri_fingerprint = hashlib.sha256(
+            str(spec.get("response_uri") or "").encode("utf-8")
+        ).hexdigest()
+        if validated.get("source_transport") == "manifest_uri_view":
+            source_ref = (
+                f"{DOCUMENT_VIEW_ENDPOINT_PATH}?mimeType=Udf&"
+                f"evrakId_sha256={uri_fingerprint}"
+            )
+            note = "manifest-URI-owned same-origin ODF transformation"
+        else:
+            source_ref = (
+                f"{DOCUMENT_DOWNLOAD_ENDPOINT_PATH}?"
+                + "&".join(f"{key}={value}" for key, value in params.items())
+            )
+            note = "candidate-bound same-origin native UDF"
+        artifact = {
+            "artifact_type": artifact_type,
+            "local_path": str(destination),
+            "sha256": digest,
+            "source_ref": source_ref,
+            "note": note,
+        }
+        diagnostics = {
+            "artifact_type": artifact_type,
+            "size": int(validated["size"]),
+            "sha256": digest,
+            "manifest_uri_sha256": uri_fingerprint,
+            **validated["diagnostics"],
+        }
+        return artifact, diagnostics
+
+    def _run_fast_direct_acquisition_tasks(
+        self,
+        page,
+        tasks: list[dict],
+        concurrency: int,
+        max_records: int | None = None,
+        batch_size: int = 100,
+    ) -> dict:
+        candidates = store.load_candidates(self.store_dir)
+        by_id = {str(candidate.get("candidate_id")): candidate for candidate in candidates}
+        index_by_id = {
+            str(candidate.get("candidate_id")): index
+            for index, candidate in enumerate(candidates)
+        }
+        requested_ids = list(dict.fromkeys(
+            str(candidate_id)
+            for task in tasks
+            for candidate_id in (task.get("candidate_ids") or [])
+        ))
+        targets = []
+        for candidate_id in requested_ids:
+            candidate = by_id.get(candidate_id)
+            if not candidate or not should_acquire(candidate):
+                continue
+            metadata = candidate.get("bulk") or {}
+            manifest_summary = metadata.get("document_manifest") or {}
+            multi_result = bool(
+                manifest_summary.get("status") == "REQUIRES_UI_FALLBACK"
+                and int(manifest_summary.get("sale_notice_count") or 0) == 1
+                and int(manifest_summary.get("auction_result_count") or 0) > 1
+            )
+            if (
+                manifest_summary.get("status") != "DIRECT_ELIGIBLE"
+                and not multi_result
+            ):
+                continue
+            if (metadata.get("direct_acquisition") or {}).get("status") == "REQUIRES_UI_FALLBACK":
+                continue
+            record_ref = candidate.get("kayit_no") or metadata.get("kayit_no")
+            if record_ref:
+                previous_direct = metadata.get("direct_acquisition") or {}
+                previous_error = str(previous_direct.get("error") or "")
+                targets.append({
+                    "candidate_id": candidate_id,
+                    "record_ref": str(record_ref),
+                    "multi_result": multi_result,
+                    "prefer_exact_view": (
+                        previous_direct.get("status") == "RETRYABLE_FAILURE"
+                        and (
+                            "document type mismatch" in previous_error
+                            or "not_a_zip_compatible_container" in previous_error
+                        )
+                    ),
+                })
+        if max_records is not None:
+            targets = targets[:max_records]
+        if any(
+            target.get("prefer_exact_view") or target.get("multi_result")
+            for target in targets
+        ):
+            batch_size = 1
+        checkpoint_every = 25 if batch_size == 1 else batch_size
+        summary = {
+            "targets_total": len(targets),
+            "candidates_processed": 0,
+            "acquired": 0,
+            "retryable_failures": 0,
+            "manual_fallback": 0,
+            "multi_result_resolved": 0,
+            "manifest_changed": 0,
+            "request_count": 0,
+            "downloaded_bytes": 0,
+            "audit_decisions": {},
+            "stopped_reason": None,
+        }
+        from .collect import import_artifact
+        from .io import locked
+
+        for offset in range(0, len(targets), max(1, batch_size)):
+            batch = targets[offset:offset + max(1, batch_size)]
+            manifest_responses = self._fetch_document_manifests(page, batch, concurrency)
+            summary["request_count"] += sum(
+                int(response.get("attempts") or 1)
+                for response in manifest_responses or [] if isinstance(response, dict)
+            )
+            manifests_by_id = {
+                str(response.get("candidate_id")): response
+                for response in manifest_responses or []
+                if isinstance(response, dict) and response.get("candidate_id")
+            }
+            parsed_by_id: dict[str, dict] = {}
+            specs_by_job: dict[str, dict] = {}
+            download_jobs = []
+            for target in batch:
+                candidate_id = target["candidate_id"]
+                response = manifests_by_id.get(candidate_id)
+                try:
+                    if not response or not response.get("ok"):
+                        raise ValueError("manifest request failed")
+                    parsed = parse_document_manifest(response.get("body"))
+                    if target.get("multi_result"):
+                        eligible = bool(
+                            parsed["sale_notice_count"] == 1
+                            and parsed["auction_result_count"] > 1
+                        )
+                        selected_downloads = parsed["review_downloads"]
+                    else:
+                        eligible = bool(parsed["direct_download_eligible"])
+                        selected_downloads = parsed["downloads"]
+                    if not eligible:
+                        raise ValueError("manifest no longer direct-download eligible")
+                except ValueError as exc:
+                    candidate = by_id[candidate_id]
+                    candidate.setdefault("bulk", {})["direct_acquisition"] = {
+                        "status": "MANIFEST_CHANGED",
+                        "error": str(exc)[:120],
+                    }
+                    summary["manifest_changed"] += 1
+                    continue
+                parsed["selected_downloads"] = selected_downloads
+                parsed_by_id[candidate_id] = parsed
+                for spec in selected_downloads:
+                    job_id = (
+                        f"{candidate_id}|{spec['artifact_type']}|"
+                        f"{spec['group']}|{spec['index']}"
+                    )
+                    specs_by_job[job_id] = spec
+                    download_jobs.append({
+                        "job_id": job_id,
+                        "candidate_id": candidate_id,
+                        "record_ref": target["record_ref"],
+                        "artifact_type": spec["artifact_type"],
+                        "islem_turu": spec["islem_turu"],
+                        "evrak_sayisi": spec["evrak_sayisi"],
+                        "prefer_exact_view": bool(target.get("prefer_exact_view")),
+                    })
+            validated_by_job: dict[str, dict] = {}
+            validation_errors: dict[str, str] = {}
+            preferred_view_jobs = [{
+                "job_id": job["job_id"],
+                "candidate_id": job["candidate_id"],
+                "artifact_type": job["artifact_type"],
+                "response_uri": specs_by_job[job["job_id"]]["response_uri"],
+            } for job in download_jobs if job.get("prefer_exact_view")]
+            preferred_responses = self._fetch_exact_view_documents(
+                page, preferred_view_jobs, concurrency
+            )
+            summary["request_count"] += sum(
+                int(response.get("attempts") or 1)
+                for response in preferred_responses or [] if isinstance(response, dict)
+            )
+            preferred_by_job = {
+                str(response.get("job_id")): response
+                for response in preferred_responses or []
+                if isinstance(response, dict) and response.get("job_id")
+            }
+            for job in preferred_view_jobs:
+                try:
+                    validated_by_job[job["job_id"]] = validate_exact_view_document(
+                        preferred_by_job.get(job["job_id"]), job["artifact_type"]
+                    )
+                except ValueError as exc:
+                    validation_errors[job["job_id"]] = str(exc)[:120]
+
+            native_jobs = [
+                job for job in download_jobs
+                if job["job_id"] not in validated_by_job
+                and not job.get("prefer_exact_view")
+            ]
+            download_responses = self._fetch_native_downloads(
+                page, native_jobs, concurrency
+            )
+            summary["request_count"] += sum(
+                int(response.get("attempts") or 1)
+                for response in download_responses or [] if isinstance(response, dict)
+            )
+            downloads_by_job = {
+                str(response.get("job_id")): response
+                for response in download_responses or []
+                if isinstance(response, dict) and response.get("job_id")
+            }
+            fallback_jobs = []
+            for job in native_jobs:
+                job_id = job["job_id"]
+                spec = specs_by_job[job_id]
+                try:
+                    validated_by_job[job_id] = validate_native_download(
+                        downloads_by_job.get(job_id), spec["artifact_type"]
+                    )
+                except ValueError as exc:
+                    if spec.get("response_uri") and not job.get("prefer_exact_view"):
+                        fallback_jobs.append({
+                            "job_id": job_id,
+                            "candidate_id": job["candidate_id"],
+                            "artifact_type": job["artifact_type"],
+                            "response_uri": spec["response_uri"],
+                        })
+                    else:
+                        validation_errors[job_id] = validation_errors.get(
+                            job_id, str(exc)[:120]
+                        )
+            fallback_responses = self._fetch_exact_view_documents(
+                page, fallback_jobs, concurrency
+            )
+            summary["request_count"] += sum(
+                int(response.get("attempts") or 1)
+                for response in fallback_responses or [] if isinstance(response, dict)
+            )
+            fallback_by_job = {
+                str(response.get("job_id")): response
+                for response in fallback_responses or []
+                if isinstance(response, dict) and response.get("job_id")
+            }
+            for job in fallback_jobs:
+                job_id = job["job_id"]
+                try:
+                    validated_by_job[job_id] = validate_exact_view_document(
+                        fallback_by_job.get(job_id), job["artifact_type"]
+                    )
+                except ValueError as exc:
+                    validation_errors[job_id] = str(exc)[:120]
+
+            for target in batch:
+                candidate_id = target["candidate_id"]
+                if candidate_id not in parsed_by_id:
+                    continue
+                original = by_id[candidate_id]
+                working = copy.deepcopy(original)
+                artifacts = []
+                artifact_diagnostics = []
+                failure = None
+                selected_downloads = parsed_by_id[candidate_id]["selected_downloads"]
+                validated_documents = []
+                for spec in selected_downloads:
+                    job_id = (
+                        f"{candidate_id}|{spec['artifact_type']}|"
+                        f"{spec['group']}|{spec['index']}"
+                    )
+                    validated = validated_by_job.get(job_id)
+                    if validated is None:
+                        failure = (
+                            f"{spec['artifact_type']}: "
+                            + validation_errors.get(
+                                job_id, "required document validation failed"
+                            )
+                        )
+                        break
+                    validated_documents.append((spec, validated))
+                multi_result_agreement = None
+                if not failure and target.get("multi_result"):
+                    try:
+                        multi_result_agreement = multi_result_documents_agree(
+                            validated_documents
+                        )
+                    except ValueError as exc:
+                        multi_result_agreement = {
+                            "agreed": False,
+                            "reason": str(exc)[:120],
+                        }
+                    if not multi_result_agreement.get("agreed"):
+                        failure = (
+                            "multi_result:"
+                            + str(multi_result_agreement.get("reason") or "not_agreed")
+                        )
+                if failure:
+                    manual_fallback = bool(
+                        "manifest_group_requested_semantics_missing" in failure
+                        or failure.startswith("multi_result:")
+                    )
+                    original.setdefault("bulk", {})["direct_acquisition"] = {
+                        "status": (
+                            "REQUIRES_UI_FALLBACK"
+                            if manual_fallback else "RETRYABLE_FAILURE"
+                        ),
+                        "error": failure,
+                    }
+                    store.log_event(original, "fast_direct_acquisition_failed", failure)
+                    if manual_fallback:
+                        summary["manual_fallback"] += 1
+                    else:
+                        summary["retryable_failures"] += 1
+                    continue
+                for spec, validated in validated_documents:
+                    try:
+                        artifact, diagnostics = self._persist_direct_udf(
+                            candidate_id,
+                            target["record_ref"],
+                            spec,
+                            validated,
+                        )
+                    except (OSError, ValueError) as exc:
+                        failure = str(exc)[:120]
+                        break
+                    artifacts.append(artifact)
+                    artifact_diagnostics.append(diagnostics)
+                    summary["downloaded_bytes"] += int(validated["size"])
+                if failure or len(artifacts) != len(selected_downloads):
+                    manual_fallback = bool(
+                        failure and "manifest_group_requested_semantics_missing" in failure
+                    )
+                    original.setdefault("bulk", {})["direct_acquisition"] = {
+                        "status": (
+                            "REQUIRES_UI_FALLBACK"
+                            if manual_fallback else "RETRYABLE_FAILURE"
+                        ),
+                        "error": failure or "required native documents incomplete",
+                    }
+                    store.log_event(original, "fast_direct_acquisition_failed", failure or "incomplete")
+                    if manual_fallback:
+                        summary["manual_fallback"] += 1
+                    else:
+                        summary["retryable_failures"] += 1
+                    continue
+                try:
+                    working["artifacts"] = artifacts
+                    import_artifact(
+                        working,
+                        "status_card",
+                        text=str(working.get("status_text") or "Satıldı"),
+                        source_ref=working.get("source_page_ref"),
+                        store_dir=self.store_dir,
+                        persist=True,
+                    )
+                    working.setdefault("bulk", {})["direct_acquisition"] = {
+                        "status": "COLLECTED",
+                        "version": DOCUMENT_MANIFEST_VERSION,
+                        "documents": artifact_diagnostics,
+                    }
+                    if multi_result_agreement:
+                        working["bulk"]["direct_acquisition"][
+                            "multi_result_agreement"
+                        ] = multi_result_agreement
+                    store.log_event(
+                        working, "fast_direct_collected", f"docs={len(artifacts)}"
+                    )
+                    working = run_audit(
+                        working,
+                        self.store_dir,
+                        self.genuine_path,
+                        persist=False,
+                    )
+                except Exception as exc:
+                    original.setdefault("bulk", {})["direct_acquisition"] = {
+                        "status": "RETRYABLE_FAILURE",
+                        "error": f"audit pipeline: {type(exc).__name__}",
+                    }
+                    store.log_event(original, "fast_direct_acquisition_failed", type(exc).__name__)
+                    summary["retryable_failures"] += 1
+                    continue
+                candidates[index_by_id[candidate_id]] = working
+                by_id[candidate_id] = working
+                decision = (working.get("audit") or {}).get("decision") or "UNKNOWN"
+                summary["audit_decisions"][decision] = (
+                    summary["audit_decisions"].get(decision, 0) + 1
+                )
+                summary["acquired"] += 1
+                summary["candidates_processed"] += 1
+                if target.get("multi_result"):
+                    summary["multi_result_resolved"] += 1
+            completed = min(offset + len(batch), len(targets))
+            checkpoint_due = completed == len(targets) or completed % checkpoint_every == 0
+            if checkpoint_due:
+                with locked(store.store_path(self.store_dir)):
+                    store.save_candidates(candidates, self.store_dir)
+                self._print(
+                    f"[UYAP DIRECT] {completed}/{len(targets)} · "
+                    f"edinilen={summary['acquired']} · retry={summary['retryable_failures']}"
+                )
+        return summary
+
+    @_exclusive_bulk_run
+    def run_fast_manifest_scan(
+        self,
+        tasks: list[dict],
+        concurrency: int = 8,
+        max_records: int | None = None,
+        force: bool = False,
+    ) -> dict:  # pragma: no cover - canlı tarayıcı gerektirir
+        from .collect import BrowserCollector
+
+        if concurrency < 1 or concurrency > 16:
+            raise ValueError("concurrency must be between 1 and 16")
+        if max_records is not None and max_records < 1:
+            raise ValueError("max_records must be >= 1")
+        started_at = time.monotonic()
+        sync_playwright = BrowserCollector._sync_playwright()
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(self.cdp_endpoint)
+            if not browser.contexts:
+                raise RuntimeError("no_usable_browser_context: CDP oturumunda kullanılabilir bağlam yok.")
+            page = self._find_gecmis_page(browser.contexts[0])
+            if page is None:
+                raise RuntimeError("no_gecmis_ilanlar_page: 'Geçmiş İlanlar' sayfasını elle açın.")
+            expiration = detect_session_expiration(page.content(), page.url)
+            if expiration["expired"]:
+                return {
+                    "targets_total": 0,
+                    "candidates_scanned": 0,
+                    "direct_download_eligible": 0,
+                    "requires_ui_fallback": 0,
+                    "source_errors": 0,
+                    "manifest_failures": 0,
+                    "request_count": 0,
+                    "stopped_reason": "SESSION_EXPIRED",
+                    "elapsed_seconds": 0.0,
+                }
+            summary = self._scan_document_manifest_tasks(
+                page, tasks, concurrency, max_records=max_records, force=force
+            )
+        elapsed = max(time.monotonic() - started_at, 1e-9)
+        summary["elapsed_seconds"] = round(elapsed, 2)
+        summary["requests_per_minute"] = round(
+            summary["request_count"] * 60.0 / elapsed, 2
+        )
+        return summary
+
+    @_exclusive_bulk_run
+    def run_fast_direct_acquisition(
+        self,
+        tasks: list[dict],
+        concurrency: int = 4,
+        max_records: int | None = None,
+    ) -> dict:  # pragma: no cover - canlı tarayıcı gerektirir
+        from .collect import BrowserCollector
+
+        if concurrency < 1 or concurrency > 8:
+            raise ValueError("direct acquisition concurrency must be between 1 and 8")
+        if max_records is not None and max_records < 1:
+            raise ValueError("max_records must be >= 1")
+        started_at = time.monotonic()
+        sync_playwright = BrowserCollector._sync_playwright()
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(self.cdp_endpoint)
+            if not browser.contexts:
+                raise RuntimeError("no_usable_browser_context: CDP oturumunda kullanılabilir bağlam yok.")
+            page = self._find_gecmis_page(browser.contexts[0])
+            if page is None:
+                raise RuntimeError("no_gecmis_ilanlar_page: 'Geçmiş İlanlar' sayfasını elle açın.")
+            expiration = detect_session_expiration(page.content(), page.url)
+            if expiration["expired"]:
+                return {
+                    "targets_total": 0,
+                    "candidates_processed": 0,
+                    "acquired": 0,
+                    "retryable_failures": 0,
+                    "manual_fallback": 0,
+                    "manifest_changed": 0,
+                    "request_count": 0,
+                    "downloaded_bytes": 0,
+                    "audit_decisions": {},
+                    "stopped_reason": "SESSION_EXPIRED",
+                    "elapsed_seconds": 0.0,
+                }
+            summary = self._run_fast_direct_acquisition_tasks(
+                page, tasks, concurrency, max_records=max_records
+            )
+        elapsed = max(time.monotonic() - started_at, 1e-9)
+        summary["elapsed_seconds"] = round(elapsed, 2)
+        summary["candidates_per_minute"] = round(
+            summary["acquired"] * 60.0 / elapsed, 2
+        )
+        summary["requests_per_minute"] = round(
+            summary["request_count"] * 60.0 / elapsed, 2
+        )
+        return summary
 
     @staticmethod
     def _fast_summary(tasks: list[dict], concurrency: int) -> dict:

@@ -41,10 +41,15 @@ def _artifact_raw(artifact: dict) -> str:
             declared = artifact.get("sha256")
             if declared and hashlib.sha256(data).hexdigest() != str(declared):
                 raise ValueError(f"artifact sha256 mismatch: {p}")
-            if p.suffix.lower() == ".udf":
-                from .udf import extract_udf_source_text
+            if p.suffix.lower() in (".udf", ".odt"):
+                from .udf import extract_odf_source_text, extract_udf_source_text
 
-                text, _ = extract_udf_source_text(data)
+                parser = (
+                    extract_udf_source_text
+                    if p.suffix.lower() == ".udf"
+                    else extract_odf_source_text
+                )
+                text, _ = parser(data)
             else:
                 text = data.decode("utf-8", errors="ignore")
     return text or ""
@@ -365,6 +370,46 @@ def corroborate_native_document_type(source_text: str | None, requested_artifact
         "native_document_type_corroborated": corroborated,
         "native_document_type_mismatch": mismatch,
         "native_document_type_corroboration_reason": reason,
+    }
+
+
+def corroborate_manifest_document_type(
+    source_text: str | None,
+    requested_artifact_type: str | None,
+) -> dict:
+    """Corroborate an exact manifest-group document by positive requested-type semantics.
+
+    Portal ODF transformations may combine the owned primary document with appended forms. The
+    manifest group establishes row ownership; this guard additionally requires explicit semantic
+    tokens for the requested type and reports all types present instead of imposing one-type priority.
+    """
+    fold = re.sub(r"\s+", " ", _ascii_lower(demojibake(source_text or "")))
+    terms_by_type = {
+        "auction_result": _DOC_TYPE_AUCTION_RESULT,
+        "sale_notice": _DOC_TYPE_SALE_NOTICE,
+        "sale_spec": _DOC_TYPE_SALE_SPEC,
+        "appraisal_report": _DOC_TYPE_APPRAISAL,
+    }
+    matched_types = sorted(
+        artifact_type
+        for artifact_type, terms in terms_by_type.items()
+        if any(term in fold for term in terms)
+    )
+    corroborated = bool(requested_artifact_type in matched_types)
+    return {
+        "native_detected_document_type": (
+            requested_artifact_type if corroborated
+            else classify_udf_document_type(source_text)
+        ),
+        "native_requested_artifact_type": requested_artifact_type,
+        "native_document_type_corroborated": corroborated,
+        "native_document_type_mismatch": not corroborated,
+        "native_document_type_corroboration_reason": (
+            "manifest_group_and_requested_semantics_match"
+            if corroborated else "manifest_group_requested_semantics_missing"
+        ),
+        "manifest_document_types_present": matched_types,
+        "manifest_document_mixed_type": len(matched_types) > 1,
     }
 
 

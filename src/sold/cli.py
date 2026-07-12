@@ -2086,6 +2086,23 @@ def uyap_status_cmd(store_dir: Optional[str] = typer.Option(None)) -> None:
     typer.echo(f"  inceleme blokerleri: {s['review_blockers']} · admissible: {s['admissible']} · admitte: {s['admitted']} · dışlanan: {s['excluded_non_terminal']}")
 
 
+@uyap_app.command("inspection")
+def uyap_inspection_cmd(
+    date_from: Optional[str] = typer.Option(None, "--date-from"),
+    date_to: Optional[str] = typer.Option(None, "--date-to"),
+    store_dir: Optional[str] = typer.Option(None),
+) -> None:
+    """Audit ve fail-closed manuel sonuçları ayrı tutan aday inceleme defterini günceller."""
+    from .ingestion.uyap.bulk import finalize_inspection_statuses
+
+    result = finalize_inspection_statuses(
+        store_dir, date_from=date_from, date_to=date_to
+    )
+    typer.secho(f"UYAP aday inceleme sonucu: {result}", fg=typer.colors.CYAN, bold=True)
+    if not result["all_inspected"]:
+        raise typer.Exit(code=2)
+
+
 @uyap_app.command("show")
 def uyap_show_cmd(
     file_id: Optional[str] = typer.Option(None, "--file-id", help="Dosya/Esas No ile eşleştir (ör. 2026/23)"),
@@ -2392,6 +2409,10 @@ def uyap_campaign_cmd(
     max_records: Optional[int] = typer.Option(None, "--max-records", min=1, help="Acquire fazında toplam işlenecek en fazla kart"),
     fast_discovery: bool = typer.Option(True, "--fast/--ui", help="Keşifte same-origin endpoint havuzu veya seri UI"),
     concurrency: int = typer.Option(8, "--concurrency", min=1, max=16, help="Hızlı keşifte eşzamanlı istek sınırı"),
+    rescreen: bool = typer.Option(False, "--rescreen", help="Keşif metadatasını COMPLETE pencerelerde de yeniden sınıflandır"),
+    residential_only: bool = typer.Option(False, "--residential-only", help="Acquire kuyruğuna yalnız açık konut işaretli adayları al"),
+    manifest_only: bool = typer.Option(False, "--manifest-only", help="Acquire adaylarının belge manifestini hızlı endpoint ile tara; belge indirmez"),
+    direct_acquisition: bool = typer.Option(False, "--direct", help="Manifest-uygun adayların iki native UDF belgesini hızlı ve KAYIT-bound edin"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Planı göster; tarayıcıya bağlanma"),
     store_dir: Optional[str] = typer.Option(None, help="Çalışma deposu / checkpoint dizini"),
     genuine_path: Optional[str] = typer.Option(None, help="Genuine uyap.json yolu (yalnız duplicate denetimi)"),
@@ -2427,6 +2448,24 @@ def uyap_campaign_cmd(
         typer.secho("--phase discover veya acquire olmalı", fg=typer.colors.RED)
         raise typer.Exit(code=1)
     campaign_phase = aliases[normalized_phase]
+    if rescreen and (campaign_phase != PHASE_DISCOVERY or not fast_discovery):
+        typer.secho("--rescreen yalnız --phase discover --fast ile kullanılabilir", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if residential_only and campaign_phase != PHASE_ACQUISITION:
+        typer.secho("--residential-only yalnız --phase acquire ile kullanılabilir", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if manifest_only and (campaign_phase != PHASE_ACQUISITION or not fast_discovery):
+        typer.secho("--manifest-only yalnız --phase acquire --fast ile kullanılabilir", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if direct_acquisition and (campaign_phase != PHASE_ACQUISITION or not fast_discovery):
+        typer.secho("--direct yalnız --phase acquire --fast ile kullanılabilir", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if direct_acquisition and manifest_only:
+        typer.secho("--direct ve --manifest-only birlikte kullanılamaz", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if direct_acquisition and concurrency > 8:
+        typer.secho("--direct için --concurrency en fazla 8 olabilir", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
     resolved_to = date_to or dt.date.today().isoformat()
     resolved_from = date_from
     if campaign_phase == PHASE_DISCOVERY and not resolved_from:
@@ -2450,17 +2489,20 @@ def uyap_campaign_cmd(
     acquisition_scope = selected
     if campaign_phase == PHASE_DISCOVERY:
         full_plan = build_discovery_campaign_plan(
-            selected, resolved_from, resolved_to, state=campaign_state,
+            selected, resolved_from, resolved_to,
+            state={"windows": []} if rescreen else campaign_state,
             newest_first=True, max_windows_per_province=max_windows_per_province,
         )
         plan = limit_campaign_tasks(full_plan, max_provinces)
         deferred_discovery_tasks = len(full_plan) - len(plan)
     else:
         full_plan = build_acquisition_queue(
-            store_dir, selected, date_from=resolved_from, date_to=date_to
+            store_dir, selected, date_from=resolved_from, date_to=date_to,
+            residential_only=residential_only,
         )
         preliminary_blockers = acquisition_queue_blockers(
-            store_dir, selected, date_from=resolved_from, date_to=date_to
+            store_dir, selected, date_from=resolved_from, date_to=date_to,
+            residential_only=residential_only,
         )
         if max_provinces is not None:
             work_provinces = {task["province"] for task in full_plan}
@@ -2494,14 +2536,16 @@ def uyap_campaign_cmd(
             blocker_provinces,
             date_from=resolved_from,
             date_to=date_to,
+            residential_only=residential_only,
         )
         if campaign_phase == PHASE_ACQUISITION else []
     )
 
     discovery_mode = "fast" if fast_discovery else "ui"
+    property_scope = "konut" if residential_only else "tüm-taşınmaz"
     typer.secho(
         f"UYAP campaign · faz={campaign_phase} · aktif il={len(active_provinces)} · "
-        f"görev={len(plan)} · keşif={discovery_mode}",
+        f"görev={len(plan)} · keşif={discovery_mode} · kapsam={property_scope}",
         fg=typer.colors.CYAN, bold=True,
     )
     by_province: dict[str, int] = {}
@@ -2540,6 +2584,30 @@ def uyap_campaign_cmd(
         cdp_endpoint, store_dir=store_dir, genuine_path=genuine_path,
         request_delay_ms=delay_ms, stall_seconds=stall_timeout,
     )
+    if campaign_phase == PHASE_ACQUISITION and manifest_only:
+        result = collector.run_fast_manifest_scan(
+            plan, concurrency=concurrency, max_records=max_records
+        )
+        typer.secho(f"Belge manifest taraması: {result}", fg=typer.colors.CYAN, bold=True)
+        if (
+            result.get("stopped_reason")
+            or result.get("manifest_failures")
+            or deferred_acquisition_tasks
+        ):
+            raise typer.Exit(code=2)
+        return
+    if campaign_phase == PHASE_ACQUISITION and direct_acquisition:
+        result = collector.run_fast_direct_acquisition(
+            plan, concurrency=concurrency, max_records=max_records
+        )
+        typer.secho(f"Doğrudan native edinim: {result}", fg=typer.colors.CYAN, bold=True)
+        if (
+            result.get("stopped_reason")
+            or result.get("retryable_failures")
+            or deferred_acquisition_tasks
+        ):
+            raise typer.Exit(code=2)
+        return
     totals = {
         "windows": 0, "cards": 0, "acquired": 0, "failed": 0,
         "incomplete": deferred_acquisition_tasks,
@@ -2564,7 +2632,9 @@ def uyap_campaign_cmd(
     remaining = max_records
     if campaign_phase == PHASE_DISCOVERY:
         if fast_discovery:
-            result = collector.run_fast_discovery(plan, concurrency=concurrency)
+            result = collector.run_fast_discovery(
+                plan, concurrency=concurrency, force=rescreen
+            )
             totals["windows"] += result["windows_processed"]
             totals["cards"] += result["result_cards_inspected"]
             totals["saturated_unresolved"] += result["saturated_windows_unresolved"]

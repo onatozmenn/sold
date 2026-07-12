@@ -976,3 +976,34 @@ terminal `Satıldı` candidates as the prior run. This demonstrates that the ear
 cards under-counted source coverage; it does not alter the already completed 3/3 candidate-bound acquisitions
 or admit any evidence. Focused validation after the change: **120 bulk/campaign tests passed**; the live
 two-province benchmark completed in 0.86 seconds and the nationwide benchmark completed in 6.34 seconds.
+
+## 2026-07-12 — Full June screening and direct evidence acquisition
+
+The nationwide fast discovery path was applied to all five UYAP-bounded windows covering
+`2026-06-01..2026-06-30`. It reconciled 14,357 result cards and discovered 6,305 unique terminal `Satıldı`
+candidates in 128.69 seconds. A second endpoint pass classified every candidate from `malAciklama` using
+token-bounded, privacy-safe property hints; raw descriptions were never persisted. The resulting scope was
+2,049 residential candidates and 4,256 non-residential/unknown candidates.
+
+Two additional bounded same-origin stages avoided thousands of serial modal interactions. Candidate-bound
+document manifests were scanned in 62.98 seconds: 1,939 candidates had exactly one sale notice and one result
+document, 107 required UI/manual fallback because result documents were multiple or missing, and 3 returned
+explicit source error envelopes. Direct acquisition revalidated each manifest, downloaded content-addressed
+native UDFs, validated ZIP/XML safety and semantic document type, then reused the existing deterministic
+extract/reconcile/audit pipeline. OneDrive atomic-replace contention is retried with a short bounded backoff.
+For portal cases where the candidate download returned the wrong type, the exact manifest-owned viewer ODF
+was parsed under equivalent ZIP/XML limits; opaque document URIs are stored only as SHA-256 fingerprints.
+Because viewer state is session-current, this fallback is serialized per candidate.
+
+The same pipeline was then run across the non-residential and unknown property hints, so the final ledger is
+not a residential-only sample. The 6,305 newly discovered candidates plus 18 previously known candidates
+rediscovered in the June windows produce **6,323/6,323 terminal inspection outcomes**: 6,066 audit-complete
+and 257 `MANUAL_REQUIRED`, with zero incomplete inspections. Audit decisions are 3,990
+`ADMISSIBLE_COMPLETED_SALE`, 1,774 `PENDING_REVIEW`, 136 `RECONCILIATION_FAILED`, 142
+`MISSING_APPRAISAL`, 22 `DUPLICATE`, and 2 `MISSING_AUCTION_PRICE`. Manual reasons are 164 non-agreeing
+multi-result sets, 61 missing result documents, 24 source error envelopes, and 8 manifest-group/content
+semantic mismatches. Multi-result candidates were automated only when every result UDF reported the same
+explicit `İhale Bedeli` and no non-personal asset descriptor conflicted; all result documents were retained
+rather than selecting an arbitrary first or last row. Admission remained a separate human action, so genuine
+structural UYAP evidence remained unchanged. Final gitignored operational evidence: 12,173 UDFs, 164 exact-URI
+ODFs and approximately 90.16 MiB of artifacts.

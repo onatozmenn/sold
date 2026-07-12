@@ -4,7 +4,7 @@
 [![Data refresh](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml/badge.svg)](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-827%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-844%20passing-brightgreen.svg)](tests/)
 [![Data](https://img.shields.io/badge/evidence-UYAP%20%C2%B7%20KAP%20%C2%B7%20TCMB%20%C2%B7%20TOK%C4%B0-informational.svg)](#provenance-audited-public-structural-evidence)
 
 > A **mechanism-aware structural econometric prototype** that infers a **structural transaction-price distribution** for a Turkish home from an **asking-price signal** and public economic evidence.
@@ -261,6 +261,35 @@ sold uyap campaign --all-provinces --phase acquire `
   --cdp-endpoint http://127.0.0.1:9222
 ```
 
+For large result sets, screen first and reserve UI work for genuine exceptions:
+
+```powershell
+# Refresh privacy-safe property hints on completed discovery windows (no raw description retained)
+sold uyap campaign --all-provinces --phase discover `
+  --date-from 2026-06-01 --date-to 2026-06-30 `
+  --max-windows-per-province 5 --rescreen --concurrency 8 `
+  --cdp-endpoint http://127.0.0.1:9222
+
+# Inspect exact document manifests for residential candidates; downloads no document bytes
+sold uyap campaign --all-provinces --phase acquire `
+  --date-from 2026-06-01 --date-to 2026-06-30 `
+  --max-windows-per-province 10 --residential-only --manifest-only --concurrency 8 `
+  --cdp-endpoint http://127.0.0.1:9222
+
+# Download the unique candidate-bound sale notice and result UDFs, then extract/reconcile/audit
+sold uyap campaign --all-provinces --phase acquire `
+  --date-from 2026-06-01 --date-to 2026-06-30 `
+  --max-windows-per-province 10 --residential-only --direct --concurrency 8 `
+  --cdp-endpoint http://127.0.0.1:9222
+```
+
+`--direct` revalidates the candidate manifest immediately before download, validates ZIP/XML bounds,
+corroborates each document type semantically, writes content-addressed artifacts atomically, and runs the
+existing deterministic extraction, same-asset reconciliation and audit pipeline. Exact manifest-URI ODF
+fallback is serialized because UYAP keeps that viewer state session-current. Ambiguous/missing manifests,
+source error envelopes and semantic group/content mismatches remain explicit UI/manual work; no arbitrary
+first/last document is selected.
+
 For bounded historical backfill, increase the per-province budget gradually; completed discovery and
 acquisition checkpoints are independent, so rerunning the command advances rather than starting over:
 
@@ -302,6 +331,17 @@ work is never reported as complete and returns a nonzero status for automation. 
 > `ADMISSIBLE_COMPLETED_SALE` and two `PENDING_REVIEW`; **no record was admitted automatically**. The live
 > adapters bind search results to exact AJAX response/cardinality and document actions to exact KAYIT,
 > response URI, modal row and action fingerprint.
+
+> **Full June candidate inspection (2026-07-12).** The fast path screened all **6,305 newly discovered**
+> terminal-sale candidates across `2026-06-01..2026-06-30` without retaining raw listing descriptions.
+> Including 18 previously known candidates rediscovered in those windows, the inspection ledger covers
+> **6,323/6,323 operational candidates**: **6,066 audit-complete** and **257 `MANUAL_REQUIRED`**, with zero
+> incomplete inspections. Audit decisions are **3,990 `ADMISSIBLE_COMPLETED_SALE`**, 1,774 `PENDING_REVIEW`,
+> 136 `RECONCILIATION_FAILED`, 142 `MISSING_APPRAISAL`, 22 `DUPLICATE`, and 2
+> `MISSING_AUCTION_PRICE`. Manual reasons remain fail closed: 164 multi-result sets did not agree, 61 had no
+> result document, 24 returned source error envelopes, and 8 had manifest-group/content semantic mismatches.
+> No record was admitted automatically. Local gitignored evidence contains 12,173 native UDFs and 164
+> exact-URI ODF transformations (about 90 MiB total).
 
 > **Live status.** UYAP Live Browser Pilot 1 reached **`PASS`** on the real **2026/263 Esas** record. A later bounded Ankara batch (`2026-06-18..2026-06-24`) collected five terminal-sale cards through native UDF artifacts: two new records were explicitly admitted, two were identified as existing observations (one primary ID and one alias), and one remains blocked for human review. The history endpoint is an observed internal same-origin interface, **not** an official public API. The workflow does **not** automate authentication, is **not** unattended continuous ingestion, and does **not** prove universal layout coverage. The automated test suite remains fully offline.
 
@@ -517,7 +557,7 @@ tests/               # offline unit / end-to-end tests
 ## Testing
 
 ```bash
-pytest -q             # 827 tests, fully offline (no network or API key required)
+pytest -q             # 844 tests, fully offline (no network or API key required)
 ```
 
 The automated suite is fully offline. The **UYAP live browser pilot is a separate, operator-run verification** (a real user-controlled session against the live site) and is **not** part of the offline CI suite.
