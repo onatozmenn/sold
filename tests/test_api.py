@@ -39,6 +39,47 @@ def test_index_served():
     assert "Konut" in r.text
 
 
+def test_uyap_dashboard_data_and_page(tmp_path, monkeypatch):
+    from sold.db import get_engine, get_sessionmaker, init_db
+    from sold.labels import persist_labels
+
+    monkeypatch.setattr(
+        "sold.config.settings.database_url",
+        f"sqlite:///{(tmp_path / 'uyap_dashboard.db').as_posix()}",
+        raising=False,
+    )
+    engine = get_engine()
+    init_db(engine)
+    with get_sessionmaker(engine)() as session:
+        assert persist_labels(session, [{
+            "domain": "uyap",
+            "label_source": "uyap",
+            "sale_mechanism": "auction",
+            "reference_price_type": "appraisal",
+            "reference_price": 5_000_000,
+            "realized_price": 4_500_000,
+            "related_party": False,
+            "province": "Ankara",
+            "property_type": "konut",
+            "label_confidence": "A",
+            "external_ref": "17000000001",
+        }]) == 1
+        session.commit()
+
+    response = client.get("/uyap-data")
+    page = client.get("/uyap-dashboard")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"]["record_count"] == 1
+    assert data["summary"]["province_count"] == 81
+    assert data["records"][0]["ratio"] == 0.9
+    assert data["records"][0]["record_ref"] == "17000000001"
+    assert "institution" not in data["records"][0]
+    assert page.status_code == 200
+    assert "UYAP Satış Atlası" in page.text
+
+
 def test_valuate_returns_reasonable_estimate():
     r = client.post(
         "/valuate",

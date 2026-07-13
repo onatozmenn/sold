@@ -193,11 +193,32 @@ def _s(v: object) -> str | None:
 # Kalıcılık
 # --------------------------------------------------------------------------- #
 def persist_labels(session: Session, labels: list[dict]) -> int:
-    """Normalize edilmiş etiketleri realized_labels tablosuna ekler."""
+    """Normalize edilmiş etiketleri realized_labels tablosuna idempotent ekler.
+
+    Resmî kaynak kimliği bulunan etiketlerde ``domain + label_source + external_ref``
+    aynı gözlemin yeniden içe aktarılmasını engeller. Kimliği olmayan eski/manuel
+    etiketlerin mevcut ekleme davranışı korunur.
+    """
+    normalized = [normalize_label(raw) for raw in labels]
+    existing_keys = {
+        tuple(row)
+        for row in session.execute(
+            select(
+                RealizedLabel.domain,
+                RealizedLabel.label_source,
+                RealizedLabel.external_ref,
+            ).where(RealizedLabel.external_ref.is_not(None))
+        ).all()
+    }
     count = 0
-    for raw in labels:
-        v = normalize_label(raw)
+    for v in normalized:
+        external_ref = v.get("external_ref")
+        key = (v["domain"], v["label_source"], external_ref)
+        if external_ref is not None and key in existing_keys:
+            continue
         session.add(RealizedLabel(**v))
+        if external_ref is not None:
+            existing_keys.add(key)
         count += 1
     session.flush()
     return count

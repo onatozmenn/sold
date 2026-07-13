@@ -48,9 +48,15 @@ def known_public_record_ids(records: list[dict]) -> set[str]:
 
 
 def _genuine_dir() -> Path:
+    """Frozen structural-evidence directory used by the non-mutating pilot."""
     from ...structural.datasets import GENUINE_DIR
 
     return GENUINE_DIR
+
+
+def _operational_genuine_path(store_dir: Path | str | None = None) -> Path:
+    """Gitignored admitted-record ledger for live ingestion and duplicate checks."""
+    return Path(store_dir or store.DEFAULT_STORE_DIR) / "uyap.json"
 
 
 def _iso_date(value: str | None) -> str | None:
@@ -67,7 +73,25 @@ def _iso_date(value: str | None) -> str | None:
 def _bulk_province(candidate: dict) -> str | None:
     """Kanıtta il yoksa toplu-arama ilinden KABA il (kişisel değil; ör. 'ANKARA' → 'Ankara')."""
     label = str((candidate.get("bulk") or {}).get("province_label") or "").strip()
-    return label.title() or None
+    lowered = label.translate(str.maketrans({"I": "ı", "İ": "i"})).lower()
+    titled = [
+        {"i": "İ", "ı": "I"}.get(part[:1], part[:1].upper()) + part[1:]
+        for part in lowered.split()
+    ]
+    return " ".join(titled) or None
+
+
+def _auction_date(candidate: dict) -> str | None:
+    """Use an extracted completion date only when it fits the authenticated search window."""
+    extracted = _iso_date((candidate.get("extracted") or {}).get("completion_datetime"))
+    if extracted is None:
+        return None
+    metadata = candidate.get("bulk") or {}
+    window_start = _iso_date(metadata.get("window_start"))
+    window_end = _iso_date(metadata.get("window_end"))
+    if window_start and window_end and not window_start <= extracted <= window_end:
+        return None
+    return extracted
 
 
 def build_genuine_record(candidate: dict) -> dict:
@@ -91,7 +115,7 @@ def build_genuine_record(candidate: dict) -> dict:
     return {
         "public_record_id": (candidate.get("kayit_no") or (candidate.get("bulk") or {}).get("kayit_no")
                              or candidate.get("file_id")),
-        "auction_date": _iso_date(ev.get("completion_datetime")),
+        "auction_date": _auction_date(candidate),
         "province": ev.get("province") or _bulk_province(candidate),
         "district": ev.get("district"),
         "property_type": ev.get("property_type"),
@@ -129,7 +153,7 @@ def admit(candidate: dict, genuine_path: Path | str | None = None, store_dir: Pa
     if public_record_id in (None, ""):
         return {"status": "error", "reason": "missing public_record_id (file_id)"}
 
-    path = Path(genuine_path) if genuine_path else _genuine_dir() / "uyap.json"
+    path = Path(genuine_path) if genuine_path else _operational_genuine_path(store_dir)
     from .io import atomic_write_json, locked
 
     records = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
@@ -191,6 +215,119 @@ def admit(candidate: dict, genuine_path: Path | str | None = None, store_dir: Pa
             "win_over_appraisal": audit.get("win_over_appraisal"), "genuine_uyap_total": len(records)}
 
 
+def admit_candidates(
+    candidate_ids: list[str] | tuple[str, ...],
+    genuine_path: Path | str | None = None,
+    store_dir: Path | str | None = None,
+) -> dict:
+    """Fresh-audit and admit many candidates with one evidence/store write.
+
+    The operation is restart-safe: official record identities already present in the
+    genuine set are marked admitted without creating duplicate observations.
+    """
+    requested = list(dict.fromkeys(str(value) for value in candidate_ids if value))
+    summary = {
+        "requested": len(requested),
+        "admitted": 0,
+        "already_admitted": 0,
+        "not_admissible": 0,
+        "errors": 0,
+        "error_details": [],
+        "genuine_uyap_total": 0,
+    }
+    path = Path(genuine_path) if genuine_path else _operational_genuine_path(store_dir)
+    if not requested:
+        if path.exists():
+            summary["genuine_uyap_total"] = len(json.loads(path.read_text(encoding="utf-8")))
+        return summary
+
+    from .io import atomic_write_json, locked
+    from .pipeline import run_audit
+    from ...structural.auction import normalize_auction
+
+    candidate_path = store.store_path(store_dir)
+    with locked(path), locked(candidate_path):
+        records = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        identity_map = public_record_identity_map(records)
+        candidates = store.load_candidates(store_dir)
+        by_id = {str(candidate.get("candidate_id")): candidate for candidate in candidates}
+        changed = False
+
+        for candidate_id in requested:
+            candidate = by_id.get(candidate_id)
+            if candidate is None:
+                summary["errors"] += 1
+                summary["error_details"].append({"candidate_id": candidate_id, "reason": "candidate not found"})
+                continue
+            public_record_id = (
+                candidate.get("kayit_no")
+                or (candidate.get("bulk") or {}).get("kayit_no")
+                or candidate.get("file_id")
+            )
+            if public_record_id in (None, ""):
+                summary["errors"] += 1
+                summary["error_details"].append({"candidate_id": candidate_id, "reason": "missing public_record_id"})
+                continue
+            canonical_id = identity_map.get(str(public_record_id))
+            if canonical_id is not None:
+                candidate["state"] = STATE_ADMITTED
+                candidate["admitted_public_record_id"] = canonical_id
+                store.log_event(candidate, "admit_idempotent", f"already present: {canonical_id}")
+                summary["already_admitted"] += 1
+                changed = True
+                continue
+            if not candidate.get("artifacts"):
+                summary["errors"] += 1
+                summary["error_details"].append({"candidate_id": candidate_id, "reason": "source artifacts are required"})
+                continue
+
+            try:
+                candidate = run_audit(
+                    candidate,
+                    store_dir=store_dir,
+                    genuine_path=path,
+                    persist=False,
+                    known_genuine_ids=set(identity_map),
+                )
+            except (OSError, ValueError) as exc:
+                summary["errors"] += 1
+                summary["error_details"].append({"candidate_id": candidate_id, "reason": str(exc)[:160]})
+                continue
+            changed = True
+            audit = candidate.get("audit") or {}
+            if audit.get("decision") != ADMISSIBLE_COMPLETED_SALE:
+                summary["not_admissible"] += 1
+                continue
+
+            record = build_genuine_record(candidate)
+            if record["appraised_value"] in (None, 0) or record["winning_bid"] in (None, 0):
+                summary["errors"] += 1
+                summary["error_details"].append({"candidate_id": candidate_id, "reason": "missing appraisal or auction price"})
+                continue
+            normalized = normalize_auction(record)
+            if not bool(normalized["sold"]) or normalized["winning_bid"] is None:
+                summary["errors"] += 1
+                summary["error_details"].append({"candidate_id": candidate_id, "reason": "genuine schema validation failed"})
+                continue
+
+            records.append(record)
+            identity_map[str(record["public_record_id"])] = str(record["public_record_id"])
+            candidate["state"] = STATE_ADMITTED
+            candidate["admitted_public_record_id"] = record["public_record_id"]
+            candidate["admitted_at"] = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+            store.log_event(candidate, "admitted", f"{record['public_record_id']} -> uyap.json")
+            summary["admitted"] += 1
+
+        if summary["admitted"]:
+            atomic_write_json(path, records)
+        if changed:
+            store.save_candidates(candidates, store_dir)
+        summary["genuine_uyap_total"] = len(records)
+
+    summary["error_details"] = summary["error_details"][:20]
+    return summary
+
+
 def record_exclusion(candidate: dict, candidates_path: Path | str | None = None, store_dir: Path | str | None = None) -> dict:
     """EXCLUDED_NON_TERMINAL adayını MEVCUT uyap_candidates.json manifestine IDEMPOTENT ekler.
 
@@ -200,7 +337,11 @@ def record_exclusion(candidate: dict, candidates_path: Path | str | None = None,
     if audit.get("decision") != EXCLUDED_NON_TERMINAL:
         return {"status": "skip", "reason": "only EXCLUDED_NON_TERMINAL candidates are recorded here"}
     ev = candidate.get("extracted") or {}
-    path = Path(candidates_path) if candidates_path else _genuine_dir() / "uyap_candidates.json"
+    path = (
+        Path(candidates_path)
+        if candidates_path
+        else Path(store_dir or store.DEFAULT_STORE_DIR) / "uyap_candidates.json"
+    )
     from .io import atomic_write_json, locked
 
     cid = candidate.get("candidate_id")

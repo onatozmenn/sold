@@ -482,6 +482,13 @@ Output is an explicitly **`conditional_on_trade`** structural sensitivity range 
 sold serve            # → http://127.0.0.1:8000
 ```
 
+The UYAP Sale Atlas is available at `http://127.0.0.1:8000/uyap-dashboard`.
+It maps the verified UYAP evidence in `realized_labels`, compares appraised
+(`muhammen`) value with finalized auction price, and supports province/property/
+ratio filters plus CSV export. These are enforcement-auction observations for
+FairValue calibration, not ordinary-market asking-to-closing labels. Its
+privacy-safe JSON contract is `GET /uyap-data`.
+
 Structural endpoints over the frozen core:
 
 | Method | Endpoint | Returns |

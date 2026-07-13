@@ -22,6 +22,7 @@ from sold.ingestion.uyap import (
     MISSING_AUCTION_PRICE,
     MISSING_TERMINAL_EVIDENCE,
     admit_candidate,
+    admit_candidates,
     discover,
     import_artifact,
     needs_review,
@@ -192,6 +193,91 @@ def test_explicit_admission_idempotent(tmp_path):
     r2 = admit_candidate(c2, genuine_path=gp, store_dir=tmp_path)
     assert r2["status"] == "already_admitted"
     assert len(json.loads(gp.read_text(encoding="utf-8"))) == 1
+
+
+def test_default_admission_uses_operational_store(tmp_path):
+    artifacts, _, _, _ = CASES["CASE1"]
+    candidate = _pipeline_to_audit(
+        "OPS/2026",
+        artifacts,
+        tmp_path,
+        genuine_path=tmp_path / "uyap.json",
+    )
+
+    result = admit_candidate(candidate, store_dir=tmp_path)
+
+    assert result["status"] == "admitted"
+    records = json.loads((tmp_path / "uyap.json").read_text(encoding="utf-8"))
+    assert len(records) == 1
+    assert records[0]["public_record_id"] == "OPS/2026"
+
+
+def test_batch_admission_is_idempotent(tmp_path):
+    gp = _seed_genuine(tmp_path)
+    first = _pipeline_to_audit("BATCH-1/2026", CASES["CASE1"][0], tmp_path, genuine_path=gp)
+    second = _pipeline_to_audit("BATCH-2/2026", CASES["CASE2"][0], tmp_path, genuine_path=gp)
+    candidate_ids = [first["candidate_id"], second["candidate_id"]]
+
+    result = admit_candidates(candidate_ids, genuine_path=gp, store_dir=tmp_path)
+
+    assert result["admitted"] == 2
+    assert result["errors"] == 0
+    assert len(json.loads(gp.read_text(encoding="utf-8"))) == 2
+    repeated = admit_candidates(candidate_ids, genuine_path=gp, store_dir=tmp_path)
+    assert repeated["admitted"] == 0
+    assert repeated["already_admitted"] == 2
+    assert len(json.loads(gp.read_text(encoding="utf-8"))) == 2
+
+
+def test_batch_admission_reuses_preloaded_identity_set(tmp_path, monkeypatch):
+    gp = _seed_genuine(tmp_path)
+    candidate = _pipeline_to_audit(
+        "BATCH-PRELOAD/2026",
+        CASES["CASE1"][0],
+        tmp_path,
+        genuine_path=gp,
+    )
+    monkeypatch.setattr(
+        "sold.ingestion.uyap.pipeline._genuine_ids",
+        lambda path: (_ for _ in ()).throw(AssertionError("ledger reread")),
+    )
+
+    result = admit_candidates(
+        [candidate["candidate_id"]], genuine_path=gp, store_dir=tmp_path
+    )
+
+    assert result["admitted"] == 1
+    assert len(json.loads(gp.read_text(encoding="utf-8"))) == 1
+
+
+def test_genuine_record_bounds_date_and_normalizes_bulk_province():
+    from sold.ingestion.uyap import build_genuine_record
+
+    candidate = {
+        "candidate_id": "date-guard",
+        "file_id": "2026/1",
+        "kayit_no": "17000000001",
+        "institution": "Example",
+        "extracted": {
+            "completion_datetime": "25/09/1996",
+            "appraisal_source": "sale_notice",
+            "ihale_bedeli_source": "auction_result",
+            "terminal_status_text": "satildi",
+        },
+        "audit": {"appraisal_value": 1_000_000, "auction_price": 900_000},
+        "bulk": {
+            "province_label": "İZMİR",
+            "window_start": "2026-06-01",
+            "window_end": "2026-06-07",
+        },
+    }
+
+    record = build_genuine_record(candidate)
+
+    assert record["auction_date"] is None
+    assert record["province"] == "İzmir"
+    candidate["extracted"]["completion_datetime"] = "03/06/2026"
+    assert build_genuine_record(candidate)["auction_date"] == "2026-06-03"
 
 
 def test_duplicate_candidate_no_duplicate_genuine(tmp_path):

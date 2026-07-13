@@ -61,8 +61,16 @@ class UYAPAdapter(PublicSourceAdapter):
             "district": record.get("ilce", record.get("district")),
             "property_type": record.get("tasinmaz_turu", record.get("property_type")),
             "gross_m2": record.get("brut_m2", record.get("gross_m2")),
-            "transaction_date": record.get("ihale_tarihi", record.get("date")),
-            "external_ref": record.get("dosya_no", record.get("ref")),
+            "transaction_date": (
+                record.get("ihale_tarihi")
+                or record.get("date")
+                or record.get("auction_date")
+            ),
+            "external_ref": (
+                record.get("dosya_no")
+                or record.get("ref")
+                or record.get("public_record_id")
+            ),
         }
 
 

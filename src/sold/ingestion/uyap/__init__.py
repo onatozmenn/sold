@@ -10,7 +10,13 @@ KORUR (pay = açık İhale Bedeli; ASLA Ödenmesi Gereken Bedel/depozito/hisse/m
 from __future__ import annotations
 
 from . import admit, audit, bulk, collect, discovery, extract, models, pilot, pipeline, reconcile, review, store, udf
-from .admit import INGESTION_BATCH, admit as admit_candidate, build_genuine_record, record_exclusion
+from .admit import (
+    INGESTION_BATCH,
+    admit as admit_candidate,
+    admit_candidates,
+    build_genuine_record,
+    record_exclusion,
+)
 from .bulk import (
     CATEGORY_TASINMAZ,
     MAX_WINDOW_DAYS,
@@ -153,6 +159,7 @@ __all__ = [
     "review_item",
     "needs_review",
     "admit_candidate",
+    "admit_candidates",
     "build_genuine_record",
     "record_exclusion",
     "status_summary",

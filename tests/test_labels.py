@@ -91,6 +91,19 @@ def test_uyap_adapter_skips_unsold():
     assert UYAPAdapter().parse({"ihale_sonucu": "satıldı"}) is None  # bedel yok
 
 
+def test_uyap_adapter_uses_public_record_id_as_external_ref():
+    record = {
+        "public_record_id": "16975383463",
+        "appraised_value": 5_000_000,
+        "winning_bid": 5_400_000,
+        "auction_date": "2026-06-30",
+    }
+
+    label = UYAPAdapter().parse(record)
+    assert label["external_ref"] == "16975383463"
+    assert label["transaction_date"] == "2026-06-30"
+
+
 def test_kap_adapter():
     label = KAPAdapter().parse(_KAP)
     assert label["domain"] == "kap"
@@ -221,6 +234,17 @@ def test_persist_and_load_labels():
     df = load_labels(session)
     assert len(df) == 2
     assert set(df["domain"]) == {"uyap", "kap"}
+
+
+def test_persist_labels_is_idempotent_for_source_identity():
+    session = _session()
+    label = normalize_label(UYAPAdapter().parse(_UYAP))
+
+    assert persist_labels(session, [label, label]) == 1
+    session.commit()
+    assert persist_labels(session, [label]) == 0
+    session.commit()
+    assert len(load_labels(session)) == 1
 
 
 def test_fair_value_strata_not_pooled():

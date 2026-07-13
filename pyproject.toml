@@ -39,7 +39,7 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-sold = ["db/schema.sql", "evidence/*.json"]
+sold = ["db/schema.sql", "evidence/*.json", "api/static/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

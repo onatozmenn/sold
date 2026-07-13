@@ -2013,7 +2013,7 @@ def uyap_extract_cmd(
 def uyap_audit_cmd(
     candidate_id: str = typer.Option(..., "--candidate-id"),
     store_dir: Optional[str] = typer.Option(None),
-    genuine_path: Optional[str] = typer.Option(None, help="genuine uyap.json yolu (varsayılan repo)"),
+    genuine_path: Optional[str] = typer.Option(None, help="genuine uyap.json yolu (varsayılan operasyonel depo)"),
 ) -> None:
     """Aynı-varlık mutabakatı + kural-tabanlı tamamlanmış-satış denetimi (admisyon DEĞİL)."""
     from .ingestion.uyap import run_audit, store
@@ -2052,7 +2052,7 @@ def uyap_review_cmd(store_dir: Optional[str] = typer.Option(None)) -> None:
 def uyap_admit_cmd(
     candidate_id: str = typer.Option(..., "--candidate-id"),
     store_dir: Optional[str] = typer.Option(None),
-    genuine_path: Optional[str] = typer.Option(None, help="genuine uyap.json yolu (varsayılan repo)"),
+    genuine_path: Optional[str] = typer.Option(None, help="genuine uyap.json yolu (varsayılan operasyonel depo)"),
 ) -> None:
     """AÇIK admisyon: yalnızca ADMISSIBLE_COMPLETED_SALE → uyap.json (IDEMPOTENT); non-terminal → dışlanan manifest."""
     from .ingestion.uyap import admit_candidate, record_exclusion, store

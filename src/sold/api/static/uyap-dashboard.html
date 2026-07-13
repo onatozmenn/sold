@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UYAP Satış Atlası</title>
+  <meta name="description" content="UYAP muhammen değer ve kesinleşmiş ihale bedeli karşılaştırma ekranı">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <link rel="stylesheet" href="/dashboard-assets/uyap-dashboard.css?v=4">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true">SA</div>
+        <div>
+          <p class="eyebrow">UYAP E-SATIŞ VERİSİ</p>
+          <h1>Satış Atlası</h1>
+        </div>
+      </div>
+      <div class="header-status" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="headerStatus">Veri yükleniyor</span>
+      </div>
+      <div class="header-actions">
+        <button class="icon-command" id="exportButton" type="button" title="Filtrelenmiş kayıtları CSV olarak indir">
+          <i data-lucide="download" aria-hidden="true"></i>
+          <span>CSV</span>
+        </button>
+        <a class="icon-command" href="/" title="Değerleme ekranına dön">
+          <i data-lucide="calculator" aria-hidden="true"></i>
+          <span>Değerleme</span>
+        </a>
+      </div>
+    </header>
+
+    <main>
+      <section class="kpi-strip" aria-label="Özet göstergeler">
+        <article>
+          <span class="metric-label">Görünen kayıt</span>
+          <strong class="metric-value" id="recordMetric">—</strong>
+          <span class="metric-detail" id="recordDetail">toplam satış</span>
+        </article>
+        <article>
+          <span class="metric-label">Temsil edilen il</span>
+          <strong class="metric-value" id="provinceMetric">—</strong>
+          <span class="metric-detail">81 il içinde</span>
+        </article>
+        <article>
+          <span class="metric-label">Medyan muhammen</span>
+          <strong class="metric-value" id="appraisedMetric">—</strong>
+          <span class="metric-detail">bilirkişi referansı</span>
+        </article>
+        <article>
+          <span class="metric-label">Medyan ihale bedeli</span>
+          <strong class="metric-value" id="auctionMetric">—</strong>
+          <span class="metric-detail">kesinleşmiş satış</span>
+        </article>
+        <article>
+          <span class="metric-label">Medyan gerçekleşme</span>
+          <strong class="metric-value" id="ratioMetric">—</strong>
+          <span class="metric-detail">ihale / muhammen</span>
+        </article>
+      </section>
+
+      <section class="control-band" aria-label="Veri filtreleri">
+        <label class="control search-control">
+          <span>Arama</span>
+          <div class="input-with-icon">
+            <i data-lucide="search" aria-hidden="true"></i>
+            <input id="searchInput" type="search" placeholder="Kayıt no, il veya tür" autocomplete="off">
+          </div>
+        </label>
+        <label class="control">
+          <span>İl</span>
+          <select id="provinceSelect">
+            <option value="all">Tüm iller</option>
+          </select>
+        </label>
+        <label class="control">
+          <span>Taşınmaz türü</span>
+          <select id="propertySelect">
+            <option value="all">Tüm türler</option>
+          </select>
+        </label>
+        <fieldset class="control relation-control">
+          <legend>Gerçekleşme</legend>
+          <div class="segmented" id="relationControl">
+            <label><input type="radio" name="relation" value="all" checked><span>Tümü</span></label>
+            <label><input type="radio" name="relation" value="below"><span>Altında</span></label>
+            <label><input type="radio" name="relation" value="near"><span>Yakın</span></label>
+            <label><input type="radio" name="relation" value="above"><span>Üstünde</span></label>
+          </div>
+        </fieldset>
+        <button class="reset-button" id="resetButton" type="button" title="Tüm filtreleri sıfırla">
+          <i data-lucide="rotate-ccw" aria-hidden="true"></i>
+          <span>Sıfırla</span>
+        </button>
+      </section>
+
+      <section class="map-workspace">
+        <div class="map-stage">
+          <div class="section-heading map-heading">
+            <div>
+              <p class="eyebrow">COĞRAFİ DAĞILIM</p>
+              <h2>İllere göre ihale gerçekleşmesi</h2>
+            </div>
+            <span class="selection-label" id="mapSelection">Türkiye geneli</span>
+          </div>
+          <div id="map" role="application" aria-label="UYAP satışlarının il bazında haritası"></div>
+          <div class="map-legend" aria-label="Harita renk açıklaması">
+            <span><i class="legend-dot below"></i>Muhammen altı</span>
+            <span><i class="legend-dot near"></i>Muhammene yakın</span>
+            <span><i class="legend-dot above"></i>Muhammen üstü</span>
+            <span><i class="legend-dot empty"></i>Kayıt yok</span>
+          </div>
+        </div>
+
+        <aside class="province-inspector" aria-live="polite">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">SEÇİM ÖZETİ</p>
+              <h2 id="inspectorTitle">Türkiye geneli</h2>
+            </div>
+            <span class="inspector-count" id="inspectorCount">—</span>
+          </div>
+          <dl class="inspector-metrics">
+            <div><dt>Medyan muhammen</dt><dd id="inspectorAppraised">—</dd></div>
+            <div><dt>Medyan ihale</dt><dd id="inspectorAuction">—</dd></div>
+            <div><dt>Gerçekleşme oranı</dt><dd id="inspectorRatio">—</dd></div>
+            <div><dt>Muhammen altı</dt><dd id="inspectorBelow">—</dd></div>
+          </dl>
+          <div class="type-breakdown">
+            <h3>Taşınmaz bileşimi</h3>
+            <div id="typeBreakdown"></div>
+          </div>
+          <p class="semantic-note">Muhammen değer bilirkişi referansıdır; ihale bedeli normal piyasa kapanış fiyatı değildir.</p>
+        </aside>
+      </section>
+
+      <section class="analysis-layout">
+        <div class="chart-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">FİYAT İLİŞKİSİ</p>
+              <h2>Muhammen değer ve ihale bedeli</h2>
+            </div>
+            <span class="chart-scale">log ölçek · TL</span>
+          </div>
+          <div class="chart-frame">
+            <canvas id="priceChart" aria-label="Muhammen değer ile ihale bedelini karşılaştıran dağılım grafiği"></canvas>
+          </div>
+        </div>
+        <div class="distribution-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">ORAN DAĞILIMI</p>
+              <h2>İhale / muhammen</h2>
+            </div>
+          </div>
+          <div class="distribution-bars" id="distributionBars"></div>
+        </div>
+      </section>
+
+      <section class="records-section">
+        <div class="records-toolbar">
+          <div>
+            <p class="eyebrow">KAYIT DÖKÜMÜ</p>
+            <h2>Kesinleşmiş UYAP satışları</h2>
+          </div>
+          <div class="table-actions">
+            <span id="tableCount">—</span>
+            <label>
+              <span class="sr-only">Sıralama</span>
+              <select id="sortSelect">
+                <option value="ratio_asc">Oran: düşükten yükseğe</option>
+                <option value="ratio_desc">Oran: yüksekten düşüğe</option>
+                <option value="appraised_desc">Muhammen: yüksekten düşüğe</option>
+                <option value="auction_desc">İhale: yüksekten düşüğe</option>
+                <option value="province_asc">İl: A–Z</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Kayıt no</th>
+                <th>İl</th>
+                <th>Tür</th>
+                <th class="numeric">Muhammen değer</th>
+                <th class="numeric">İhale bedeli</th>
+                <th class="numeric">Gerçekleşme</th>
+              </tr>
+            </thead>
+            <tbody id="recordsBody"></tbody>
+          </table>
+          <div class="empty-state" id="emptyState" hidden>Bu filtrelerle eşleşen kayıt yok.</div>
+        </div>
+        <nav class="pagination" aria-label="Kayıt sayfaları">
+          <button id="previousPage" type="button" title="Önceki sayfa"><i data-lucide="chevron-left" aria-hidden="true"></i></button>
+          <span id="pageLabel">—</span>
+          <button id="nextPage" type="button" title="Sonraki sayfa"><i data-lucide="chevron-right" aria-hidden="true"></i></button>
+        </nav>
+      </section>
+    </main>
+
+    <footer>
+      <span>Onat Özmen tarafından geliştirilmiştir</span>
+      <a href="mailto:onatozmen44@gmail.com">İletişim: onatozmen44@gmail.com</a>
+      <a href="https://www.github.com/onatozmenn/sold" target="_blank" rel="noopener noreferrer">github: https://www.github.com/onatozmenn/sold</a>
+    </footer>
+  </div>
+
+  <div class="loading-layer" id="loadingLayer" role="status">
+    <div class="loading-mark"></div>
+    <span>Satış verileri hazırlanıyor</span>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <script src="/dashboard-assets/uyap-dashboard.js?v=4"></script>
+</body>
+</html>

@@ -21,7 +21,8 @@ from pathlib import Path
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..features.build import parse_room_count
@@ -29,8 +30,10 @@ from ..model.estimator import RealizedValuator
 from ..model.valuation import RealValuator
 
 MODEL_PATH = Path("data/models/valuator.joblib")
+STATIC_DIR = Path(__file__).with_name("static")
 
 app = FastAPI(title="sold — Gerçekleşen Konut Fiyatı Tahmini", version="0.1.0")
+app.mount("/dashboard-assets", StaticFiles(directory=STATIC_DIR), name="dashboard-assets")
 
 _valuator: "RealizedValuator | RealValuator | None" = None
 _real = RealValuator()  # gerçek-veri motoru (piyasa değeri çıprazı + etiketsiz default)
@@ -116,6 +119,18 @@ def _to_frame(prop: PropertyIn) -> pd.DataFrame:
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/uyap-dashboard", include_in_schema=False)
+def uyap_dashboard_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "uyap-dashboard.html", media_type="text/html")
+
+
+@app.get("/uyap-data")
+def uyap_dashboard_data_endpoint() -> dict:
+    from .uyap_dashboard import dashboard_data
+
+    return dashboard_data()
 
 
 @app.post("/valuate", response_model=ValuationOut)
