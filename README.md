@@ -4,26 +4,30 @@
 [![Data refresh](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml/badge.svg)](https://github.com/onatozmenn/sold/actions/workflows/kfe-refresh.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-844%20passing-brightgreen.svg)](tests/)
 [![Data](https://img.shields.io/badge/evidence-UYAP%20%C2%B7%20KAP%20%C2%B7%20TCMB%20%C2%B7%20TOK%C4%B0-informational.svg)](#provenance-audited-public-structural-evidence)
 
-> A **mechanism-aware structural econometric prototype** that infers a **structural transaction-price distribution** for a Turkish home from an **asking-price signal** and public economic evidence.
+> A provenance-aware Turkish property-market project with two deliberately separate surfaces: an interactive **UYAP Sale Atlas** for observed judicial-auction outcomes and a frozen **structural econometric prototype** for ordinary-resale price inference.
 
-**sold** does **not** observe the actual ordinary-resale closing price — no source publishes it in Türkiye. Instead it treats ordinary negotiated resale as **generalized Nash bargaining** and calibrates the structural parameters to **source-specific public moments** by Simulated Method of Moments (SMM). Concretely:
+**1. UYAP Sale Atlas.** The operational ingestion pipeline collects non-personal official auction evidence inside a user-controlled, manually authenticated UYAP session, validates the source documents, and stores admitted `appraised value (Q) → auction price (P)` observations in a gitignored operational ledger and SQL registry. The current development workspace contains **13,489** unique admitted UYAP observations across **80/81 provinces**. These runtime records and native documents are intentionally **not committed to Git**; a fresh clone contains the application and frozen validation evidence, not the local operational database.
+
+**2. Structural inference engine.** Türkiye still has no source for the actual ordinary-resale closing price. The frozen engine therefore treats ordinary negotiated resale as **generalized Nash bargaining** and calibrates source-specific public moments by Simulated Method of Moments (SMM). Its reviewed structural snapshot currently contains **20 UYAP observations** and remains separate from the operational atlas. Adding an operational atlas record never changes the SMM moments automatically; structural evidence expansion requires a separate, explicit review and snapshot update.
+
+For the structural product:
 
 - The actual ordinary-resale closing price **is not observed**; the output is an inferred distribution, never an observed, actual or true sale price.
 - **TCMB** provides the **fair-value level anchor** (appraisal TL/m²), not transactions.
-- Genuine **audited UYAP completed-sale auctions** and **KAP negotiated corporate disposals** provide **source-specific structural moments**.
+- The frozen, reviewed **UYAP completed-sale auctions** and **KAP negotiated corporate disposals** provide **source-specific structural moments**.
 - **TOKİ** is an **external cross-mechanism benchmark**, not an SMM moment source.
 - The current **local Jacobian rank is 4** for a **ten-dimensional** structural primitive vector, so the identification status is **`STRUCTURALLY_UNDERIDENTIFIED`**.
 - Prediction sensitivity is evaluated across the **`admissible_near_fit_set` (`Θ_A`)** and across documented bounds for fixed structural assumptions; every transaction-price distribution is **`conditional_on_trade`** (`B ≥ S`).
 - The reported **structural sensitivity range is not a confidence interval** and carries **no frequentist coverage claim**.
 
-No fabricated data is ever served, and the system never reports a measured ordinary-resale prediction accuracy.
+No fabricated data is served, operational auction outcomes are never mislabeled as ordinary-resale asking→closing observations, and the system never reports a measured ordinary-resale prediction accuracy.
 
 ## Table of Contents
 
 - [Background](#background)
+- [UYAP Sale Atlas](#uyap-sale-atlas)
 - [How It Works](#how-it-works)
 - [Structural inference engine](#structural-inference-engine)
 - [Provenance-Audited Public Structural Evidence](#provenance-audited-public-structural-evidence)
@@ -65,13 +69,35 @@ So the ordinary-resale closing price is genuinely unobserved, and any model trai
 
 The **asking price is a noisy strategic seller-side signal** of the seller reservation — it is **not** ground truth and **not** a ceiling. Public sources enter the model through **source-specific structural moments under their own mechanism** — never pooled as ordinary-resale labels. All ten structural primitives remain in the bounded near-fit search; identification and prediction sensitivity are reported honestly (the current fit is **structurally underidentified**).
 
+## UYAP Sale Atlas
+
+The web application at [`/uyap-dashboard`](http://127.0.0.1:8000/uyap-dashboard) visualizes the local SQL registry of admitted UYAP completed-sale auctions. It provides:
+
+- an 81-province street/satellite map with province-level record counts;
+- province, property-type and `auction price / appraised value` filters;
+- medians, ratio distributions and a log-scale appraisal-versus-auction scatter plot;
+- a searchable, sortable table and privacy-safe CSV export;
+- only non-personal official record ID, province, property type, appraisal and auction-price fields.
+
+The atlas compares **court appraised value (`Q`, muhammen/kıymet)** with the finalized **auction price (`P`, İhale Bedeli)**. This is useful appraisal-to-auction evidence, but it is **not** an ordinary-market asking→closing discount. Atlas rows use `domain=uyap`, `sale_mechanism=auction`, and `reference_price_type=appraisal`; they enter the FairValue registry and are structurally excluded from the direct asking→closing head.
+
+Operational records, native UDF artifacts, browser checkpoints and `sold.db` live under gitignored runtime paths. They may contain public-record evidence but are deliberately not distributed through Git. Consequently, a fresh clone serves the dashboard application but will show only records imported into that installation's SQL database. The committed 20-record structural snapshot under [`validation/structural/`](validation/structural/) is a separate reviewed model input, not a bundled copy of the operational atlas.
+
+```bash
+sold serve
+# open http://127.0.0.1:8000/uyap-dashboard
+```
+
 ## How It Works
 
 ```mermaid
 flowchart TD
     TCMB["TCMB EVDS<br/>appraisal TL/m2 + KFE"] --> FV["Fair-value level anchor V(x,t)"]
 
-    UYAP["UYAP e-Satis<br/>audited completed-sale auctions"] --> MU["conditional auction moments<br/>winning_bid / appraised_value | completed sale"]
+  UYAPLIVE["UYAP e-Satış<br/>operator-initiated authenticated collection"] --> OPS["gitignored operational ledger + SQL"]
+  OPS --> ATLAS["UYAP Sale Atlas<br/>appraisal → auction outcomes"]
+
+  UYAP["Frozen reviewed UYAP snapshot<br/>20 completed-sale auctions"] --> MU["conditional auction moments<br/>winning_bid / appraised_value | completed sale"]
     KAP["KAP<br/>negotiated corporate disposals"] --> MK["negotiated-sale moments<br/>log(sale / appraisal)"]
 
     MU --> SMM["Simulated Method of Moments"]
@@ -205,13 +231,13 @@ Each source has a distinct, non-pooled structural role:
 
 The **SMM moment vector uses exactly four moments** (two UYAP, two KAP). TOKİ and the consumer channel are deliberately **excluded** from identification.
 
-> **Evidence expansion batches.** Genuine audited records are admitted in explicit batches under a predeclared selection rule (e.g. *UYAP Evidence Expansion Batch 1* added five audited completed-sale auctions, bringing the genuine UYAP total to 7). Each admitted UYAP record uses the official **İhale Bedeli** over the audited appraisal `Q` — never a deposit-adjusted, ownership-share, creditor-setoff, or KDV-adjusted amount. Audited-but-non-terminal records are preserved as excluded candidates in [`validation/structural/uyap_candidates.json`](validation/structural/uyap_candidates.json) (mirroring the KAP-candidate manifest); they never enter the genuine set, the SMM moments, or any negative-class construction (`uyap_sale_prob` is never created). Current genuine counts are reported by `sold structural dataset` (separate from fixtures), not hardcoded here.
+> **Frozen structural snapshot.** The committed structural dataset currently contains **20 reviewed UYAP completed-sale auctions**. Each uses the official **İhale Bedeli** over the audited appraisal `Q` — never a deposit-adjusted, ownership-share, creditor-setoff, or KDV-adjusted amount. This snapshot changes only through a separate reviewed structural-evidence batch. Operational atlas admission does not mutate it. `sold structural dataset` reports the frozen model-input counts; `sold labels stats` reports the separate local SQL registry.
 
 ### Three levels of validation, kept distinct
 
 1. **Parser / adapter validation** — unit tests confirm each parser maps fields to the schema on **illustrative fixtures**. ✅ done.
 2. **Real-record validation** — the operator downloads one real official record per source, feeds its non-personal fields through the parser, and commits the **manually-audited expected output** (never the raw artifact) under [`validation/`](validation/). Tests then enforce `parser output == audited expectation`. The genuine audited structural seed lives under [`validation/structural/`](validation/structural/) (`source_audited = true`), strictly separate from fixtures.
-3. **Browser-assisted UYAP acquisition** — inside a user-controlled authenticated session, the UYAP pipeline can discover the target record and collect its official native `.udf` artifacts (see below). ✅ Live-proven on the pilot record and a bounded five-record Ankara validation batch. Broad, unattended or continuous ingestion remains out of scope and is not built.
+3. **Browser-assisted UYAP acquisition** — inside a user-controlled authenticated session, bounded operator-initiated campaigns discover records and collect official native `.udf` artifacts (see below). ✅ Live-proven from the single-record pilot through resumable 81-province campaigns. Authentication automation and unattended continuous ingestion remain out of scope.
 
 > Level-1 **illustrative fixtures** (e.g. [samples/labels/illustrative_kap.json](samples/labels/illustrative_kap.json)) use invented placeholder values to exercise the parser. Level-2 **genuine audited** records live separately and drive the structural moments. The two tiers are kept strictly separate and never conflated.
 
@@ -224,11 +250,11 @@ The **SMM moment vector uses exactly four moments** (two UYAP, two KAP). TOKİ a
 
 ## UYAP Evidence Ingestion Pipeline V1
 
-A **provenance-aware data-acquisition subsystem** ([`src/sold/ingestion/uyap/`](src/sold/ingestion/uyap/)) that reduces the manual work of discovering, collecting, extracting, auditing, reviewing, and admitting UYAP e-Satış completed-sale evidence. It is **not** a new methodology or pricing mechanism and does **not** modify the frozen structural core; admission writes to the existing genuine UYAP schema and preserves the UYAP P/Q moment definition.
+A **provenance-aware data-acquisition subsystem** ([`src/sold/ingestion/uyap/`](src/sold/ingestion/uyap/)) that reduces the manual work of discovering, collecting, extracting, auditing, reviewing, and admitting UYAP e-Satış completed-sale evidence. It is **not** a new methodology or pricing mechanism and does **not** modify the frozen structural core. Default admission writes to the gitignored operational ledger at `data/ingestion/uyap/uyap.json`; the committed structural snapshot remains separate.
 
-**Workflow.** `discovery → collection → extraction → same-asset reconciliation → rule-based completed-sale audit → human review → explicit admission → existing UYAP evidence schema`. Extraction is deterministic (no ML, no weak supervision, no classifier); each field is traceable to the artifact it came from. **Audit is not admission** — a parser never writes genuine `uyap.json` directly; admission is a separate, explicit, idempotent operator action that validates the existing schema and dedupes by `public_record_id`.
+**Workflow.** `discovery → collection → extraction → same-asset reconciliation → rule-based completed-sale audit → human review → explicit operational admission → optional idempotent SQL registry import`. Extraction is deterministic (no ML, no weak supervision, no classifier); each field is traceable to the artifact it came from. **Audit is not admission** — admission is a separate, explicit, idempotent operator action that validates the UYAP record schema and dedupes by `public_record_id`.
 
-**Completed-sale admission rule** (formalizing the seven genuine observations + Batch 1): a candidate is admissible only with (A) an auditable appraisal `Q` for the same asset, (B) an **explicit official İhale Bedeli**, and (C) terminal completed-sale evidence (`Satıldı` / `Satış İşlemleri Tamamlandı`). The **auction-price numerator is always the explicit İhale Bedeli** — never the *Ödenmesi Gereken Bedel*, deposit-adjusted balance, ownership-share settlement, creditor-setoff, or KDV-adjusted amount; KDV never adjusts `P` or `Q`; `ALACAĞA MAHSUBEN` never invalidates an explicit İhale Bedeli. Non-terminal records (e.g. `Birinci Alıcıya Süre Verildi`) become `EXCLUDED_NON_TERMINAL` in [`validation/structural/uyap_candidates.json`](validation/structural/uyap_candidates.json) — never admitted, never a negative sale-probability observation (`uyap_sale_prob` is never created). Ambiguous candidates (missing appraisal / missing explicit İhale Bedeli / missing terminal evidence / reconciliation ambiguity) are surfaced to a **human-review queue** with the exact blocking reason and are never silently promoted.
+**Completed-sale admission rule.** A candidate is admissible only with (A) an auditable appraisal `Q` for the same asset, (B) an **explicit official İhale Bedeli**, and (C) terminal completed-sale evidence (`Satıldı` / `Satış İşlemleri Tamamlandı`). The **auction-price numerator is always the explicit İhale Bedeli** — never the *Ödenmesi Gereken Bedel*, deposit-adjusted balance, ownership-share settlement, creditor-setoff, or KDV-adjusted amount; KDV never adjusts `P` or `Q`; `ALACAĞA MAHSUBEN` never invalidates an explicit İhale Bedeli. Non-terminal and ambiguous records remain in the gitignored operational candidate/review stores with exact blocking reasons. They are never silently promoted and never converted into a negative sale-probability class (`uyap_sale_prob` is not created).
 
 **Browser-assisted, not authentication-bypassing.** The optional browser collector (Playwright, `pip install -e ".[browser]"`) operates **only within a user-controlled, already-authenticated or public session** (attach to a browser you launched via a CDP endpoint, or a local profile you signed into yourself). It **never** automates e-Devlet login, MFA or CAPTCHA, never bypasses access controls, and never stores credentials, cookies, session tokens, or browser profiles in the repository (raw artifacts and profiles live under gitignored `data/`). If a live browser is unavailable, the **manual artifact-import** path (saved HTML/PDF/text) is the fallback.
 
@@ -240,7 +266,7 @@ sold uyap import-artifacts --candidate-id <id> --type auction_result --path save
 sold uyap extract  --candidate-id <id>      # deterministic fields (not admission)
 sold uyap audit    --candidate-id <id>      # rule-based completed-sale audit (not admission)
 sold uyap review                            # human-review queue with blocking reasons
-sold uyap admit    --candidate-id <id>      # EXPLICIT, idempotent admission to uyap.json
+sold uyap admit    --candidate-id <id>      # EXPLICIT admission to the operational uyap.json
 sold uyap status                            # discovered / audited / admissible / admitted
 ```
 
@@ -320,7 +346,7 @@ Bounded runs are intentionally resumable: deferred, saturated, truncated, stale,
 work is never reported as complete and returns a nonzero status for automation. Neither phase admits evidence:
 `sold uyap review` and explicit `sold uyap admit` remain separate.
 
-> **Nationwide live run and fast-path reconciliation (2026-07-11).** A manually authenticated,
+> **Historical nationwide milestone (2026-07-11).** A manually authenticated,
 > user-controlled Chrome session completed metadata discovery for **81/81 provinces** over
 > `2026-07-05..2026-07-11`. The bounded same-origin path completed in **6.34 seconds** using **155 requests**
 > at concurrency 8 and reconciled **2,190/2,190 source result cards**: all KAYIT IDs were unique, no identity
@@ -332,7 +358,7 @@ work is never reported as complete and returns a nonzero status for automation. 
 > adapters bind search results to exact AJAX response/cardinality and document actions to exact KAYIT,
 > response URI, modal row and action fingerprint.
 
-> **Full June candidate inspection (2026-07-12).** The fast path screened all **6,305 newly discovered**
+> **Historical full-June inspection (2026-07-12).** The fast path screened all **6,305 newly discovered**
 > terminal-sale candidates across `2026-06-01..2026-06-30` without retaining raw listing descriptions.
 > Including 18 previously known candidates rediscovered in those windows, the inspection ledger covers
 > **6,323/6,323 operational candidates**: **6,066 audit-complete** and **257 `MANUAL_REQUIRED`**, with zero
@@ -343,11 +369,13 @@ work is never reported as complete and returns a nonzero status for automation. 
 > No record was admitted automatically. Local gitignored evidence contains 12,173 native UDFs and 164
 > exact-URI ODF transformations (about 90 MiB total).
 
-> **Live status.** UYAP Live Browser Pilot 1 reached **`PASS`** on the real **2026/263 Esas** record. A later bounded Ankara batch (`2026-06-18..2026-06-24`) collected five terminal-sale cards through native UDF artifacts: two new records were explicitly admitted, two were identified as existing observations (one primary ID and one alias), and one remains blocked for human review. The history endpoint is an observed internal same-origin interface, **not** an official public API. The workflow does **not** automate authentication, is **not** unattended continuous ingestion, and does **not** prove universal layout coverage. The automated test suite remains fully offline.
+> **Historical March–May backfill (completed 2026-07-14).** An operator-initiated authenticated campaign covered **81 provinces** and `2026-03-01..2026-05-31` through 1,134 weekly parent windows (1,138 complete leaves and four split parents). It reconciled **29,812 cards**, discovered **17,266 terminal `Satıldı` records**, downloaded candidate-bound native documents, and admitted **9,492** unique records after fresh artifact audit. The local operational ledger and SQL registry now contain **13,489** unique UYAP observations across **80/81 provinces**. Blocked records remain explicit: 4,373 `PENDING_REVIEW`, 397 `RECONCILIATION_FAILED`, 321 `MISSING_APPRAISAL`, 23 `MISSING_AUCTION_PRICE`, one `DUPLICATE`, and 2,659 source/manifest-blocked or unaudited candidates. These operational counts do not alter the frozen 20-record structural snapshot.
+
+> **Pilot status.** UYAP Live Browser Pilot 1 reached **`PASS`** on the real **2026/263 Esas** record. A later bounded Ankara batch (`2026-06-18..2026-06-24`) collected five terminal-sale cards through native UDF artifacts: two new records were explicitly admitted, two were identified as existing observations (one primary ID and one alias), and one remains blocked for human review. The history endpoint is an observed internal same-origin interface, **not** an official public API. The workflow does **not** automate authentication, is **not** unattended continuous ingestion, and does **not** prove universal layout coverage. The automated test suite remains fully offline.
 
 ### UYAP Live Browser Pilot 1 (live verification)
 
-A **non-mutating verification** workflow that checks, end to end, whether the pipeline can collect the already-known completed-sale record **2026/263 Esas** through a **user-controlled browser session** and reproduce its manually audited truth (`appraisal 6,800,000`, `İhale Bedeli 5,715,000`, `P/Q 0.8404411764705882`, `ADMISSIBLE_COMPLETED_SALE`). Because **2026/263 is already admitted**, the pilot **never** admits it again: the genuine UYAP count stays **7** and `uyap.json` is unchanged (a mutation guard fingerprints the file SHA256, the count, and the four-moment SMM vector before and after). e-Devlet authentication is always **manual**; the pilot only attaches to a session you launched and signed into yourself, and the CLI never logs in for you.
+A **non-mutating verification** workflow that checks, end to end, whether the pipeline can collect the already-known completed-sale record **2026/263 Esas** through a **user-controlled browser session** and reproduce its manually audited truth (`appraisal 6,800,000`, `İhale Bedeli 5,715,000`, `P/Q 0.8404411764705882`, `ADMISSIBLE_COMPLETED_SALE`). Because **2026/263 is already in the frozen structural snapshot**, the pilot **never** admits it again: the structural UYAP count stays **20** and the snapshot `uyap.json` is unchanged (a mutation guard fingerprints the file SHA256, the count, and the four-moment SMM vector before and after). e-Devlet authentication is always **manual**; the pilot only attaches to a session you launched and signed into yourself, and the CLI never logs in for you.
 
 **Result: one live-proven `PASS`.** After fourteen real interoperability-fix runs, the fifteenth real live run reached `pilot_outcome = PASS` (`verification_layer_result = PASS`). Both `auction_result` and `sale_notice` were collected through the **official row-local native `.udf` download path**: for each, the unique DocumentRow was reacquired by recognized identity, the same-row download action was ownership-validated, a real browser download event produced the exact official `.udf` bytes, the ZIP container was validated, `content.xml` was parsed safely, the document type was corroborated, and the **existing deterministic extractor** independently recovered the required fields.
 
@@ -417,7 +445,7 @@ Equivalent REST endpoints `POST /outcome` and `GET /analytics` are retained as a
 
 ## Data Sources
 
-Sources play **four distinct roles** and are never pooled into a single training target.
+Sources play **five distinct roles** and are never pooled into a single training target.
 
 **1. Market anchors (official automated market data).** Fetched from the official **TCMB EVDS** API and refreshed automatically; nothing is scraped. These provide the fair-value **level anchor** and market context, not transactions:
 
@@ -427,13 +455,15 @@ Sources play **four distinct roles** and are never pooled into a single training
 | `datasets/unit_prices.csv` | TCMB | Appraisal-based unit prices (TL/m²) | 2013 → now, quarterly, 77 provinces |
 | `datasets/house_sales.csv` | TÜİK via EVDS | House sales counts (demand / liquidity context) | 2013 → now, monthly, by province |
 
-**2. Structural evidence (manually-audited public official records).** Genuine, operator-audited **UYAP** completed-sale auctions and **KAP** negotiated corporate disposals under [`validation/structural/`](validation/structural/) (`source_audited = true`). These supply the **four SMM moments**; they are hand-audited from official records, never bulk-scraped.
+**2. Operational UYAP auction registry.** Bounded, operator-initiated campaigns run inside a manually authenticated UYAP session and collect candidate-bound public auction metadata and native documents. Deterministic extraction, same-asset reconciliation and completed-sale audit feed the local atlas registry. Runtime records and artifacts are gitignored and do not automatically enter SMM.
 
-**3. External benchmark.** Genuine **TOKİ** cumulative-disclosure cohorts — observed and available, but **outside** the SMM system (`external_cross_mechanism_benchmark`).
+**3. Frozen structural evidence.** The committed, operator-reviewed **UYAP** completed-sale auctions and **KAP** negotiated corporate disposals under [`validation/structural/`](validation/structural/) (`source_audited = true`) supply the **four SMM moments**. This reviewed snapshot is intentionally much smaller than the operational atlas.
 
-**4. Frozen optional validation channel.** The consumer/broker direct-label channel (see [Optional direct-label validation channel](#optional-direct-label-validation-channel)) and the legacy `datasets/ground_truth.csv` are **optional** and **not** part of the structural model. `datasets/ground_truth.csv` is a **legacy** user-provided file retained for the legacy `sold model` / `sold ground-truth` paths only.
+**4. External benchmark.** Genuine **TOKİ** cumulative-disclosure cohorts — observed and available, but **outside** the SMM system (`external_cross_mechanism_benchmark`).
 
-> No unauthorized scraping is performed. Automated fetching is limited to official EVDS market series; structural evidence is added by manual audit of official public records. Title-deed *declared* values are **not** treated as consideration, and the system never claims to observe the actual ordinary-resale closing price.
+**5. Frozen optional validation channel.** The consumer/broker direct-label channel (see [Optional direct-label validation channel](#optional-direct-label-validation-channel)) and the legacy `datasets/ground_truth.csv` are **optional** and **not** part of the structural model. `datasets/ground_truth.csv` is a **legacy** user-provided file retained for the legacy `sold model` / `sold gt` paths only.
+
+> TCMB/TÜİK series are fetched from the official EVDS API. UYAP collection is a separate, bounded browser-assisted workflow inside a user-controlled authenticated session; it is not an official API and does not automate login, MFA or CAPTCHA. Title-deed *declared* values are **not** treated as consideration, and the system never claims to observe the actual ordinary-resale closing price.
 
 ## Install
 
@@ -452,7 +482,7 @@ cp .env.example .env               # then set EVDS_API_KEY in .env
 
 ## Usage
 
-The primary workflow is the **structural** command group over the frozen econometric core.
+The repository exposes two primary workflows: the local UYAP atlas/ingestion surface and the **structural** command group over the frozen econometric core. They share schemas and provenance rules, but operational atlas rows do not automatically recalibrate the structural model.
 
 ### Inspect the genuine structural evidence
 
@@ -482,12 +512,7 @@ Output is an explicitly **`conditional_on_trade`** structural sensitivity range 
 sold serve            # → http://127.0.0.1:8000
 ```
 
-The UYAP Sale Atlas is available at `http://127.0.0.1:8000/uyap-dashboard`.
-It maps the verified UYAP evidence in `realized_labels`, compares appraised
-(`muhammen`) value with finalized auction price, and supports province/property/
-ratio filters plus CSV export. These are enforcement-auction observations for
-FairValue calibration, not ordinary-market asking-to-closing labels. Its
-privacy-safe JSON contract is `GET /uyap-data`.
+The UYAP Sale Atlas is available at `http://127.0.0.1:8000/uyap-dashboard`; its privacy-safe JSON contract is `GET /uyap-data`. See [UYAP Sale Atlas](#uyap-sale-atlas) for data scope and runtime requirements.
 
 Structural endpoints over the frozen core:
 
@@ -539,7 +564,7 @@ src/sold/
   config.py          # settings (.env)
   structural/        # FROZEN core: params, bargaining, hedonic, auction, kap, toki,
                      #   moments, smm, identify, partial, predict, datasets
-  api/               # FastAPI service: structural endpoints + structural_product assembly
+  api/               # FastAPI service: structural endpoints + UYAP Sale Atlas/data API
   evds/              # TCMB EVDS client: KFE, house sales, unit prices
   features/          # demand signal (market context) + feature builder
   model/             # legacy valuation / estimator / synthetic (method self-test)
@@ -548,13 +573,15 @@ src/sold/
   flywheel/          # frozen optional direct-label validation channel
   consumer/          # frozen consumer submission path + quality gate
   scraper/           # ToS-respectful local-example pipeline (no live scraping)
-  ingestion/uyap/    # UYAP evidence ingestion V1 (discovery→audit→explicit admission)
+  ingestion/uyap/    # UYAP ingestion V1 (discovery→audit→operational admission)
   tuik/              # TÜİK client
   db/                # SQLAlchemy models + schema
   cli.py             # `sold` command-line interface (incl. `sold structural ...`)
 validation/
   structural/        # GENUINE audited structural seed (source_audited=true)
   real_records/      # manually-audited parser expectations (KAP / TOKİ / UYAP)
+data/                # gitignored runtime data: UYAP candidates, artifacts, checkpoints, models
+sold.db              # gitignored local SQL registry used by the atlas
 datasets/            # market-anchor data (auto-refreshed) + legacy ground_truth.csv
 docs/                # DEVELOPMENT_HISTORY.md (superseded + frozen milestones)
 scripts/             # helper scripts (data fetch, report)
@@ -564,7 +591,7 @@ tests/               # offline unit / end-to-end tests
 ## Testing
 
 ```bash
-pytest -q             # 844 tests, fully offline (no network or API key required)
+pytest -q             # fully offline (no network or API key required)
 ```
 
 The automated suite is fully offline. The **UYAP live browser pilot is a separate, operator-run verification** (a real user-controlled session against the live site) and is **not** part of the offline CI suite.
@@ -586,11 +613,14 @@ The methodology is a **structural econometric** one; the following foundations d
 
 ## Roadmap
 
-The structural and prediction-semantics core is frozen. One bounded, reviewed evidence-expansion batch and its structural re-audit are complete; future work remains bounded and explicitly reviewed, never unattended ingestion.
+The structural and prediction-semantics core is frozen. The operational atlas now supports resumable 81-province discovery and reviewed batch admission, while any change to the 20-record structural snapshot remains a separate explicit research decision.
 
 - [x] Run a bounded five-record UYAP validation batch through the live browser/native-UDF path and preserve exact blocking reasons
 - [x] Review the batch and explicitly admit only the two fully reconciled new records; keep unresolved records blocked and one alias as `DUPLICATE`
 - [x] Expand genuine UYAP completed-sale evidence from 18 to 20 records and regenerate moments/snapshots
+- [x] Build the interactive UYAP Sale Atlas with province/type/ratio filters, street/satellite map, charts, table and CSV export
+- [x] Complete bounded 81-province June and March–May operational campaigns with resumable checkpoints and fail-closed document audit
+- [ ] Package a privacy-safe reproducible sample dataset for the atlas without committing native UYAP documents or the operator database
 - [ ] Expand the genuine **KAP negotiated-disposal** evidence set (manual audit; KAP does not use the UYAP browser / native-UDF path)
 - [ ] Recompute the observed four-moment SMM vector, Jacobian diagnostics (rank, singular values, condition, weak directions), and `Theta_A` after each **explicit evidence-admission batch** (more records do not automatically raise `rank(J)`; the fit stays `STRUCTURALLY_UNDERIDENTIFIED` unless the diagnostics actually change)
 - [ ] Increase the bounded search budget until `near_fit_search_stability` no longer reports `INSUFFICIENT_COVERAGE`, and re-audit it after every admission batch
@@ -604,10 +634,10 @@ _Detailed pre-pivot, structural, and UYAP interoperability history is preserved 
 
 ## Legal & Ethics
 
-- **Official automated data + manually-audited public records.** Automated fetching is limited to official market-data series (TCMB / TÜİK via EVDS). Structural evidence (UYAP completed-sale auctions, KAP disposals, TOKİ disclosures) is added by **manual audit of official public records** — the project *does* consult these individual public records, so it makes **no** claim that individual sale figures are never accessed.
-- **No unauthorized scraping or access-control bypass.** No listing portals or public registries are bulk-scraped. The UYAP browser collector runs **only inside a user-controlled, manually authenticated session** and is **not** an official API; it never automates e-Devlet login, MFA, or CAPTCHA, never bypasses access controls, and stores no credentials, cookies, tokens, or browser profiles in the repository. Unattended continuous ingestion is out of scope.
-- **Privacy (KVKK) & data minimization.** No personal data is collected. Party, representative, counsel, payment, account, and case-party fields are **excluded** from audited records; only non-personal economic, property, and public-record fields are retained.
-- **Provenance integrity.** Genuine audited evidence is kept strictly separate from illustrative fixtures, demo seeds, and test data; no evidence is fabricated, and no title-deed *declared* value is treated as the consideration.
+- **Official market data + bounded public-record acquisition.** TCMB/TÜİK market series use EVDS. UYAP campaigns are explicitly started by an operator inside a session that the operator authenticated manually; KAP/TOKİ structural records remain operator-reviewed. The project does consult individual public records and makes no claim otherwise.
+- **No authentication bypass or unattended collection.** The UYAP collector is **not** an official API. It never automates e-Devlet login, MFA or CAPTCHA, never bypasses access controls, and never commits credentials, cookies, tokens or browser profiles. Campaigns are bounded, resumable and operator-supervised; unattended continuous ingestion is out of scope.
+- **Privacy (KVKK) & data minimization.** Normalized records and API responses exclude party, debtor, creditor, representative, counsel, payment, account and personal-identifier fields. Native official artifacts may contain source-document text, so they remain local and gitignored and are never exposed by the atlas API or committed to the repository.
+- **Provenance integrity.** The operational ledger, frozen structural snapshot, illustrative fixtures, demo seeds and tests are separate stores. No evidence is fabricated, and no title-deed *declared* value is treated as the consideration.
 - **Honesty of claims.** The system **does not observe** the actual ordinary-resale closing price and never reports a measured ordinary-resale prediction accuracy; every price output is an explicitly `conditional_on_trade` structural inference.
 - **Purpose.** Structural price transparency and methodological honesty, not tax enforcement or exposure.
 
@@ -627,8 +657,8 @@ Distributed under the **MIT License**. See [LICENSE](LICENSE).
 
 - **TCMB EVDS** — appraisal-based price index and unit prices (fair-value level anchor).
 - **TÜİK** — housing sales statistics (demand / liquidity context).
-- **UYAP e-Satış** — audited completed-sale judicial auction records (structural SMM moments).
+- **UYAP e-Satış** — bounded operational atlas evidence and a separate frozen set of reviewed structural SMM moments.
 - **KAP** — audited non-related negotiated corporate-disposal disclosures (structural SMM moments).
 - **TOKİ** — audited cumulative project-disclosure cohorts (external cross-mechanism benchmark).
 
-> All institutional records used as structural evidence are **manually audited** from official public sources; none are bulk-scraped.
+> The frozen structural snapshot is operator-reviewed from official public sources. The larger operational UYAP atlas is produced by bounded, authenticated, provenance-bound campaigns and remains local/gitignored.
