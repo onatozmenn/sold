@@ -1852,6 +1852,7 @@ def structural_partial_cmd(
     olduğu raporlanır. Bu bir biçimsel identified set / confidence region / kapsama iddiası DEĞİL.
     """
     from .structural import (
+        DEFAULT_FREE,
         FUTURE_METHODOLOGY_NOTE,
         admissible_near_fit_set,
         build_observed_moments,

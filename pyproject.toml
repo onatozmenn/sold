@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sold"
 version = "0.1.0"
-description = "Estimate the realized (transaction) sale price of Turkish homes from asking-price data — using only official data."
+description = "Research toolkit for Turkish auction analytics and structural price-sensitivity analysis."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
