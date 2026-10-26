@@ -1,6 +1,6 @@
 # sold — otomatik rapor
 
-_Son güncelleme: 2026-10-19 07:20 UTC · GitHub Actions (bilgisayar gerekmez)_
+_Son güncelleme: 2026-10-26 07:22 UTC · GitHub Actions (bilgisayar gerekmez)_
 
 ## KFE — TCMB konut fiyat endeksi (ekspertiz tabanlı)
 - Gözlem: **201 ay** · son ay **2026-9 = 239.38**
